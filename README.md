@@ -11,6 +11,8 @@ It is **API-first**: the core is a framework-free TypeScript library
 (`SpawnClient`) that ports spawn's lifecycle model. A GUI and an optional
 terminal are bundled as two consumers of that API.
 
+**▶ Live demo (mock backend, no credentials needed):** <https://spore-host.github.io/spawn-ts/>
+
 ## Documentation
 
 - [Architecture](docs/architecture.md) — layers and the provider seam
