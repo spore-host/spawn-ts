@@ -8,6 +8,15 @@ Pre-1.0, breaking changes bump the MINOR version.
 
 ## [Unreleased]
 
+### Added
+- **Truffle instance picker** in the launch form — a natural-language query box
+  ("h100 efa", "cheapest graviton 32gb") backed by
+  [`@spore-host/truffle-ts`](https://github.com/spore-host/truffle-ts) resolves
+  to matching EC2 instance types (offline, no AWS); picking one auto-fills the
+  instance-type field and its estimated $/hr. truffle-ts is a git dependency;
+  CI/Pages rewrite `git@github`→HTTPS so `npm ci` clones it. spawn-ts owns the
+  picker UI — truffle-ts only supplies data + logic.
+
 ## [0.2.0] — 2026-07-20
 
 ### Added

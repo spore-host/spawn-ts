@@ -346,3 +346,81 @@ describe("Dashboard queue form", () => {
     expect(client.activeSweeps()).toHaveLength(0);
   });
 });
+
+function trufflePicker(dash: Dashboard) {
+  const form = dash.el.querySelector<HTMLFormElement>(".launch-form")!;
+  return {
+    q: form.querySelector<HTMLInputElement>(".truffle-q")!,
+    matches: form.querySelector<HTMLElement>(".truffle-matches")!,
+    typeInput: form.elements.namedItem("instanceType") as HTMLInputElement,
+    priceInput: form.elements.namedItem("pricePerHour") as HTMLInputElement,
+  };
+}
+
+async function typeQuery(input: HTMLInputElement, value: string) {
+  input.value = value;
+  input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", cancelable: true, bubbles: true }));
+  // find() is async; let the microtask + render settle.
+  await new Promise((r) => setTimeout(r, 0));
+}
+
+describe("Dashboard truffle instance picker", () => {
+  beforeEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  it("resolves a query to matching instance types", async () => {
+    const { dash } = setup();
+    const p = trufflePicker(dash);
+    await typeQuery(p.q, "nvidia h100");
+    expect(p.matches.hidden).toBe(false);
+    expect(p.matches.textContent).toContain("p5.48xlarge");
+  });
+
+  it("picking a match fills instance type + auto-fills $/hr", async () => {
+    const { dash } = setup();
+    const p = trufflePicker(dash);
+    await typeQuery(p.q, "h100");
+    const first = p.matches.querySelector<HTMLButtonElement>(".truffle-match")!;
+    first.click();
+    expect(p.typeInput.value).toBe("p5.48xlarge");
+    expect(Number(p.priceInput.value)).toBeGreaterThan(0);
+    expect(p.matches.hidden).toBe(true); // closes after pick
+    expect(p.q.value).toBe(""); // query cleared
+  });
+
+  it("then launches with the picked type", async () => {
+    const { client, dash } = setup();
+    const p = trufflePicker(dash);
+    await typeQuery(p.q, "cheapest graviton 8 cores 32gb");
+    p.matches.querySelector<HTMLButtonElement>(".truffle-match")!.click();
+    setField(dash, "name", "picked");
+    await submit(dash);
+    const inst = await client.get("picked");
+    expect(inst?.instanceType).toBe(p.typeInput.value);
+    expect(inst?.instanceType).not.toBe("c6a.xlarge"); // not the default
+  });
+
+  it("shows an empty state for a valid but unmatchable query", async () => {
+    const { dash } = setup();
+    const p = trufflePicker(dash);
+    await typeQuery(p.q, "igv nvidia"); // disjoint → no matches
+    expect(p.matches.textContent).toContain("no matches");
+  });
+
+  it("surfaces a parse error (conflicting architectures) without throwing", async () => {
+    const { dash } = setup();
+    const p = trufflePicker(dash);
+    await typeQuery(p.q, "intel graviton");
+    expect(p.matches.textContent!.toLowerCase()).toContain("conflicting");
+  });
+
+  it("clears the dropdown when the query is emptied", async () => {
+    const { dash } = setup();
+    const p = trufflePicker(dash);
+    await typeQuery(p.q, "h100");
+    expect(p.matches.hidden).toBe(false);
+    await typeQuery(p.q, "");
+    expect(p.matches.hidden).toBe(true);
+  });
+});

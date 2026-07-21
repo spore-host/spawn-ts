@@ -27,6 +27,8 @@ jobs:
         with:
           node-version: 20
           cache: npm
+      # @spore-host/truffle-ts is a public git dependency; ensure npm clones it over HTTPS.
+      - run: git config --global url."https://github.com/".insteadOf "git@github.com:"
       - run: npm ci
       - run: npm run build
       - uses: actions/configure-pages@v5
