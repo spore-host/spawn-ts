@@ -1,6 +1,6 @@
 {
   "name": "spawn-ts",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "Browser-native spawn: launch and self-terminate AWS EC2 instances, entirely from a web page.",
