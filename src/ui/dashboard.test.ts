@@ -433,3 +433,40 @@ describe("Dashboard truffle instance picker", () => {
     expect(types.every((t) => t!.startsWith("m7g."))).toBe(true);
   });
 });
+
+describe("Dashboard orphan banner", () => {
+  beforeEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  it("shows a reap banner for a past-TTL instance and hides it otherwise", async () => {
+    // Launch on a T0 client (deadline T0+1h); mount the dashboard on a T0+2h
+    // client sharing the provider, so the instance is a past-TTL orphan.
+    const provider = new MockProvider();
+    const launcher = new SpawnClient({ provider, startMs: T0, clock: 1 });
+    await launcher.launch({ name: "zombie", ttl: "1h" });
+
+    const client = new SpawnClient({ provider, startMs: T0 + 2 * 3600_000, clock: 1 });
+    const dash = new Dashboard(client, async () => true);
+    document.body.appendChild(dash.el);
+    await client.refresh();
+
+    const banner = dash.el.querySelector<HTMLElement>(".orphan-banner")!;
+    expect(banner.hidden).toBe(false);
+    expect(banner.textContent).toContain("1 orphan");
+
+    // Click reap → instance terminated → banner hides on the next render.
+    banner.querySelector("button")!.click();
+    await new Promise((r) => setTimeout(r, 0));
+    expect((await client.get("zombie"))!.state).toBe("terminated");
+    expect(dash.el.querySelector<HTMLElement>(".orphan-banner")!.hidden).toBe(true);
+  });
+
+  it("keeps the banner hidden when nothing is past TTL", async () => {
+    const { dash } = setup();
+    setField(dash, "name", "fresh");
+    setField(dash, "ttl", "4h");
+    await submit(dash);
+    expect(dash.el.querySelector<HTMLElement>(".orphan-banner")!.hidden).toBe(true);
+  });
+});

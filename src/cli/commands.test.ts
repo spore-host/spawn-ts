@@ -211,3 +211,39 @@ describe("CLI queue", () => {
     expect(r.lines.join("\n")).toContain("no SpawnClient bound");
   });
 });
+
+describe("CLI orphans", () => {
+  it("lists orphans, then reaps with --reap", async () => {
+    // Launcher at T0 (ttl 1h → deadline T0+1h); orphans run via a ctx whose
+    // client clock is T0+2h (past deadline + grace), sharing the provider.
+    const provider = new MockProvider();
+    const launcher = new SpawnClient({ provider, startMs: T0, clock: 1 });
+    await launcher.launch({ name: "zombie", ttl: "1h" });
+
+    const client = new SpawnClient({ provider, startMs: T0 + 2 * 3600_000, clock: 1 });
+    const ctx: ShellCtx = { provider, now: () => client.now(), confirm: async () => true, client };
+
+    const listed = await runCommand("orphans", ctx);
+    expect(listed.lines.join("\n")).toContain("1 orphan");
+    expect(listed.lines.join("\n")).toContain("zombie");
+    // Non-destructive without --reap.
+    expect((await client.get("zombie"))!.state).toBe("running");
+
+    const reaped = await runCommand("orphans --reap -y", ctx);
+    expect(reaped.lines.join("\n")).toContain("reaped 1 orphan");
+    expect((await client.get("zombie"))!.state).toBe("terminated");
+  });
+
+  it("reports none when all instances are within TTL", async () => {
+    const { ctx: c } = clientCtx();
+    await runCommand("launch fresh --ttl 4h", c);
+    const r = await runCommand("orphans", c);
+    expect(r.lines.join("\n")).toContain("no orphans");
+  });
+
+  it("is unavailable without a bound client", async () => {
+    const r = await runCommand("orphans", ctx());
+    expect(r.error).toBe(true);
+    expect(r.lines.join("\n")).toContain("no SpawnClient bound");
+  });
+});

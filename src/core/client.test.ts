@@ -63,4 +63,23 @@ describe("SpawnClient end-to-end", () => {
     await c.signalComplete("job");
     expect((await c.get("job"))!.state).toBe("stopped");
   });
+
+  it("findOrphans + reapOrphans over a shared provider (spored-failed instance)", async () => {
+    // Launch on a client at T0 (deadline T0+1h), then view via a second client
+    // whose clock is at T0+2h — past deadline+grace — sharing the same provider.
+    const provider = new MockProvider();
+    const launcher = new SpawnClient({ provider, startMs: T0, clock: 1 });
+    await launcher.launch({ name: "zombie", ttl: "1h", pricePerHour: 1 });
+
+    const viewer = new SpawnClient({ provider, startMs: T0 + 2 * 3600_000, clock: 1 });
+    await viewer.refresh();
+    const orphans = viewer.findOrphans();
+    expect(orphans).toHaveLength(1);
+    expect(orphans[0].instance.name).toBe("zombie");
+
+    const reaped = await viewer.reapOrphans(orphans);
+    expect(reaped).toHaveLength(1);
+    expect((await viewer.get("zombie"))!.state).toBe("terminated");
+    expect(viewer.findOrphans()).toEqual([]);
+  });
 });

@@ -18,6 +18,7 @@ interface SweepView { kind: "sweep" | "queue"; name: string; summary: FanOutSumm
 export class Dashboard {
   readonly el: HTMLElement;
   private instancesEl!: HTMLElement;
+  private orphanBannerEl!: HTMLElement;
   private logEl!: HTMLElement;
   private sweepsEl!: HTMLElement;
   private log: LogItem[] = [];
@@ -48,6 +49,7 @@ export class Dashboard {
       </div>
       <div class="dash-section">
         <h2>Instances</h2>
+        <div class="orphan-banner" hidden></div>
         <div class="instances"></div>
       </div>
       <div class="dash-section">
@@ -55,6 +57,7 @@ export class Dashboard {
         <div class="log"></div>
       </div>`;
     this.instancesEl = this.el.querySelector(".instances")!;
+    this.orphanBannerEl = this.el.querySelector(".orphan-banner")!;
     this.logEl = this.el.querySelector(".log")!;
     this.sweepsEl = this.el.querySelector(".sweeps")!;
 
@@ -402,6 +405,7 @@ export class Dashboard {
   }
 
   private renderInstances(insts: ManagedInstance[]): void {
+    this.renderOrphanBanner();
     const live = insts.filter((i) => i.state !== "terminated");
     if (live.length === 0) {
       this.instancesEl.innerHTML = `<div class="empty">no instances — launch one above</div>`;
@@ -410,6 +414,32 @@ export class Dashboard {
     const now = this.client.now();
     this.instancesEl.innerHTML = "";
     for (const i of live) this.instancesEl.appendChild(this.instanceCard(i, now));
+  }
+
+  /**
+   * Warn about orphans — managed, live instances past their TTL that spored
+   * should have reaped (the #19 failure mode) — with a one-click reap.
+   */
+  private renderOrphanBanner(): void {
+    const orphans = this.client.findOrphans();
+    if (orphans.length === 0) {
+      this.orphanBannerEl.hidden = true;
+      this.orphanBannerEl.innerHTML = "";
+      return;
+    }
+    this.orphanBannerEl.hidden = false;
+    this.orphanBannerEl.innerHTML =
+      `<span>⚠️ ${orphans.length} orphan${orphans.length === 1 ? "" : "s"} past TTL — ` +
+      `spored didn't reap ${orphans.length === 1 ? "it" : "them"}.</span>`;
+    const btn = document.createElement("button");
+    btn.textContent = `Reap ${orphans.length}`;
+    btn.addEventListener("click", async () => {
+      if (await this.confirmFn(`terminate ${orphans.length} orphaned instance(s)? This is permanent.`)) {
+        btn.disabled = true;
+        await this.client.reapOrphans(orphans);
+      }
+    });
+    this.orphanBannerEl.appendChild(btn);
   }
 
   private instanceCard(i: ManagedInstance, now: number): HTMLElement {
