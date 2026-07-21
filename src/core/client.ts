@@ -22,6 +22,7 @@ import type {
   SweepMembership,
 } from "./types.js";
 import { evaluate } from "./lifecycle.js";
+import { findOrphans, type Orphan } from "./orphans.js";
 import { parseDuration, formatDuration } from "./duration.js";
 import { tag } from "./tags.js";
 import { MockProvider } from "./mock.js";
@@ -277,6 +278,36 @@ export class SpawnClient {
 
   list(): ManagedInstance[] {
     return this.lastInstances;
+  }
+
+  /**
+   * Orphans among the currently-known instances: managed + live + past their
+   * TTL deadline by the grace window (spored should have reaped them but didn't
+   * — the #19 failure mode). Call refresh() first for fresh data. Pure detection;
+   * reaping is a separate, confirmed action (reapOrphans).
+   */
+  findOrphans(graceMs?: number): Orphan[] {
+    return findOrphans(this.lastInstances, this.now(), graceMs);
+  }
+
+  /**
+   * Terminate the given orphans (or all currently-detected ones). Returns the
+   * instance ids terminated. The caller is responsible for confirming first —
+   * this always terminates. Emits an "info" event per reap and refreshes.
+   */
+  async reapOrphans(orphans: Orphan[] = this.findOrphans()): Promise<string[]> {
+    const reaped: string[] = [];
+    for (const o of orphans) {
+      await this.provider.terminate(o.instance.instanceId, "orphan reaper (TTL exceeded)");
+      this.emit({
+        type: "info",
+        instance: o.instance.name,
+        message: `reaped orphan ${o.instance.instanceId} (${Math.round(o.overdueByMs / 60_000)}m past TTL)`,
+      });
+      reaped.push(o.instance.instanceId);
+    }
+    if (reaped.length) await this.refresh();
+    return reaped;
   }
 
   async get(nameOrId: string): Promise<ManagedInstance | null> {

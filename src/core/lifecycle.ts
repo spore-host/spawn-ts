@@ -40,8 +40,9 @@ export function accumulatedCost(inst: ManagedInstance): number {
   return (inst.computeSeconds / 3600) * inst.pricePerHour;
 }
 
-/** Effective TTL deadline: prefer the absolute tag; fall back to launch+ttl. */
-function ttlDeadline(inst: ManagedInstance): number {
+/** Effective TTL deadline (ms epoch): prefer the absolute tag; fall back to
+ * launch+ttl; 0 = no TTL. Exported so the orphan reaper reuses the same rule. */
+export function ttlDeadline(inst: ManagedInstance): number {
   if (inst.ttlDeadlineMs > 0) return inst.ttlDeadlineMs;
   if (inst.ttlMs > 0 && inst.launchTimeMs > 0) return inst.launchTimeMs + inst.ttlMs;
   return 0;

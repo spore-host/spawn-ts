@@ -9,6 +9,13 @@ Pre-1.0, breaking changes bump the MINOR version.
 ## [Unreleased]
 
 ### Added
+- **Orphan / zombie reaper** (#23) — a lifecycle safety-net for the #19 failure
+  mode (spored died/never installed, so an instance never self-terminated).
+  `findOrphans` (`src/core/orphans.ts`, reusing the exported `ttlDeadline`) flags
+  managed, live instances past their TTL deadline + a 10-min grace;
+  `SpawnClient.findOrphans` / `reapOrphans` surface + terminate them. Exposed as
+  the CLI `orphans [--reap] [-y]` command and a dashboard warning banner with a
+  one-click reap. Pure detection; reaping is always confirmed.
 - **Session timeout** (idle-SSH-shell auto-logout, #22) — `--session-timeout` /
   `LaunchInput.sessionTimeout` writes `spawn:session-timeout` and injects an sshd
   `ClientAlive` config + a `readonly TMOUT` in the bootstrap (`src/aws/userdata.ts`),

@@ -32,8 +32,10 @@ export type {
   SweepMembership,
 } from "./core/types.js";
 
-export { evaluate, accumulatedCost } from "./core/lifecycle.js";
+export { evaluate, accumulatedCost, ttlDeadline } from "./core/lifecycle.js";
 export type { TickInput } from "./core/lifecycle.js";
+export { findOrphans, ORPHAN_GRACE_MS } from "./core/orphans.js";
+export type { Orphan } from "./core/orphans.js";
 export {
   buildLaunchTags,
   buildSweepTags,

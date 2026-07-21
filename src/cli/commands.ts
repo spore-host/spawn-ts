@@ -45,6 +45,7 @@ const BOOLEAN_FLAGS = new Set([
   "y",
   "all",
   "json",
+  "reap",
 ]);
 
 /** Entry point: parse a raw line and dispatch. */
@@ -83,6 +84,8 @@ export async function runCommand(line: string, ctx: ShellCtx): Promise<CmdResult
       return sweep(parsed, ctx);
     case "queue":
       return queue(parsed, ctx);
+    case "orphans":
+      return orphans(parsed, ctx);
     default:
       return err(`unknown command: ${parsed.command}`, `try "help"`);
   }
@@ -108,6 +111,7 @@ function help(): CmdResult {
     "  terminate <name> [-y]   terminate (permanent)",
     "  sweep <spec> [flags]    fan a parameter grid out into many instances",
     "  queue <config> [flags]  launch a DAG of jobs as capacity/turn allows",
+    "  orphans [--reap] [-y]   find (and optionally terminate) instances past their TTL",
     "",
     "launch flags: --instance-type --region --ttl --idle-timeout --hibernate-on-idle",
     "              --cost-limit --price-per-hour --on-complete --spot --ami --key",
@@ -426,6 +430,40 @@ async function queue(p: ParsedArgs, ctx: ShellCtx): Promise<CmdResult> {
     `  launched ${s.running}, blocked ${s.blocked}${s.failed ? `, failed ${s.failed}` : ""}`,
     "  watch progress with 'list' (spawn:sweep-* tags mark queue membership)",
   );
+}
+
+async function orphans(p: ParsedArgs, ctx: ShellCtx): Promise<CmdResult> {
+  if (!ctx.client) {
+    return err("orphans: not available in this shell (no SpawnClient bound)");
+  }
+  await ctx.client.refresh();
+  const found = ctx.client.findOrphans();
+  if (found.length === 0) return ok("no orphans — all managed instances are within their TTL");
+
+  const rows = found.map((o) => {
+    const i = o.instance;
+    return `  ${pad(i.name, 16)}${pad(i.instanceId, 21)}${pad(i.state, 10)}${Math.round(
+      o.overdueByMs / 60_000,
+    )}m past TTL`;
+  });
+
+  const reap = flagBool(p.flags, "reap");
+  if (!reap) {
+    return ok(
+      `${found.length} orphan${found.length === 1 ? "" : "s"} (managed, live, past TTL — spored didn't reap them):`,
+      ...rows,
+      "",
+      "re-run with --reap to terminate them (add -y to skip confirm)",
+    );
+  }
+
+  const yes = flagBool(p.flags, "yes") || flagBool(p.flags, "y");
+  if (!yes) {
+    const proceed = await ctx.confirm(`terminate ${found.length} orphaned instance(s)? This is permanent.`);
+    if (!proceed) return ok("aborted");
+  }
+  const reaped = await ctx.client.reapOrphans(found);
+  return ok(`reaped ${reaped.length} orphan${reaped.length === 1 ? "" : "s"}:`, ...reaped.map((id) => `  ${id}`));
 }
 
 // ---- helpers ----

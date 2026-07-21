@@ -180,6 +180,19 @@ body {
 .modal .warn { color: var(--yellow); font-size: 11px; margin-top: 10px; }
 .empty { color: var(--muted); font-style: italic; }
 
+.orphan-banner {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 10px;
+  padding: 8px 12px; border-radius: 6px;
+  background: rgba(248,81,73,.12); border: 1px solid var(--red); color: var(--red);
+  font-size: 12px;
+}
+.orphan-banner button {
+  margin-left: auto; background: var(--red); color: #fff; border: none;
+  border-radius: 6px; padding: 5px 12px; font-family: var(--mono); font-weight: 700; cursor: pointer;
+}
+.orphan-banner button:hover { filter: brightness(1.1); }
+.orphan-banner button:disabled { opacity: .5; cursor: default; }
+
 /* Launch form */
 .launch-form .grid2, .sweep-form .grid2 {
   display: grid;
