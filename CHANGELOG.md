@@ -19,6 +19,10 @@ Pre-1.0, breaking changes bump the MINOR version.
 - Bumped `@spore-host/truffle-ts` to `v0.2.0`, so the picker also accepts
   **glob/regex patterns** (`m7i*`, `c[6-8]i.large`) alongside natural-language
   queries.
+- Bumped `@spore-host/truffle-ts` to `v0.3.0`, whose bundled catalog is now
+  **real AWS data** ("as of 2026-07") — the picker shows accurate specs and the
+  auto-filled $/hr reflects current on-demand pricing (e.g. `p5.48xlarge`
+  $55.04/hr).
 
 ## [0.2.0] — 2026-07-20
 
