@@ -125,4 +125,7 @@ SpawnClient monitor self-terminates an expired-TTL instance over the wire.
 
 Core lifecycle scope: launch, list, status, connect (surfaces SSH/SSM command),
 extend, stop/start, hibernate, terminate + the full TTL/idle/cost/completion
-engine. Parameter sweeps and the batch queue are not yet ported.
+engine. Parameter sweeps (`spawn sweep`) are ported — fan a parameter grid out
+into many instances over the shared fan-out engine (see
+[docs/sweeps.md](docs/sweeps.md)). The batch queue builds on the same fan-out and
+is next.

@@ -36,6 +36,30 @@ export interface LaunchSpec {
 
   /** On-demand $/hr, recorded at launch for cost-limit + dashboard math. */
   pricePerHour: number;
+
+  /**
+   * Parameter-sweep membership (optional). Set when this instance is one member
+   * of a `spawn sweep` fan-out; written to spawn:sweep-* tags so the whole sweep
+   * is discoverable and wire-compatible with the Go tool. Undefined for a plain
+   * single launch.
+   */
+  sweep?: SweepMembership;
+}
+
+/**
+ * A launch's membership in a parameter sweep. `parameters` are the per-member
+ * key/value pairs (the sweep's independent variables) recorded as spawn:param:*
+ * tags and, on a real box, surfaced as PARAM_* env vars. Serialized to the same
+ * spawn:sweep-* tags the Go `spawn sweep` writes.
+ */
+export interface SweepMembership {
+  id: string;
+  name: string;
+  /** 0-based index of this member within the sweep. */
+  index: number;
+  /** Total members in the sweep. */
+  size: number;
+  parameters: Record<string, string>;
 }
 
 /** Lifecycle state as observed through the provider (mirrors EC2 states). */
@@ -93,6 +117,12 @@ export interface ManagedInstance {
   lastActivityMs: number;
   /** Latest observed CPU %, for idle detection + dashboard. */
   cpuPercent: number;
+
+  /**
+   * Parameter-sweep membership, decoded from the instance's spawn:sweep-* /
+   * spawn:param:* tags. Undefined when the instance is not part of a sweep.
+   */
+  sweep?: SweepMembership;
 }
 
 /** A single lifecycle decision the engine can emit on a tick. */

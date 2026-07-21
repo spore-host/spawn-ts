@@ -9,6 +9,18 @@ Pre-1.0, breaking changes bump the MINOR version.
 ## [Unreleased]
 
 ### Added
+- **Parameter sweeps** (`spawn sweep`, issue #4) — fan a parameter grid out into
+  many instances. A pure, testable core (`src/core/params.ts`, `sweep.ts`)
+  expands a spec (`params` list and/or cartesian `grid`, with `defaults`) into
+  members, then launches them over the existing `SpawnClient` via a new reusable
+  fan-out engine (`src/core/fanout.ts`) that honors a concurrency cap and an
+  inter-launch delay — a port of the Go tool's rolling queue. Each instance is
+  tagged with the wire-compatible `spawn:sweep-*` / `spawn:param:*` contract
+  (`tags.ts`), so a sweep launched here is visible to the Go `spawn list` and
+  vice-versa. Wired into the terminal (`spawn sweep --grid "lr=0.1,0.2 bs=32,64"`
+  or an inline JSON spec) and the dashboard (a grid form + live progress cards),
+  with sweep membership surfaced in `spawn status`. The fan-out abstraction is
+  shared ground for the batch queue (issue #5).
 - **Generated TypeDoc API reference** — `npm run docs` (TypeDoc) generates a full
   reference from the `src/index.ts` exports into `dist/api/`, published alongside
   the Pages demo at `/api/`. Wired into `npm run build` so Pages picks it up with

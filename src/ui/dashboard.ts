@@ -5,16 +5,21 @@
 
 import type { SpawnClient, SpawnEvent } from "../core/client.js";
 import type { LifecycleAction, ManagedInstance } from "../core/types.js";
+import type { FanOutSummary } from "../core/fanout.js";
 import { accumulatedCost } from "../core/lifecycle.js";
-import { humanRemaining, formatDuration } from "../core/duration.js";
+import { humanRemaining, formatDuration, parseDuration } from "../core/duration.js";
+import { parseGridShorthand } from "../core/params.js";
 
 interface LogItem { atMs: number; kind: string; instance: string; text: string; }
+interface SweepView { name: string; summary: FanOutSummary; done: boolean; }
 
 export class Dashboard {
   readonly el: HTMLElement;
   private instancesEl!: HTMLElement;
   private logEl!: HTMLElement;
+  private sweepsEl!: HTMLElement;
   private log: LogItem[] = [];
+  private sweeps = new Map<string, SweepView>();
 
   constructor(
     private client: SpawnClient,
@@ -27,6 +32,11 @@ export class Dashboard {
         <h2>Launch</h2>
         ${this.launchFormHtml()}
       </div>
+      <div class="dash-section sweep">
+        <h2>Parameter sweep</h2>
+        ${this.sweepFormHtml()}
+        <div class="sweeps"></div>
+      </div>
       <div class="dash-section">
         <h2>Instances</h2>
         <div class="instances"></div>
@@ -37,10 +47,13 @@ export class Dashboard {
       </div>`;
     this.instancesEl = this.el.querySelector(".instances")!;
     this.logEl = this.el.querySelector(".log")!;
+    this.sweepsEl = this.el.querySelector(".sweeps")!;
 
     this.wireForm();
+    this.wireSweepForm();
     client.on((e) => this.onEvent(e));
     this.renderInstances(client.list());
+    this.renderSweeps();
   }
 
   private launchFormHtml(): string {
@@ -69,6 +82,58 @@ export class Dashboard {
         <button type="submit" class="launch-btn">Launch</button>
         <span class="launch-msg"></span>
       </form>`;
+  }
+
+  private sweepFormHtml(): string {
+    return `
+      <form class="sweep-form" autocomplete="off">
+        <div class="grid2">
+          <div><label>name</label><input name="sweepName" placeholder="hyperparam" /></div>
+          <div><label>grid (k=v1,v2 …)</label><input name="grid" placeholder="lr=0.01,0.1 bs=32,64" required /></div>
+          <div><label>ttl (all members)</label><input name="ttl" value="30m" /></div>
+          <div><label>$/hr (cost meter)</label><input name="pricePerHour" value="0.017" /></div>
+          <div><label>max concurrent</label><input name="maxConcurrent" value="0" placeholder="0 = all at once" /></div>
+          <div><label>launch delay</label><input name="launchDelay" placeholder="blank / 5s" /></div>
+        </div>
+        <button type="submit" class="sweep-btn">Start sweep</button>
+        <span class="sweep-msg"></span>
+      </form>`;
+  }
+
+  private wireSweepForm(): void {
+    const form = this.el.querySelector<HTMLFormElement>(".sweep-form")!;
+    const msg = this.el.querySelector<HTMLElement>(".sweep-msg")!;
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const fd = new FormData(form);
+      const s = (k: string) => String(fd.get(k) ?? "").trim();
+      const grid = parseGridShorthand(s("grid"));
+      if ("error" in grid) {
+        msg.textContent = grid.error;
+        msg.className = "sweep-msg bad";
+        return;
+      }
+      const defaults: Record<string, string | number | boolean> = {};
+      if (s("ttl")) defaults.ttl = s("ttl");
+      const price = Number(s("pricePerHour"));
+      if (Number.isFinite(price) && price > 0) defaults.price_per_hour = price;
+      const delayRaw = s("launchDelay");
+      try {
+        const sw = this.client.startSweep(
+          { grid: grid.value, defaults },
+          {
+            name: s("sweepName") || undefined,
+            maxConcurrent: Number(s("maxConcurrent")) || 0,
+            launchDelayMs: delayRaw ? parseDuration(delayRaw) ?? 0 : 0,
+          },
+        );
+        msg.textContent = `started ${sw.id} — ${sw.size} members`;
+        msg.className = "sweep-msg good";
+      } catch (err) {
+        msg.textContent = (err as Error).message;
+        msg.className = "sweep-msg bad";
+      }
+    });
   }
 
   private wireForm(): void {
@@ -124,6 +189,53 @@ export class Dashboard {
       case "provider":
         this.pushLog({ kind: "info", instance: "-", text: `backend → ${e.label}${e.isReal ? " (REAL)" : ""}` });
         break;
+      case "sweep":
+        this.onSweepEvent(e);
+        break;
+    }
+  }
+
+  private onSweepEvent(e: Extract<SpawnEvent, { type: "sweep" }>): void {
+    const prev = this.sweeps.get(e.id);
+    this.sweeps.set(e.id, { name: e.name, summary: e.summary, done: e.done });
+    // Log the first sighting and completion, not every intermediate tick.
+    if (!prev) {
+      this.pushLog({ kind: "info", instance: e.name, text: `sweep ${e.id} started — ${e.summary.total} members` });
+    } else if (e.done && !prev.done) {
+      const { completed, failed } = e.summary;
+      this.pushLog({
+        kind: failed ? "warning" : "info",
+        instance: e.name,
+        text: `sweep ${e.id} done — ${completed} completed${failed ? `, ${failed} failed` : ""}`,
+      });
+    }
+    this.renderSweeps();
+  }
+
+  private renderSweeps(): void {
+    if (this.sweeps.size === 0) {
+      this.sweepsEl.innerHTML = "";
+      return;
+    }
+    this.sweepsEl.innerHTML = "";
+    // Newest last-updated first isn't tracked; insertion order is fine + stable.
+    for (const [id, v] of this.sweeps) {
+      const s = v.summary;
+      const launched = s.running + s.completed + s.failed;
+      const pct = s.total > 0 ? Math.round((launched / s.total) * 100) : 0;
+      const card = document.createElement("div");
+      card.className = "sweep-card" + (v.done ? " done" : "");
+      card.innerHTML = `
+        <div class="row1">
+          <span class="name">${escapeHtml(v.name)}</span>
+          <span class="id">${escapeHtml(id)}</span>
+          <span class="state">${v.done ? "done" : "running"}</span>
+        </div>
+        <div class="meta">${launched}/${s.total} launched · ${s.running} running · ${s.completed} completed${
+          s.failed ? ` · ${s.failed} failed` : ""
+        }${s.pending ? ` · ${s.pending} pending` : ""}</div>
+        <div class="meter sweep"><span style="width:${pct}%"></span></div>`;
+      this.sweepsEl.appendChild(card);
     }
   }
 

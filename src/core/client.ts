@@ -19,11 +19,15 @@ import type {
   LaunchSpec,
   LifecycleAction,
   ManagedInstance,
+  SweepMembership,
 } from "./types.js";
 import { evaluate } from "./lifecycle.js";
 import { parseDuration, formatDuration } from "./duration.js";
 import { tag } from "./tags.js";
 import { MockProvider } from "./mock.js";
+import { FanOut, type FanOutMemberStatus, type FanOutSummary } from "./fanout.js";
+import { buildSweep, Sweep, type SweepOptions } from "./sweep.js";
+import type { ParamSpec } from "./params.js";
 
 export type SpawnEvent =
   | { type: "instances"; instances: ManagedInstance[] }
@@ -31,7 +35,8 @@ export type SpawnEvent =
   | { type: "action"; instance: string; action: LifecycleAction; rule: string; reason: string }
   | { type: "warning"; instance: string; rule: string; message: string }
   | { type: "info"; instance: string; message: string }
-  | { type: "provider"; label: string; isReal: boolean };
+  | { type: "provider"; label: string; isReal: boolean }
+  | { type: "sweep"; id: string; name: string; summary: FanOutSummary; done: boolean };
 
 export type EventHandler = (e: SpawnEvent) => void;
 
@@ -67,6 +72,8 @@ export interface LaunchInput {
   completionDelay?: string | number;
   /** Bypass the "real launch needs a bound" safety check. */
   allowUnbounded?: boolean;
+  /** Parameter-sweep membership; stamps spawn:sweep-* / spawn:param:* tags. */
+  sweep?: SweepMembership;
 }
 
 export class SpawnClient {
@@ -77,6 +84,8 @@ export class SpawnClient {
   private timer: ReturnType<typeof setInterval> | null = null;
   private warned = new Set<string>();
   private lastInstances: ManagedInstance[] = [];
+  /** Active fan-outs (sweeps/queues) pumped on each monitor tick. */
+  private fanOuts = new Map<string, { name: string; fanOut: FanOut }>();
 
   constructor(opts: ClientOptions = {}) {
     this.provider = opts.provider ?? new MockProvider();
@@ -180,6 +189,56 @@ export class SpawnClient {
       }
     }
     await this.refresh();
+    await this.pumpFanOuts();
+  }
+
+  /**
+   * Advance every registered fan-out (sweep/queue) one step, emit its progress,
+   * and drop it once complete. Called after each monitor tick so members launch
+   * as slots free and statuses reconcile against the freshly-refreshed list.
+   */
+  private async pumpFanOuts(): Promise<void> {
+    if (this.fanOuts.size === 0) return;
+    for (const [id, { name, fanOut }] of [...this.fanOuts]) {
+      await fanOut.pump(this.now());
+      const done = fanOut.isComplete && !fanOut.hasPending;
+      this.emit({ type: "sweep", id, name, summary: fanOut.summary, done });
+      if (done) this.fanOuts.delete(id);
+    }
+    // Launches during the pump changed the world; reflect it.
+    await this.refresh();
+  }
+
+  // ---- sweeps / fan-out ----
+
+  /**
+   * Start a parameter sweep: expand the spec into members and register a fan-out
+   * that the monitor loop pumps each tick (launching members as the concurrency
+   * cap allows). Returns the built Sweep for identity/inspection. Progress is
+   * delivered via "sweep" events; call startMonitor() (or step() in tests) to
+   * drive it. A real launch inherits the same cost-safety guard as launch().
+   */
+  startSweep(spec: ParamSpec | string, opts: SweepOptions = {}): Sweep {
+    const built = buildSweep(spec, { nowMs: this.now(), ...opts });
+    const fanOut = new FanOut(this, built.members, {
+      maxConcurrent: opts.maxConcurrent,
+      launchDelayMs: opts.launchDelayMs,
+    });
+    this.fanOuts.set(built.id, { name: built.name, fanOut });
+    // Kick the first batch immediately so callers see progress without waiting
+    // a full tick; the monitor loop takes over from here.
+    void this.pumpFanOuts();
+    return new Sweep(built, fanOut);
+  }
+
+  /** Snapshot of a registered fan-out's per-member status, or null if unknown. */
+  sweepStatus(id: string): FanOutMemberStatus[] | null {
+    return this.fanOuts.get(id)?.fanOut.status ?? null;
+  }
+
+  /** Ids of fan-outs still running (not yet fully launched + settled). */
+  activeSweeps(): string[] {
+    return [...this.fanOuts.keys()];
   }
 
   // ---- operations ----
@@ -303,6 +362,7 @@ export class SpawnClient {
       completionFile: input.completionFile ?? "",
       completionDelayMs: dur(input.completionDelay),
       pricePerHour: input.pricePerHour ?? 0,
+      sweep: input.sweep,
     };
   }
 }
