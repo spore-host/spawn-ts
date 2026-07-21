@@ -10,6 +10,7 @@ import { accumulatedCost } from "../core/lifecycle.js";
 import { humanRemaining, formatDuration, parseDuration } from "../core/duration.js";
 import { parseGridShorthand } from "../core/params.js";
 import { parseQueueConfig } from "../core/queue.js";
+import { find, type FindResult } from "@spore-host/truffle-ts";
 
 interface LogItem { atMs: number; kind: string; instance: string; text: string; }
 interface SweepView { kind: "sweep" | "queue"; name: string; summary: FanOutSummary; done: boolean; }
@@ -58,6 +59,7 @@ export class Dashboard {
     this.sweepsEl = this.el.querySelector(".sweeps")!;
 
     this.wireForm();
+    this.wireTrufflePicker();
     this.wireSweepForm();
     this.wireQueueForm();
     client.on((e) => this.onEvent(e));
@@ -70,6 +72,11 @@ export class Dashboard {
       <form class="launch-form" autocomplete="off">
         <div class="grid2">
           <div><label>name</label><input name="name" placeholder="my-job" required /></div>
+          <div class="picker">
+            <label>find instance <span class="picker-hint">(truffle — "h100 efa", "cheapest graviton 32gb")</span></label>
+            <input name="truffleQuery" class="truffle-q" placeholder="natural-language query" autocomplete="off" />
+            <div class="truffle-matches" hidden></div>
+          </div>
           <div><label>instance type</label><input name="instanceType" value="c6a.xlarge" /></div>
           <div><label>ttl</label><input name="ttl" value="4h" placeholder="4h / 0 = none" /></div>
           <div><label>idle timeout</label><input name="idleTimeout" placeholder="30m / blank" /></div>
@@ -230,6 +237,82 @@ export class Dashboard {
       } catch (err) {
         msg.textContent = (err as Error).message;
         msg.className = "launch-msg bad";
+      }
+    });
+  }
+
+  /**
+   * The truffle instance picker: a natural-language query resolves (offline, via
+   * truffle-ts) to matching EC2 instance types. Picking one fills the launch
+   * form's instance-type field and auto-fills $/hr from the estimate. truffle-ts
+   * only supplies data + logic; this markup + wiring is spawn-ts's own choice.
+   */
+  private wireTrufflePicker(): void {
+    const form = this.el.querySelector<HTMLFormElement>(".launch-form")!;
+    const q = form.querySelector<HTMLInputElement>(".truffle-q")!;
+    const matchesEl = form.querySelector<HTMLElement>(".truffle-matches")!;
+    const typeInput = form.elements.namedItem("instanceType") as HTMLInputElement;
+    const priceInput = form.elements.namedItem("pricePerHour") as HTMLInputElement;
+
+    let seq = 0;
+    const render = (results: FindResult[]) => {
+      if (results.length === 0) {
+        matchesEl.innerHTML = `<div class="truffle-empty">no matches</div>`;
+        matchesEl.hidden = false;
+        return;
+      }
+      matchesEl.innerHTML = "";
+      for (const r of results.slice(0, 8)) {
+        const i = r.instance;
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "truffle-match";
+        const price = i.onDemandPrice ? `$${i.onDemandPrice.toFixed(3)}/hr` : "—";
+        btn.innerHTML =
+          `<span class="tm-type">${escapeHtml(i.instanceType)}</span>` +
+          `<span class="tm-spec">${i.vcpus} vCPU · ${Math.round(i.memoryMib / 1024)} GiB` +
+          `${i.gpus ? ` · ${i.gpus}× ${escapeHtml(i.gpuModel ?? "GPU")}` : ""}</span>` +
+          `<span class="tm-price">${price}</span>`;
+        btn.addEventListener("click", () => {
+          typeInput.value = i.instanceType;
+          if (i.onDemandPrice) priceInput.value = String(i.onDemandPrice);
+          matchesEl.hidden = true;
+          q.value = "";
+        });
+        matchesEl.appendChild(btn);
+      }
+      matchesEl.hidden = false;
+    };
+
+    const run = async () => {
+      const query = q.value.trim();
+      if (!query) {
+        matchesEl.hidden = true;
+        return;
+      }
+      const mine = ++seq;
+      try {
+        const results = await find(query);
+        if (mine !== seq) return; // a newer query superseded this one
+        render(results);
+      } catch (err) {
+        if (mine !== seq) return;
+        matchesEl.innerHTML = `<div class="truffle-empty">${escapeHtml((err as Error).message)}</div>`;
+        matchesEl.hidden = false;
+      }
+    };
+
+    // Debounce keystrokes; Enter runs immediately.
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    q.addEventListener("input", () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => void run(), 200);
+    });
+    q.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        if (timer) clearTimeout(timer);
+        void run();
       }
     });
   }

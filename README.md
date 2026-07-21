@@ -129,3 +129,9 @@ engine. Parameter sweeps (`spawn sweep`) fan a parameter grid out into many inst
 (see [docs/sweeps.md](docs/sweeps.md)), and batch job queues (`spawn queue`)
 launch a DAG of jobs as dependencies complete and capacity allows (see
 [docs/queues.md](docs/queues.md)) — both over one shared fan-out engine.
+
+The launch form's instance-type field is backed by a **truffle instance picker**:
+type a natural-language query ("h100 efa", "cheapest graviton 32gb") and pick from
+matched EC2 instance types, which auto-fills the type and its estimated $/hr. This
+is powered by [`@spore-host/truffle-ts`](https://github.com/spore-host/truffle-ts)
+(a library dependency); spawn-ts owns the picker UI.
