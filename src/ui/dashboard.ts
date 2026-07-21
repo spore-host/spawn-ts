@@ -9,9 +9,10 @@ import type { FanOutSummary } from "../core/fanout.js";
 import { accumulatedCost } from "../core/lifecycle.js";
 import { humanRemaining, formatDuration, parseDuration } from "../core/duration.js";
 import { parseGridShorthand } from "../core/params.js";
+import { parseQueueConfig } from "../core/queue.js";
 
 interface LogItem { atMs: number; kind: string; instance: string; text: string; }
-interface SweepView { name: string; summary: FanOutSummary; done: boolean; }
+interface SweepView { kind: "sweep" | "queue"; name: string; summary: FanOutSummary; done: boolean; }
 
 export class Dashboard {
   readonly el: HTMLElement;
@@ -35,6 +36,13 @@ export class Dashboard {
       <div class="dash-section sweep">
         <h2>Parameter sweep</h2>
         ${this.sweepFormHtml()}
+      </div>
+      <div class="dash-section queue">
+        <h2>Batch job queue</h2>
+        ${this.queueFormHtml()}
+      </div>
+      <div class="dash-section">
+        <h2>Sweeps &amp; queues</h2>
         <div class="sweeps"></div>
       </div>
       <div class="dash-section">
@@ -51,6 +59,7 @@ export class Dashboard {
 
     this.wireForm();
     this.wireSweepForm();
+    this.wireQueueForm();
     client.on((e) => this.onEvent(e));
     this.renderInstances(client.list());
     this.renderSweeps();
@@ -136,6 +145,62 @@ export class Dashboard {
     });
   }
 
+  private queueFormHtml(): string {
+    const example = JSON.stringify(
+      {
+        queue_name: "pipeline",
+        jobs: [
+          { job_id: "build", command: "make", timeout: "20m" },
+          { job_id: "test", command: "make test", timeout: "20m", depends_on: ["build"] },
+        ],
+        on_failure: "stop",
+      },
+      null,
+      2,
+    );
+    return `
+      <form class="queue-form" autocomplete="off">
+        <label>queue config (JSON — jobs[] with depends_on / retry / timeout)</label>
+        <textarea name="config" rows="8" spellcheck="false">${escapeHtml(example)}</textarea>
+        <div class="grid2">
+          <div><label>max concurrent</label><input name="maxConcurrent" value="0" placeholder="0 = all eligible" /></div>
+          <div><label>launch delay</label><input name="launchDelay" placeholder="blank / 5s" /></div>
+        </div>
+        <button type="submit" class="queue-btn">Start queue</button>
+        <span class="queue-msg"></span>
+      </form>`;
+  }
+
+  private wireQueueForm(): void {
+    const form = this.el.querySelector<HTMLFormElement>(".queue-form")!;
+    const msg = this.el.querySelector<HTMLElement>(".queue-msg")!;
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const fd = new FormData(form);
+      const s = (k: string) => String(fd.get(k) ?? "").trim();
+      let cfg;
+      try {
+        cfg = parseQueueConfig(s("config"));
+      } catch (err) {
+        msg.textContent = (err as Error).message;
+        msg.className = "queue-msg bad";
+        return;
+      }
+      const delayRaw = s("launchDelay");
+      try {
+        const q = this.client.startQueue(cfg, {
+          maxConcurrent: Number(s("maxConcurrent")) || 0,
+          launchDelayMs: delayRaw ? parseDuration(delayRaw) ?? 0 : 0,
+        });
+        msg.textContent = `started ${q.id} — ${q.size} jobs`;
+        msg.className = "queue-msg good";
+      } catch (err) {
+        msg.textContent = (err as Error).message;
+        msg.className = "queue-msg bad";
+      }
+    });
+  }
+
   private wireForm(): void {
     const form = this.el.querySelector<HTMLFormElement>(".launch-form")!;
     const msg = this.el.querySelector<HTMLElement>(".launch-msg")!;
@@ -190,23 +255,28 @@ export class Dashboard {
         this.pushLog({ kind: "info", instance: "-", text: `backend → ${e.label}${e.isReal ? " (REAL)" : ""}` });
         break;
       case "sweep":
-        this.onSweepEvent(e);
+      case "queue":
+        this.onFanOutEvent(e);
         break;
     }
   }
 
-  private onSweepEvent(e: Extract<SpawnEvent, { type: "sweep" }>): void {
+  private onFanOutEvent(e: Extract<SpawnEvent, { type: "sweep" | "queue" }>): void {
+    const noun = e.type === "queue" ? "queue" : "sweep";
+    const unit = e.type === "queue" ? "jobs" : "members";
     const prev = this.sweeps.get(e.id);
-    this.sweeps.set(e.id, { name: e.name, summary: e.summary, done: e.done });
+    this.sweeps.set(e.id, { kind: e.type, name: e.name, summary: e.summary, done: e.done });
     // Log the first sighting and completion, not every intermediate tick.
     if (!prev) {
-      this.pushLog({ kind: "info", instance: e.name, text: `sweep ${e.id} started — ${e.summary.total} members` });
+      this.pushLog({ kind: "info", instance: e.name, text: `${noun} ${e.id} started — ${e.summary.total} ${unit}` });
     } else if (e.done && !prev.done) {
-      const { completed, failed } = e.summary;
+      const { completed, failed, skipped } = e.summary;
       this.pushLog({
         kind: failed ? "warning" : "info",
         instance: e.name,
-        text: `sweep ${e.id} done — ${completed} completed${failed ? `, ${failed} failed` : ""}`,
+        text: `${noun} ${e.id} done — ${completed} completed${failed ? `, ${failed} failed` : ""}${
+          skipped ? `, ${skipped} skipped` : ""
+        }`,
       });
     }
     this.renderSweeps();
@@ -221,19 +291,26 @@ export class Dashboard {
     // Newest last-updated first isn't tracked; insertion order is fine + stable.
     for (const [id, v] of this.sweeps) {
       const s = v.summary;
-      const launched = s.running + s.completed + s.failed;
-      const pct = s.total > 0 ? Math.round((launched / s.total) * 100) : 0;
+      // "launched" = anything that has left the not-yet-started states. Skipped
+      // members were never launched but are settled, so they count toward done.
+      const settled = s.completed + s.failed + s.skipped;
+      const pct = s.total > 0 ? Math.round(((s.running + settled) / s.total) * 100) : 0;
+      const parts = [
+        `${s.running} running`,
+        `${s.completed} completed`,
+        ...(s.blocked ? [`${s.blocked} blocked`] : []),
+        ...(s.failed ? [`${s.failed} failed`] : []),
+        ...(s.skipped ? [`${s.skipped} skipped`] : []),
+      ];
       const card = document.createElement("div");
-      card.className = "sweep-card" + (v.done ? " done" : "");
+      card.className = `sweep-card ${v.kind}` + (v.done ? " done" : "");
       card.innerHTML = `
         <div class="row1">
           <span class="name">${escapeHtml(v.name)}</span>
-          <span class="id">${escapeHtml(id)}</span>
+          <span class="id">${escapeHtml(v.kind)} · ${escapeHtml(id)}</span>
           <span class="state">${v.done ? "done" : "running"}</span>
         </div>
-        <div class="meta">${launched}/${s.total} launched · ${s.running} running · ${s.completed} completed${
-          s.failed ? ` · ${s.failed} failed` : ""
-        }${s.pending ? ` · ${s.pending} pending` : ""}</div>
+        <div class="meta">${s.total} ${v.kind === "queue" ? "jobs" : "members"} · ${parts.join(" · ")}</div>
         <div class="meter sweep"><span style="width:${pct}%"></span></div>`;
       this.sweepsEl.appendChild(card);
     }

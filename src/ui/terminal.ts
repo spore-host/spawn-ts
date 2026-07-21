@@ -81,7 +81,7 @@ export class Terminal {
     }
     for (const l of res.lines) this.print(l, res.error ? "err" : "out");
     // Any mutating command should be reflected in the GUI: refresh the client.
-    if (/^(spawn\s+)?(launch|terminate|stop|start|hibernate|extend|sweep)\b/.test(line)) {
+    if (/^(spawn\s+)?(launch|terminate|stop|start|hibernate|extend|sweep|queue)\b/.test(line)) {
       await this.client.refresh();
     }
   }

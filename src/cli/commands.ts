@@ -8,6 +8,7 @@ import type { SpawnClient } from "../core/client.js";
 import type { LaunchSpec, ManagedInstance } from "../core/types.js";
 import type { ParamSpec, ParamSet } from "../core/params.js";
 import { parseGridShorthand } from "../core/params.js";
+import { parseQueueConfig } from "../core/queue.js";
 import { parseDuration, formatDuration, humanRemaining } from "../core/duration.js";
 import { accumulatedCost } from "../core/lifecycle.js";
 import { tag } from "../core/tags.js";
@@ -80,6 +81,8 @@ export async function runCommand(line: string, ctx: ShellCtx): Promise<CmdResult
       return terminate(parsed, ctx);
     case "sweep":
       return sweep(parsed, ctx);
+    case "queue":
+      return queue(parsed, ctx);
     default:
       return err(`unknown command: ${parsed.command}`, `try "help"`);
   }
@@ -104,6 +107,7 @@ function help(): CmdResult {
     "  hibernate <name>        hibernate (RAM to disk)",
     "  terminate <name> [-y]   terminate (permanent)",
     "  sweep <spec> [flags]    fan a parameter grid out into many instances",
+    "  queue <config> [flags]  launch a DAG of jobs as capacity/turn allows",
     "",
     "launch flags: --instance-type --region --ttl --idle-timeout --hibernate-on-idle",
     "              --cost-limit --price-per-hour --on-complete --spot --ami --key",
@@ -111,6 +115,10 @@ function help(): CmdResult {
     "sweep: <spec> is inline JSON ({\"params\":[...]} or {\"grid\":{...}}), or use",
     "       --grid 'lr=0.1,0.2 bs=32,64' for a quick cartesian product.",
     "       flags: --name --max-concurrent --launch-delay --ttl (default applied to all)",
+    "",
+    "queue: <config> is an inline JSON queue (jobs[] with depends_on/retry/timeout),",
+    "       one instance per job launched in dependency order.",
+    "       flags: --max-concurrent --launch-delay",
     "",
     "durations use Go form: 4h, 90m, 1h30m, 45s",
   );
@@ -370,6 +378,49 @@ async function sweep(p: ParsedArgs, ctx: ShellCtx): Promise<CmdResult> {
       `${delayMs > 0 ? `, ${formatDuration(delayMs)} between launches` : ""}`,
     `  launched ${s.running}, pending ${s.pending}${s.failed ? `, failed ${s.failed}` : ""}`,
     "  watch progress with 'list' (spawn:sweep-* tags are set on each instance)",
+  );
+}
+
+async function queue(p: ParsedArgs, ctx: ShellCtx): Promise<CmdResult> {
+  if (!ctx.client) {
+    return err("queue: not available in this shell (no SpawnClient bound)");
+  }
+  const json = p.positionals[0] ?? flagStr(p.flags, "config");
+  if (!json) {
+    return err(
+      "queue: provide an inline JSON queue config",
+      '  e.g. spawn queue \'{"jobs":[{"job_id":"a","command":"echo hi","timeout":"5m"}]}\'',
+    );
+  }
+
+  let cfg;
+  try {
+    cfg = parseQueueConfig(json);
+  } catch (e) {
+    return err(`queue: ${(e as Error).message}`);
+  }
+
+  const maxConcurrent = Number(flagStr(p.flags, "max-concurrent", "0")) || 0;
+  const delayMs = (() => {
+    const raw = flagStr(p.flags, "launch-delay");
+    return raw ? parseDuration(raw) ?? 0 : 0;
+  })();
+
+  let q;
+  try {
+    q = ctx.client.startQueue(cfg, { maxConcurrent, launchDelayMs: delayMs });
+  } catch (e) {
+    return err(`queue: ${(e as Error).message}`);
+  }
+
+  const s = q.summary;
+  return ok(
+    `queue ${q.id} — ${q.size} job${q.size === 1 ? "" : "s"} (${cfg.onFailure ?? "continue"} on failure)`,
+    `  order: ${q.order.join(" → ")}`,
+    `  ${maxConcurrent > 0 ? `max ${maxConcurrent} at a time` : "all eligible at once"}` +
+      `${delayMs > 0 ? `, ${formatDuration(delayMs)} between launches` : ""}`,
+    `  launched ${s.running}, blocked ${s.blocked}${s.failed ? `, failed ${s.failed}` : ""}`,
+    "  watch progress with 'list' (spawn:sweep-* tags mark queue membership)",
   );
 }
 
