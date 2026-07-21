@@ -8,6 +8,8 @@ Pre-1.0, breaking changes bump the MINOR version.
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-07-20
+
 ### Added
 - **Batch job queues** (`spawn queue`, issue #5) — launch a DAG of jobs, one
   instance per job, as dependencies complete and capacity allows. Built on the
@@ -73,4 +75,5 @@ Pre-1.0, breaking changes bump the MINOR version.
 - **Tests** — lifecycle, client end-to-end, CLI, and live integration tests
   against a substrate emulator (auto-skip when unreachable).
 
-[Unreleased]: https://github.com/spore-host/spawn-ts/commits/main
+[Unreleased]: https://github.com/spore-host/spawn-ts/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/spore-host/spawn-ts/releases/tag/v0.2.0
