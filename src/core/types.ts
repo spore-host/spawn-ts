@@ -38,6 +38,15 @@ export interface LaunchSpec {
   pricePerHour: number;
 
   /**
+   * Idle-SSH-shell auto-logout, in ms. 0 = disabled. Distinct from the idle
+   * *instance* lifecycle (idleTimeoutMs): this disconnects idle login sessions
+   * on the box (sshd ClientAlive + a readonly TMOUT), it does not stop/terminate
+   * the instance. A bootstrap/userdata feature — enforced on the instance, not
+   * by the in-app lifecycle engine. Written to spawn:session-timeout.
+   */
+  sessionTimeoutMs: number;
+
+  /**
    * Parameter-sweep membership (optional). Set when this instance is one member
    * of a `spawn sweep` fan-out; written to spawn:sweep-* tags so the whole sweep
    * is discoverable and wire-compatible with the Go tool. Undefined for a plain

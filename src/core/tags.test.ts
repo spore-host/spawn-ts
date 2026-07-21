@@ -31,6 +31,7 @@ function baseSpec(sweep?: SweepMembership): LaunchSpec {
     completionFile: "",
     completionDelayMs: 0,
     pricePerHour: 0,
+    sessionTimeoutMs: 0,
     sweep,
   };
 }
@@ -75,5 +76,13 @@ describe("sweep tags", () => {
     expect(buildLaunchTags(baseSpec(), 0)[tag("sweep-id")]).toBeUndefined();
     const withSweep = buildLaunchTags(baseSpec(membership), 0);
     expect(withSweep[tag("sweep-id")]).toBe("hp-20260720-000000");
+  });
+});
+
+describe("session-timeout tag", () => {
+  it("writes spawn:session-timeout as a Go duration when set, omits it at 0", () => {
+    expect(buildLaunchTags(baseSpec(), 0)[tag("session-timeout")]).toBeUndefined();
+    const s = { ...baseSpec(), sessionTimeoutMs: 30 * 60_000 };
+    expect(buildLaunchTags(s, 0)[tag("session-timeout")]).toBe("30m");
   });
 });

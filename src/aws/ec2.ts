@@ -78,6 +78,7 @@ export class EC2Provider implements Provider {
         username: this.opts.username ?? "ec2-user",
         publicKey: this.opts.publicKey,
         command: spec.onComplete ? undefined : undefined, // workload wiring is a later feature
+        sessionTimeoutMs: spec.sessionTimeoutMs,
       }),
     );
 

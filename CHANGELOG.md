@@ -8,6 +8,14 @@ Pre-1.0, breaking changes bump the MINOR version.
 
 ## [Unreleased]
 
+### Added
+- **Session timeout** (idle-SSH-shell auto-logout, #22) — `--session-timeout` /
+  `LaunchInput.sessionTimeout` writes `spawn:session-timeout` and injects an sshd
+  `ClientAlive` config + a `readonly TMOUT` in the bootstrap (`src/aws/userdata.ts`),
+  mirroring the Go tool. Disconnects idle SSH login sessions; distinct from the
+  idle-*instance* lifecycle (which stops/terminates the box). Exposed in the CLI
+  `launch` flags and the dashboard launch form.
+
 ## [0.3.0] — 2026-07-21
 
 ### Fixed

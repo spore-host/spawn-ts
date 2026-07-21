@@ -62,6 +62,7 @@ describe("EC2Provider against live substrate", () => {
         completionFile: "",
         completionDelayMs: 0,
         pricePerHour: 0.153,
+        sessionTimeoutMs: 0,
       },
       T0,
     );

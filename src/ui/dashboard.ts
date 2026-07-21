@@ -80,6 +80,7 @@ export class Dashboard {
           <div><label>instance type</label><input name="instanceType" value="c6a.xlarge" /></div>
           <div><label>ttl</label><input name="ttl" value="4h" placeholder="4h / 0 = none" /></div>
           <div><label>idle timeout</label><input name="idleTimeout" placeholder="30m / blank" /></div>
+          <div><label>session timeout <span class="picker-hint">(idle SSH logout)</span></label><input name="sessionTimeout" placeholder="30m / blank" /></div>
           <div><label>on-complete</label>
             <select name="onComplete">
               <option value="">(none)</option>
@@ -225,6 +226,7 @@ export class Dashboard {
           instanceType: s("instanceType") || undefined,
           ttl: s("ttl") || 0,
           idleTimeout: s("idleTimeout") || 0,
+          sessionTimeout: s("sessionTimeout") || 0,
           onComplete: (s("onComplete") as LifecycleAction | "") || "",
           pricePerHour: numOr("pricePerHour", 0),
           costLimit: numOr("costLimit", 0),
