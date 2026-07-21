@@ -33,6 +33,16 @@ export interface BootstrapOptions {
    * does NOT stop/terminate the instance (that's the idle-instance lifecycle).
    */
   sessionTimeoutMs?: number;
+  /**
+   * PEM-encoded spore.host signing PUBLIC key. When set, the bootstrap verifies
+   * the downloaded spored's detached signature against this key (fail-closed)
+   * before installing — proving authenticity, not just integrity. The key is
+   * carried by the launcher (trusted), NOT served from the binary's S3 bucket,
+   * so a bucket compromise can't forge it (spore-host#440). Absent = checksum
+   * only (guards corruption), matching the Go tool's default when no key is
+   * compiled in.
+   */
+  sporedSigningPublicKey?: string;
 }
 
 /**
@@ -63,6 +73,11 @@ chmod 600 /etc/spawn/command
   // connections, and a readonly TMOUT in /etc/profile.d/ auto-logs-out idle
   // shells. Seconds are computed here so the script needs no duration parser.
   const sessionBlock = buildSessionTimeoutBlock(opts.sessionTimeoutMs ?? 0);
+
+  // Optional publisher-signature verification of the spored binary. Empty when
+  // no signing key is supplied (checksum-only, the default). Runs after the
+  // SHA256 check and before the atomic install; fail-closed on any mismatch.
+  const sigVerifyBlock = buildSigVerifyBlock(opts.sporedSigningPublicKey);
 
   return `#!/bin/bash
 set -e
@@ -122,7 +137,7 @@ if curl -f -s -o /tmp/spored.sha256 "$CHECKSUM_URL" 2>/dev/null; then
     rm -f "$SPORED_TMP"; exit 1
   fi
 fi
-
+${sigVerifyBlock}
 # Atomic install — rename works even if an old spored is executing (#27).
 chmod +x "$SPORED_TMP"
 mv -f "$SPORED_TMP" /usr/local/bin/spored
@@ -155,6 +170,42 @@ EOF
 systemctl daemon-reload
 systemctl enable spored
 systemctl start spored
+`;
+}
+
+/**
+ * Bootstrap fragment that verifies the spored binary's detached signature
+ * against a supplied signing PUBLIC key before install. Empty when no key is
+ * given (checksum-only default). Ports the Go bootstrap's SPORED_SIG_VERIFY
+ * path (pkg/launcher/bootstrap.go): download `<binary>.sig` next to the
+ * checksum URL, base64-decode to DER, `openssl dgst -sha256 -verify`,
+ * fail-closed on missing/invalid signature.
+ */
+function buildSigVerifyBlock(publicKeyPem?: string): string {
+  if (!publicKeyPem || !publicKeyPem.trim()) return "";
+  return `
+# Publisher-signature verification (spore-host#440). The checksum above only
+# proves the download wasn't corrupted (it's served from the same bucket as the
+# binary); this proves authenticity against a key carried by the launcher, not
+# the bucket. Fail-closed.
+mkdir -p /etc/spawn
+cat > /etc/spawn/spored-signing-key.pem <<'EOFSPOREDPUBKEY'
+${publicKeyPem.trim()}
+EOFSPOREDPUBKEY
+SIG_URL="\${CHECKSUM_URL%.sha256}.sig"
+if ! curl -f -s -o /tmp/spored.sig "$SIG_URL"; then
+  echo "spored signature not found at $SIG_URL — refusing to run an unsigned binary" >&2
+  rm -f "$SPORED_TMP"; exit 1
+fi
+# The .sig is base64-encoded DER (ECDSA_SHA_256); decode to raw DER for openssl.
+base64 -d /tmp/spored.sig > /tmp/spored.sig.der 2>/dev/null || cp /tmp/spored.sig /tmp/spored.sig.der
+if openssl dgst -sha256 -verify /etc/spawn/spored-signing-key.pem -signature /tmp/spored.sig.der "$SPORED_TMP" >/dev/null 2>&1; then
+  echo "spored signature verified (spore.host)"
+else
+  echo "spored signature verification FAILED — refusing to run spored" >&2
+  rm -f "$SPORED_TMP" /tmp/spored.sig /tmp/spored.sig.der; exit 1
+fi
+rm -f /tmp/spored.sig /tmp/spored.sig.der
 `;
 }
 

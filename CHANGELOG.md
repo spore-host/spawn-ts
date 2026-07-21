@@ -9,6 +9,12 @@ Pre-1.0, breaking changes bump the MINOR version.
 ## [Unreleased]
 
 ### Added
+- **Optional spored signature verification** (#26) — an `EC2Provider`
+  `sporedSigningPublicKey` (PEM) makes the bootstrap verify the downloaded
+  `spored`'s detached signature (`openssl`, fail-closed) against a launcher-held
+  key before install, proving authenticity — not just the SHA256 checksum
+  (integrity). Ports the Go bootstrap's `SPORED_SIG_VERIFY` path. Default stays
+  checksum-only, matching the Go tool when no key is compiled in.
 - **Lifecycle-hook tags** (#25) — emit the `spawn:*` tags for daemon-enforced
   hooks so an instance spawn-ts launches is honored by a real spored (spawn-ts,
   a browser launcher, can't run them itself): `pre-stop` (+timeout),
