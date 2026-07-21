@@ -10,6 +10,7 @@ import {
   EC2Client,
   RunInstancesCommand,
   DescribeInstancesCommand,
+  DescribeImagesCommand,
   TerminateInstancesCommand,
   StopInstancesCommand,
   StartInstancesCommand,
@@ -36,6 +37,13 @@ export interface EC2ProviderOptions {
   endpoint?: string;
   /** Default SSH public key to bake into launches (optional). */
   publicKey?: string;
+  /**
+   * IAM instance profile (name or ARN) attached to launched instances. spored
+   * needs it to read spawn:* tags (ec2:DescribeTags/DescribeInstances) and to
+   * self-terminate (ec2:TerminateInstances/StopInstances on spawn:managed=true).
+   * Without it, an instance launches but can never wind itself down.
+   */
+  iamInstanceProfile?: string;
   /** Login username for bootstrap (default ec2-user). */
   username?: string;
 }
@@ -73,15 +81,27 @@ export class EC2Provider implements Provider {
       }),
     );
 
+    // Real AWS requires an AMI; resolve the latest AL2023 for the instance's
+    // architecture when the caller didn't supply one. (substrate synthesizes an
+    // image, so a resolve there is skipped by passing an explicit ami.)
+    const imageId = spec.ami || (await this.resolveAmi(spec.instanceType));
+
     const res = await this.client.send(
       new RunInstancesCommand({
-        ImageId: spec.ami, // required for real AWS; substrate may synthesize one
+        ImageId: imageId,
         InstanceType: spec.instanceType as any,
         MinCount: 1,
         MaxCount: 1,
         KeyName: spec.keyPair || undefined,
         UserData: userData,
         InstanceMarketOptions: spec.spot ? { MarketType: "spot" } : undefined,
+        // spored's self-lifecycle calls require this role. A profile ARN starts
+        // with "arn:"; anything else is treated as a profile name.
+        IamInstanceProfile: this.opts.iamInstanceProfile
+          ? this.opts.iamInstanceProfile.startsWith("arn:")
+            ? { Arn: this.opts.iamInstanceProfile }
+            : { Name: this.opts.iamInstanceProfile }
+          : undefined,
         TagSpecifications: [
           { ResourceType: "instance", Tags: tagList },
         ],
@@ -158,6 +178,32 @@ export class EC2Provider implements Provider {
     );
   }
 
+  /**
+   * Resolve the newest Amazon Linux 2023 AMI for an instance type's architecture
+   * via DescribeImages (owner: amazon), so a real launch needs no hardcoded AMI.
+   * Graviton (g/most-recent arm families) → arm64, else x86_64.
+   */
+  private async resolveAmi(instanceType: string): Promise<string> {
+    const arch = archForInstanceType(instanceType);
+    const res = await this.client.send(
+      new DescribeImagesCommand({
+        Owners: ["amazon"],
+        Filters: [
+          { Name: "name", Values: ["al2023-ami-2023.*-kernel-6.1-" + arch] },
+          { Name: "state", Values: ["available"] },
+          { Name: "architecture", Values: [arch] },
+        ],
+      }),
+    );
+    const newest = (res.Images ?? [])
+      .filter((i) => i.ImageId && i.CreationDate)
+      .sort((a, b) => (a.CreationDate! < b.CreationDate! ? 1 : -1))[0];
+    if (!newest?.ImageId) {
+      throw new Error(`could not resolve an AL2023 ${arch} AMI in ${this.opts.region}`);
+    }
+    return newest.ImageId;
+  }
+
   // ---- mapping helpers ----
 
   private toManaged(
@@ -191,6 +237,22 @@ export class EC2Provider implements Provider {
       ...cfg,
     };
   }
+}
+
+/**
+ * Best-effort CPU architecture for an instance type, for AMI selection. AWS
+ * Graviton families carry a `g` in the family suffix (m7g, c7gn, r8g, t4g,
+ * hpc7g, im4gn, is4gen, x2gd) and the accelerator families trn/inf are arm64
+ * hosts too. Everything else is x86_64. Errs toward x86_64 when unsure — a
+ * mismatch is caught at launch (AMI arch filter) rather than mis-billed.
+ */
+export function archForInstanceType(instanceType: string): "arm64" | "x86_64" {
+  const family = instanceType.split(".")[0];
+  if (/^(trn|inf)\d/.test(family)) return "arm64";
+  // The generation-suffix letters after the digit; a "g" marks Graviton.
+  const m = family.match(/^[a-z]+\d+([a-z]*)/);
+  const suffix = m?.[1] ?? "";
+  return suffix.includes("g") ? "arm64" : "x86_64";
 }
 
 function mapState(name?: string): InstanceState {
