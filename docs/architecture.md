@@ -44,7 +44,13 @@ tool; the GUI and terminal are two consumers of that library.
 - `ec2.ts` — `EC2Provider` over `@aws-sdk/client-ec2` v3; targets real AWS or a
   substrate emulator by endpoint.
 - `userdata.ts` — the instance bootstrap that installs `spored`, so instances
-  self-terminate even with the browser closed.
+  self-terminate even with the browser closed. It downloads the arch-appropriate
+  `spored` from the regional S3 bucket and **always verifies a SHA256 checksum**
+  (guards corruption). Optionally, when an `EC2Provider` is given a
+  `sporedSigningPublicKey`, it also **verifies a publisher signature** (`openssl`
+  against a key carried by the launcher, not the binary's bucket — fail-closed),
+  proving authenticity. Checksum-only is the default, matching the Go tool when
+  no signing key is compiled in.
 
 ### `src/cli`
 

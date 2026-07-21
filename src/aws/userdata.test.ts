@@ -79,6 +79,33 @@ describe("buildLinuxBootstrap", () => {
     expect(s).not.toContain("releases/latest/download");
     expect(s).not.toContain("github.com/spore-host/spawn/releases");
   });
+
+  it("omits signature verification by default (checksum only)", () => {
+    const s = buildLinuxBootstrap({ username: "ec2-user" });
+    expect(s).not.toContain("spored-signing-key.pem");
+    expect(s).not.toContain("openssl dgst");
+    expect(s).toContain("sha256sum"); // checksum still present
+  });
+
+  it("adds a fail-closed signature-verify block when a signing key is supplied", () => {
+    const pem = "-----BEGIN PUBLIC KEY-----\nMFkwEwYHtestkey==\n-----END PUBLIC KEY-----";
+    const s = buildLinuxBootstrap({ username: "ec2-user", sporedSigningPublicKey: pem });
+    expect(s).toContain("/etc/spawn/spored-signing-key.pem");
+    expect(s).toContain("MFkwEwYHtestkey==");
+    expect(s).toContain('SIG_URL="${CHECKSUM_URL%.sha256}.sig"');
+    expect(s).toContain("openssl dgst -sha256 -verify");
+    // Fail-closed: refuses on a missing sig and on a bad sig.
+    expect(s).toContain("refusing to run an unsigned binary");
+    expect(s).toContain("signature verification FAILED");
+    // Runs before the atomic install (verify then mv).
+    expect(s.indexOf("openssl dgst")).toBeLessThan(s.indexOf("/usr/local/bin/spored"));
+  });
+
+  it("treats a blank signing key as disabled", () => {
+    expect(buildLinuxBootstrap({ username: "ec2-user", sporedSigningPublicKey: "   " })).not.toContain(
+      "spored-signing-key.pem",
+    );
+  });
 });
 
 describe("encodeUserData", () => {

@@ -190,6 +190,24 @@ describe("EC2Provider.launch", () => {
     await provider().launch(baseSpec, T0);
     expect(sent.some((c) => c instanceof DescribeImagesCommand)).toBe(false);
   });
+
+  it("threads the signing key into the bootstrap user-data when configured", async () => {
+    handler = () => ({ Instances: [{ InstanceId: "i-1", State: { Name: "pending" } }] });
+    const pem = "-----BEGIN PUBLIC KEY-----\nMFkwEwYHkeymaterial==\n-----END PUBLIC KEY-----";
+    await provider({ sporedSigningPublicKey: pem }).launch(baseSpec, T0);
+    const b64 = lastOf(RunInstancesCommand).input.UserData!;
+    const script = Buffer.from(b64, "base64").toString("utf8");
+    expect(script).toContain("spored-signing-key.pem");
+    expect(script).toContain("MFkwEwYHkeymaterial==");
+    expect(script).toContain("openssl dgst -sha256 -verify");
+  });
+
+  it("omits signature verification when no key is configured", async () => {
+    handler = () => ({ Instances: [{ InstanceId: "i-1", State: { Name: "pending" } }] });
+    await provider().launch(baseSpec, T0);
+    const script = Buffer.from(lastOf(RunInstancesCommand).input.UserData!, "base64").toString("utf8");
+    expect(script).not.toContain("spored-signing-key.pem");
+  });
 });
 
 describe("archForInstanceType", () => {

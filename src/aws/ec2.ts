@@ -46,6 +46,12 @@ export interface EC2ProviderOptions {
   iamInstanceProfile?: string;
   /** Login username for bootstrap (default ec2-user). */
   username?: string;
+  /**
+   * PEM spore.host signing public key. When set, launched instances verify the
+   * spored binary's signature before running it (fail-closed). Absent = the
+   * bootstrap relies on the SHA256 checksum only. See userdata.ts.
+   */
+  sporedSigningPublicKey?: string;
 }
 
 export class EC2Provider implements Provider {
@@ -79,6 +85,7 @@ export class EC2Provider implements Provider {
         publicKey: this.opts.publicKey,
         command: spec.onComplete ? undefined : undefined, // workload wiring is a later feature
         sessionTimeoutMs: spec.sessionTimeoutMs,
+        sporedSigningPublicKey: this.opts.sporedSigningPublicKey,
       }),
     );
 
