@@ -227,3 +227,65 @@ describe("Dashboard meters and log", () => {
     expect(nameEl.textContent).toBe("<script>x</script>");
   });
 });
+
+function sweepForm(dash: Dashboard): HTMLFormElement {
+  return dash.el.querySelector<HTMLFormElement>(".sweep-form")!;
+}
+
+function setSweepField(dash: Dashboard, name: string, value: string) {
+  (sweepForm(dash).elements.namedItem(name) as HTMLInputElement).value = value;
+}
+
+async function submitSweep(dash: Dashboard) {
+  sweepForm(dash).dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
+  await new Promise((r) => setTimeout(r, 0));
+}
+
+describe("Dashboard sweep form", () => {
+  beforeEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  it("starts a sweep from the grid form and renders a progress card", async () => {
+    const { client, dash } = setup();
+    setSweepField(dash, "grid", "alpha=0.1,0.2 beta=1,2");
+    setSweepField(dash, "sweepName", "hp");
+    setSweepField(dash, "ttl", "30m");
+    await submitSweep(dash);
+
+    const msg = dash.el.querySelector(".sweep-msg")!;
+    expect(msg.textContent).toContain("4 members");
+    expect(msg.className).toContain("good");
+
+    await client.step(1000);
+    const card = dash.el.querySelector(".sweep-card")!;
+    expect(card).toBeTruthy();
+    expect(card.textContent).toContain("hp");
+    expect(card.textContent).toContain("4/4 launched");
+    // Every launched instance is tagged into the sweep.
+    expect((await client.refresh()).every((i) => i.sweep?.name === "hp")).toBe(true);
+  });
+
+  it("shows a validation error for a malformed grid without launching", async () => {
+    const { client, dash } = setup();
+    setSweepField(dash, "grid", "bogus");
+    await submitSweep(dash);
+    const msg = dash.el.querySelector(".sweep-msg")!;
+    expect(msg.className).toContain("bad");
+    expect(client.activeSweeps()).toHaveLength(0);
+  });
+
+  it("logs sweep start and completion", async () => {
+    const { client, dash } = setup();
+    setSweepField(dash, "grid", "n=1");
+    setSweepField(dash, "ttl", "5m");
+    await submitSweep(dash);
+    await client.step(1000);
+    const log = dash.el.querySelector(".log")!;
+    expect(log.textContent).toContain("started");
+
+    // Drive past the TTL so the single member terminates → sweep done.
+    for (let i = 0; i < 3; i++) await client.step(6 * 60_000);
+    expect(log.textContent).toContain("done");
+  });
+});

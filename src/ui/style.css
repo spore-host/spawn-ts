@@ -181,13 +181,13 @@ body {
 .empty { color: var(--muted); font-style: italic; }
 
 /* Launch form */
-.launch-form .grid2 {
+.launch-form .grid2, .sweep-form .grid2 {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 8px 12px;
 }
-.launch-form label { display: block; font-size: 10px; color: var(--muted); margin-bottom: 3px; text-transform: uppercase; letter-spacing: .05em; }
-.launch-form input, .launch-form select {
+.launch-form label, .sweep-form label { display: block; font-size: 10px; color: var(--muted); margin-bottom: 3px; text-transform: uppercase; letter-spacing: .05em; }
+.launch-form input, .launch-form select, .sweep-form input, .sweep-form select {
   width: 100%; background: var(--bg); color: var(--fg);
   border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px;
   font-family: var(--mono); font-size: 12px;
@@ -203,3 +203,27 @@ body {
 .launch-msg { margin-left: 10px; font-size: 11px; }
 .launch-msg.good { color: var(--green); }
 .launch-msg.bad { color: var(--red); }
+
+/* Parameter sweep: reuse the launch-form grid + button styling, add a progress card. */
+.sweep-form { display: block; }
+.sweep-btn {
+  margin-top: 10px; background: var(--accent); color: #0d1117; border: none;
+  border-radius: 6px; padding: 7px 18px; font-family: var(--mono); font-weight: 700; cursor: pointer;
+}
+.sweep-btn:hover { filter: brightness(1.1); }
+.sweep-msg { margin-left: 10px; font-size: 11px; }
+.sweep-msg.good { color: var(--green); }
+.sweep-msg.bad { color: var(--red); }
+.sweeps { margin-top: 10px; }
+.sweep-card {
+  border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-top: 8px;
+  background: rgba(88,166,255,.04);
+}
+.sweep-card.done { opacity: .7; }
+.sweep-card .row1 { display: flex; align-items: baseline; gap: 8px; }
+.sweep-card .name { font-weight: 700; color: #fff; }
+.sweep-card .id { color: var(--muted); font-size: 11px; }
+.sweep-card .state { margin-left: auto; padding: 1px 8px; border-radius: 10px; font-size: 11px; background: rgba(88,166,255,.15); color: var(--accent); }
+.sweep-card.done .state { background: rgba(63,185,80,.15); color: var(--green); }
+.sweep-card .meta { color: var(--muted); font-size: 11px; margin-top: 4px; }
+.meter.sweep > span { background: var(--accent); }

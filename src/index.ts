@@ -29,12 +29,36 @@ export type {
   LifecycleDecision,
   LifecycleWarning,
   TickResult,
+  SweepMembership,
 } from "./core/types.js";
 
 export { evaluate, accumulatedCost } from "./core/lifecycle.js";
 export type { TickInput } from "./core/lifecycle.js";
-export { buildLaunchTags, decodeConfigTags, isManaged, tag, TAG_PREFIX } from "./core/tags.js";
+export {
+  buildLaunchTags,
+  buildSweepTags,
+  decodeConfigTags,
+  decodeSweepTags,
+  isManaged,
+  tag,
+  TAG_PREFIX,
+  PARAM_TAG_PREFIX,
+} from "./core/tags.js";
 export { parseDuration, formatDuration, humanRemaining } from "./core/duration.js";
+
+// Parameter sweeps (issue #4) + the shared fan-out engine (reused by #5).
+export { resolveMembers, expandGrid } from "./core/params.js";
+export type { ParamSpec, ParamSet, ParamValue, ResolvedMember } from "./core/params.js";
+export { FanOut } from "./core/fanout.js";
+export type {
+  FanOutMember,
+  FanOutMemberState,
+  FanOutMemberStatus,
+  FanOutOptions,
+  FanOutSummary,
+} from "./core/fanout.js";
+export { Sweep, buildSweep, generateSweepId } from "./core/sweep.js";
+export type { SweepOptions, BuiltSweep } from "./core/sweep.js";
 
 // CLI (used by the terminal pane, but reusable for a headless REPL/test).
 export { runCommand } from "./cli/commands.js";

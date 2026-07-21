@@ -24,7 +24,7 @@ import type {
   LaunchSpec,
   ManagedInstance,
 } from "../core/types.js";
-import { buildLaunchTags, decodeConfigTags, isManaged, tag } from "../core/tags.js";
+import { buildLaunchTags, decodeConfigTags, decodeSweepTags, isManaged, tag } from "../core/tags.js";
 import { buildLinuxBootstrap, encodeUserData } from "./userdata.js";
 
 export interface EC2ProviderOptions {
@@ -187,6 +187,7 @@ export class EC2Provider implements Provider {
       tags,
       lastActivityMs: cfg.launchTimeMs, // real activity comes from spored tags; approximate here
       cpuPercent: 0,
+      sweep: decodeSweepTags(tags),
       ...cfg,
     };
   }

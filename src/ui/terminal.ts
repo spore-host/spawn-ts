@@ -70,6 +70,7 @@ export class Terminal {
       provider: this.client.activeProvider,
       now: () => this.client.now(),
       confirm: this.confirmFn,
+      client: this.client,
     };
     let res: CmdResult;
     try {
@@ -80,7 +81,7 @@ export class Terminal {
     }
     for (const l of res.lines) this.print(l, res.error ? "err" : "out");
     // Any mutating command should be reflected in the GUI: refresh the client.
-    if (/^(spawn\s+)?(launch|terminate|stop|start|hibernate|extend)\b/.test(line)) {
+    if (/^(spawn\s+)?(launch|terminate|stop|start|hibernate|extend|sweep)\b/.test(line)) {
       await this.client.refresh();
     }
   }

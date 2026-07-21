@@ -4,7 +4,10 @@
 // handlers work in the browser terminal and in tests.
 
 import type { Provider } from "../core/provider.js";
+import type { SpawnClient } from "../core/client.js";
 import type { LaunchSpec, ManagedInstance } from "../core/types.js";
+import type { ParamSpec, ParamSet } from "../core/params.js";
+import { parseGridShorthand } from "../core/params.js";
 import { parseDuration, formatDuration, humanRemaining } from "../core/duration.js";
 import { accumulatedCost } from "../core/lifecycle.js";
 import { tag } from "../core/tags.js";
@@ -17,6 +20,12 @@ export interface ShellCtx {
   now: () => number;
   /** Confirm a destructive action; UI supplies a prompt. `-y` bypasses. */
   confirm: (msg: string) => Promise<boolean>;
+  /**
+   * The SpawnClient, when the shell is bound to one (the terminal always is).
+   * Required by `sweep`, which registers a monitor-driven fan-out. Commands that
+   * only touch the provider don't need it.
+   */
+  client?: SpawnClient;
 }
 
 /** Result of running a command: text output + whether it errored. */
@@ -69,6 +78,8 @@ export async function runCommand(line: string, ctx: ShellCtx): Promise<CmdResult
       return lifecycleOp("hibernate", parsed, ctx);
     case "terminate":
       return terminate(parsed, ctx);
+    case "sweep":
+      return sweep(parsed, ctx);
     default:
       return err(`unknown command: ${parsed.command}`, `try "help"`);
   }
@@ -92,9 +103,14 @@ function help(): CmdResult {
     "  stop | start <name>     stop / start an instance",
     "  hibernate <name>        hibernate (RAM to disk)",
     "  terminate <name> [-y]   terminate (permanent)",
+    "  sweep <spec> [flags]    fan a parameter grid out into many instances",
     "",
     "launch flags: --instance-type --region --ttl --idle-timeout --hibernate-on-idle",
     "              --cost-limit --price-per-hour --on-complete --spot --ami --key",
+    "",
+    "sweep: <spec> is inline JSON ({\"params\":[...]} or {\"grid\":{...}}), or use",
+    "       --grid 'lr=0.1,0.2 bs=32,64' for a quick cartesian product.",
+    "       flags: --name --max-concurrent --launch-delay --ttl (default applied to all)",
     "",
     "durations use Go form: 4h, 90m, 1h30m, 45s",
   );
@@ -201,6 +217,15 @@ async function status(p: ParsedArgs, ctx: ShellCtx): Promise<CmdResult> {
     );
   }
   if (i.onComplete) lines.push(`  on-complete:  ${i.onComplete} (${i.completionFile || "signal"})`);
+  if (i.sweep) {
+    const params = Object.entries(i.sweep.parameters)
+      .map(([k, v]) => `${k}=${v}`)
+      .join(" ");
+    lines.push(
+      `  sweep:        ${i.sweep.name} [${i.sweep.index + 1}/${i.sweep.size}] ${i.sweep.id}`,
+      ...(params ? [`  params:       ${params}`] : []),
+    );
+  }
   return ok(...lines);
 }
 
@@ -277,6 +302,75 @@ async function terminate(p: ParsedArgs, ctx: ShellCtx): Promise<CmdResult> {
   }
   await ctx.provider.terminate(i.instanceId, "user request");
   return ok(`terminating ${i.name}`);
+}
+
+async function sweep(p: ParsedArgs, ctx: ShellCtx): Promise<CmdResult> {
+  if (!ctx.client) {
+    return err("sweep: not available in this shell (no SpawnClient bound)");
+  }
+
+  // Build the spec: --grid shorthand, or an inline JSON positional/flag.
+  let spec: ParamSpec;
+  const gridFlag = flagStr(p.flags, "grid");
+  const jsonSpec = p.positionals[0] ?? flagStr(p.flags, "spec");
+  if (gridFlag) {
+    const grid = parseGridShorthand(gridFlag);
+    if ("error" in grid) return err(`sweep: ${grid.error}`);
+    spec = { grid: grid.value };
+  } else if (jsonSpec) {
+    try {
+      spec = JSON.parse(jsonSpec) as ParamSpec;
+    } catch (e) {
+      return err(`sweep: invalid JSON spec — ${(e as Error).message}`);
+    }
+  } else {
+    return err(
+      "sweep: provide an inline JSON spec or --grid 'k=v1,v2 ...'",
+      '  e.g. spawn sweep --grid "lr=0.01,0.1 bs=32,64" --ttl 30m --max-concurrent 2',
+    );
+  }
+
+  // A --ttl (and friends) on the command line seeds the spec defaults so every
+  // member inherits the same cost bound unless its own param set overrides it.
+  const defaults: ParamSet = { ...(spec.defaults ?? {}) };
+  const seed = (key: string, flag: string) => {
+    const v = flagStr(p.flags, flag);
+    if (v && !(key in defaults)) defaults[key] = v;
+  };
+  seed("ttl", "ttl");
+  seed("idle_timeout", "idle-timeout");
+  seed("instance_type", "instance-type");
+  seed("region", "region");
+  const priceStr = flagStr(p.flags, "price-per-hour");
+  if (priceStr && !("price_per_hour" in defaults)) defaults.price_per_hour = Number(priceStr) || 0;
+  if (flagBool(p.flags, "spot") && !("spot" in defaults)) defaults.spot = true;
+  spec = { ...spec, defaults };
+
+  const maxConcurrent = Number(flagStr(p.flags, "max-concurrent", "0")) || 0;
+  const delayMs = (() => {
+    const raw = flagStr(p.flags, "launch-delay");
+    return raw ? parseDuration(raw) ?? 0 : 0;
+  })();
+
+  let sw;
+  try {
+    sw = ctx.client.startSweep(spec, {
+      name: flagStr(p.flags, "name") || undefined,
+      maxConcurrent,
+      launchDelayMs: delayMs,
+    });
+  } catch (e) {
+    return err(`sweep: ${(e as Error).message}`);
+  }
+
+  const s = sw.summary;
+  return ok(
+    `sweep ${sw.id} — ${sw.size} member${sw.size === 1 ? "" : "s"}`,
+    `  ${maxConcurrent > 0 ? `max ${maxConcurrent} at a time` : "all at once"}` +
+      `${delayMs > 0 ? `, ${formatDuration(delayMs)} between launches` : ""}`,
+    `  launched ${s.running}, pending ${s.pending}${s.failed ? `, failed ${s.failed}` : ""}`,
+    "  watch progress with 'list' (spawn:sweep-* tags are set on each instance)",
+  );
 }
 
 // ---- helpers ----
