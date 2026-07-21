@@ -32,6 +32,7 @@ export type {
 } from "./core/types.js";
 
 export { evaluate, accumulatedCost } from "./core/lifecycle.js";
+export type { TickInput } from "./core/lifecycle.js";
 export { buildLaunchTags, decodeConfigTags, isManaged, tag, TAG_PREFIX } from "./core/tags.js";
 export { parseDuration, formatDuration, humanRemaining } from "./core/duration.js";
 

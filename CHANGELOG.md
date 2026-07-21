@@ -9,6 +9,15 @@ Pre-1.0, breaking changes bump the MINOR version.
 ## [Unreleased]
 
 ### Added
+- **Generated TypeDoc API reference** — `npm run docs` (TypeDoc) generates a full
+  reference from the `src/index.ts` exports into `dist/api/`, published alongside
+  the Pages demo at `/api/`. Wired into `npm run build` so Pages picks it up with
+  no workflow change; `docs/api.md` links to it. Exported `TickInput` to complete
+  the public surface (issue #6).
+- **Concepts guide** (`docs/concepts.md`) — a newcomer-friendly narrative of the
+  cost-safety model: TTL vs idle vs cost limit, why TTL always terminates (never
+  stops), and the absolute-deadline invariant. Cross-linked with
+  `docs/lifecycle.md` (issue #7).
 - **Hermetic EC2Provider unit tests** (`src/aws/ec2.test.ts`) — stub the AWS SDK
   `send` so the real command classes still build their request, covering state
   mapping, tag decode, filter/market-option construction, and error paths with
