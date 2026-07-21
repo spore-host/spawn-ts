@@ -2,11 +2,13 @@ import { describe, it, expect } from "vitest";
 import {
   buildSweepTags,
   decodeSweepTags,
+  buildJobArrayTags,
+  decodeJobArrayTags,
   buildLaunchTags,
   tag,
   PARAM_TAG_PREFIX,
 } from "./tags.js";
-import type { LaunchSpec, SweepMembership } from "./types.js";
+import type { LaunchSpec, SweepMembership, JobArrayMembership } from "./types.js";
 
 const membership: SweepMembership = {
   id: "hp-20260720-000000",
@@ -76,6 +78,32 @@ describe("sweep tags", () => {
     expect(buildLaunchTags(baseSpec(), 0)[tag("sweep-id")]).toBeUndefined();
     const withSweep = buildLaunchTags(baseSpec(membership), 0);
     expect(withSweep[tag("sweep-id")]).toBe("hp-20260720-000000");
+  });
+});
+
+describe("job-array tags", () => {
+  const m: JobArrayMembership = { id: "arr-20260721-0000ab", name: "compute", index: 2, size: 5 };
+
+  it("buildJobArrayTags emits the wire-compatible spawn:job-array-* set", () => {
+    const tags = buildJobArrayTags(m);
+    expect(tags[tag("job-array-id")]).toBe("arr-20260721-0000ab");
+    expect(tags[tag("job-array-name")]).toBe("compute");
+    expect(tags[tag("job-array-size")]).toBe("5");
+    expect(tags[tag("job-array-index")]).toBe("2");
+  });
+
+  it("round-trips through decodeJobArrayTags", () => {
+    expect(decodeJobArrayTags(buildJobArrayTags(m))).toEqual(m);
+  });
+
+  it("decodeJobArrayTags returns undefined without a job-array-id", () => {
+    expect(decodeJobArrayTags({ [tag("managed")]: "true" })).toBeUndefined();
+  });
+
+  it("buildLaunchTags includes job-array tags only when membership is set", () => {
+    expect(buildLaunchTags(baseSpec(), 0)[tag("job-array-id")]).toBeUndefined();
+    const withArr = buildLaunchTags({ ...baseSpec(), jobArray: m }, 0);
+    expect(withArr[tag("job-array-id")]).toBe("arr-20260721-0000ab");
   });
 });
 

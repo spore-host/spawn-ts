@@ -4,7 +4,7 @@
 // handlers work in the browser terminal and in tests.
 
 import type { Provider } from "../core/provider.js";
-import type { SpawnClient } from "../core/client.js";
+import type { SpawnClient, LaunchInput } from "../core/client.js";
 import type { LaunchSpec, ManagedInstance } from "../core/types.js";
 import type { ParamSpec, ParamSet } from "../core/params.js";
 import { parseGridShorthand } from "../core/params.js";
@@ -86,6 +86,8 @@ export async function runCommand(line: string, ctx: ShellCtx): Promise<CmdResult
       return queue(parsed, ctx);
     case "orphans":
       return orphans(parsed, ctx);
+    case "array":
+      return array(parsed, ctx);
     default:
       return err(`unknown command: ${parsed.command}`, `try "help"`);
   }
@@ -112,6 +114,7 @@ function help(): CmdResult {
     "  sweep <spec> [flags]    fan a parameter grid out into many instances",
     "  queue <config> [flags]  launch a DAG of jobs as capacity/turn allows",
     "  orphans [--reap] [-y]   find (and optionally terminate) instances past their TTL",
+    "  array <name> --count N  launch N indexed copies (job array) with the launch flags",
     "",
     "launch flags: --instance-type --region --ttl --idle-timeout --hibernate-on-idle",
     "              --cost-limit --price-per-hour --on-complete --spot --ami --key",
@@ -240,6 +243,11 @@ async function status(p: ParsedArgs, ctx: ShellCtx): Promise<CmdResult> {
     lines.push(
       `  sweep:        ${i.sweep.name} [${i.sweep.index + 1}/${i.sweep.size}] ${i.sweep.id}`,
       ...(params ? [`  params:       ${params}`] : []),
+    );
+  }
+  if (i.jobArray) {
+    lines.push(
+      `  job array:    ${i.jobArray.name} [${i.jobArray.index + 1}/${i.jobArray.size}] ${i.jobArray.id}`,
     );
   }
   return ok(...lines);
@@ -464,6 +472,60 @@ async function orphans(p: ParsedArgs, ctx: ShellCtx): Promise<CmdResult> {
   }
   const reaped = await ctx.client.reapOrphans(found);
   return ok(`reaped ${reaped.length} orphan${reaped.length === 1 ? "" : "s"}:`, ...reaped.map((id) => `  ${id}`));
+}
+
+async function array(p: ParsedArgs, ctx: ShellCtx): Promise<CmdResult> {
+  if (!ctx.client) {
+    return err("array: not available in this shell (no SpawnClient bound)");
+  }
+  const name = p.positionals[0] ?? flagStr(p.flags, "name");
+  if (!name) return err("array: a name is required (spawn array <name> --count N)");
+
+  const count = Number(flagStr(p.flags, "count", "0"));
+  if (!Number.isInteger(count) || count < 1) {
+    return err("array: --count must be a positive integer");
+  }
+
+  // Base launch config from the same flags as `launch`.
+  const ttl = durFlag(p, "ttl");
+  if (ttl.error) return err(ttl.error);
+  const idle = durFlag(p, "idle-timeout");
+  if (idle.error) return err(idle.error);
+
+  const base: LaunchInput = {
+    name,
+    instanceType: flagStr(p.flags, "instance-type") || undefined,
+    region: flagStr(p.flags, "region") || undefined,
+    ami: flagStr(p.flags, "ami") || undefined,
+    keyPair: flagStr(p.flags, "key") || undefined,
+    spot: flagBool(p.flags, "spot"),
+    ttl: ttl.ms || 0,
+    idleTimeout: idle.ms || 0,
+    pricePerHour: Number(flagStr(p.flags, "price-per-hour", "0")) || 0,
+    costLimit: Number(flagStr(p.flags, "cost-limit", "0")) || 0,
+  };
+
+  const maxConcurrent = Number(flagStr(p.flags, "max-concurrent", "0")) || 0;
+  const delayMs = (() => {
+    const raw = flagStr(p.flags, "launch-delay");
+    return raw ? parseDuration(raw) ?? 0 : 0;
+  })();
+
+  let ja;
+  try {
+    ja = ctx.client.startJobArray(base, count, { name, maxConcurrent, launchDelayMs: delayMs });
+  } catch (e) {
+    return err(`array: ${(e as Error).message}`);
+  }
+
+  const s = ja.summary;
+  return ok(
+    `array ${ja.id} — ${ja.size} member${ja.size === 1 ? "" : "s"}`,
+    `  ${maxConcurrent > 0 ? `max ${maxConcurrent} at a time` : "all at once"}` +
+      `${delayMs > 0 ? `, ${formatDuration(delayMs)} between launches` : ""}`,
+    `  launched ${s.running}, pending ${s.pending}${s.failed ? `, failed ${s.failed}` : ""}`,
+    "  watch progress with 'list' (spawn:job-array-* tags mark membership)",
+  );
 }
 
 // ---- helpers ----

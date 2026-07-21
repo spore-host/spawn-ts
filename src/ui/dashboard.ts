@@ -13,7 +13,7 @@ import { parseQueueConfig } from "../core/queue.js";
 import { find, type FindResult } from "@spore-host/truffle-ts";
 
 interface LogItem { atMs: number; kind: string; instance: string; text: string; }
-interface SweepView { kind: "sweep" | "queue"; name: string; summary: FanOutSummary; done: boolean; }
+interface SweepView { kind: "sweep" | "queue" | "jobarray"; name: string; summary: FanOutSummary; done: boolean; }
 
 export class Dashboard {
   readonly el: HTMLElement;
@@ -344,13 +344,14 @@ export class Dashboard {
         break;
       case "sweep":
       case "queue":
+      case "jobarray":
         this.onFanOutEvent(e);
         break;
     }
   }
 
-  private onFanOutEvent(e: Extract<SpawnEvent, { type: "sweep" | "queue" }>): void {
-    const noun = e.type === "queue" ? "queue" : "sweep";
+  private onFanOutEvent(e: Extract<SpawnEvent, { type: "sweep" | "queue" | "jobarray" }>): void {
+    const noun = e.type === "queue" ? "queue" : e.type === "jobarray" ? "job array" : "sweep";
     const unit = e.type === "queue" ? "jobs" : "members";
     const prev = this.sweeps.get(e.id);
     this.sweeps.set(e.id, { kind: e.type, name: e.name, summary: e.summary, done: e.done });
@@ -395,7 +396,7 @@ export class Dashboard {
       card.innerHTML = `
         <div class="row1">
           <span class="name">${escapeHtml(v.name)}</span>
-          <span class="id">${escapeHtml(v.kind)} · ${escapeHtml(id)}</span>
+          <span class="id">${escapeHtml(v.kind === "jobarray" ? "job array" : v.kind)} · ${escapeHtml(id)}</span>
           <span class="state">${v.done ? "done" : "running"}</span>
         </div>
         <div class="meta">${s.total} ${v.kind === "queue" ? "jobs" : "members"} · ${parts.join(" · ")}</div>

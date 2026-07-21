@@ -3,7 +3,12 @@
 // spawn-ts writes the identical set so an instance it launches is managed
 // correctly by a real spored, and shows up in `spawn list` from the Go CLI.
 
-import type { LaunchSpec, ManagedInstance, SweepMembership } from "./types.js";
+import type {
+  LaunchSpec,
+  ManagedInstance,
+  SweepMembership,
+  JobArrayMembership,
+} from "./types.js";
 import { formatDuration, parseDuration } from "./duration.js";
 
 /** Tag prefix. The real tool makes this configurable via SPORED_TAG_PREFIX. */
@@ -67,6 +72,7 @@ export function buildLaunchTags(spec: LaunchSpec, launchTimeMs: number): Record<
     tags[tag("session-timeout")] = formatDuration(spec.sessionTimeoutMs);
   }
   if (spec.sweep) Object.assign(tags, buildSweepTags(spec.sweep));
+  if (spec.jobArray) Object.assign(tags, buildJobArrayTags(spec.jobArray));
   return tags;
 }
 
@@ -172,5 +178,40 @@ export function decodeSweepTags(tags: Record<string, string>): SweepMembership |
     index: int(tags[tag("sweep-index")]),
     size: int(tags[tag("sweep-size")]),
     parameters,
+  };
+}
+
+/**
+ * Build the spawn:job-array-* tags for one array member. Wire-identical to the
+ * Go tool (pkg/aws/tags.go): id/name/size/index. (Go also stamps a
+ * spawn:job-array-created timestamp; omitted here so tags stay deterministic —
+ * launch-time is already recorded in spawn:launch-time.)
+ */
+export function buildJobArrayTags(m: JobArrayMembership): Record<string, string> {
+  return {
+    [tag("job-array-id")]: m.id,
+    [tag("job-array-name")]: m.name,
+    [tag("job-array-size")]: String(m.size),
+    [tag("job-array-index")]: String(m.index),
+  };
+}
+
+/**
+ * Decode a job-array membership from an instance's tags, or undefined if the
+ * instance carries no spawn:job-array-id. Mirrors the job-array branch of the Go
+ * describe path (pkg/aws/client.go). Malformed numeric tags fall back to 0.
+ */
+export function decodeJobArrayTags(tags: Record<string, string>): JobArrayMembership | undefined {
+  const id = tags[tag("job-array-id")];
+  if (!id) return undefined;
+  const int = (v: string | undefined): number => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  };
+  return {
+    id,
+    name: tags[tag("job-array-name")] ?? "",
+    index: int(tags[tag("job-array-index")]),
+    size: int(tags[tag("job-array-size")]),
   };
 }

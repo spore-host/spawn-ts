@@ -9,6 +9,15 @@ Pre-1.0, breaking changes bump the MINOR version.
 ## [Unreleased]
 
 ### Added
+- **Job arrays** (#24) — `spawn array <name> --count N` launches N identical,
+  indexed instances from one base config, tagged with the wire-compatible
+  `spawn:job-array-*` contract (so `spawn list --job-array-id` sees them and the
+  instance's spored surfaces `JOB_ARRAY_INDEX`). A peer of sweeps/queue built on
+  the shared `FanOut` engine (`src/core/jobarray.ts`); `SpawnClient.startJobArray`
+  emits `jobarray` progress events reusing the dashboard card. Membership decodes
+  onto `ManagedInstance.jobArray` and shows in `spawn status`. Scope: launch /
+  status (via `list`) / cancel (via `terminate`); `retry --failed` and `logs`/
+  `collect` are out (need a persisted record or node access) — follow-ups.
 - **Orphan / zombie reaper** (#23) — a lifecycle safety-net for the #19 failure
   mode (spored died/never installed, so an instance never self-terminated).
   `findOrphans` (`src/core/orphans.ts`, reusing the exported `ttlDeadline`) flags

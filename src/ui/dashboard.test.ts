@@ -470,3 +470,21 @@ describe("Dashboard orphan banner", () => {
     expect(dash.el.querySelector<HTMLElement>(".orphan-banner")!.hidden).toBe(true);
   });
 });
+
+describe("Dashboard job-array card", () => {
+  beforeEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  it("renders a jobarray progress card started via the client", async () => {
+    const { client, dash } = setup();
+    client.startJobArray({ name: "compute", ttl: "30m" }, 3, { id: "arr-1" });
+    await client.step(1000);
+    const card = dash.el.querySelector(".sweep-card.jobarray")!;
+    expect(card).toBeTruthy();
+    expect(card.textContent).toContain("compute");
+    expect(card.textContent).toContain("job array");
+    expect(card.textContent).toContain("3 members");
+    expect((await client.refresh()).every((i) => i.jobArray?.name === "compute")).toBe(true);
+  });
+});

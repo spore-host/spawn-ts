@@ -247,3 +247,54 @@ describe("CLI orphans", () => {
     expect(r.lines.join("\n")).toContain("no SpawnClient bound");
   });
 });
+
+describe("CLI array (job arrays)", () => {
+  it("launches N indexed members with the launch flags", async () => {
+    const { ctx: c, client } = clientCtx();
+    const r = await runCommand("array compute --count 3 --ttl 1h --instance-type t3.micro", c);
+    expect(r.error).toBeFalsy();
+    expect(r.lines.join("\n")).toContain("3 members");
+    await client.step(1000);
+    const list = await client.refresh();
+    expect(list).toHaveLength(3);
+    expect(list.every((i) => i.jobArray?.name === "compute")).toBe(true);
+    expect(new Set(list.map((i) => i.jobArray!.index))).toEqual(new Set([0, 1, 2]));
+  });
+
+  it("honors --max-concurrent", async () => {
+    const { ctx: c, client } = clientCtx();
+    const r = await runCommand("array j --count 4 --ttl 5m --max-concurrent 2", c);
+    expect(r.lines.join("\n")).toContain("max 2 at a time");
+    await client.step(1000);
+    expect((await client.refresh()).length).toBe(2);
+  });
+
+  it("status shows job-array membership", async () => {
+    const { ctx: c, client } = clientCtx();
+    await runCommand("array compute --count 2 --ttl 1h", c);
+    await client.step(1000);
+    const r = await runCommand("status compute-0", c);
+    expect(r.lines.join("\n")).toContain("job array:");
+    expect(r.lines.join("\n")).toContain("compute");
+  });
+
+  it("rejects a missing or invalid --count", async () => {
+    const { ctx: c } = clientCtx();
+    expect((await runCommand("array c", c)).error).toBe(true);
+    expect((await runCommand("array c --count 0", c)).error).toBe(true);
+    expect((await runCommand("array c --count abc", c)).error).toBe(true);
+  });
+
+  it("requires a name", async () => {
+    const { ctx: c } = clientCtx();
+    const r = await runCommand("array --count 2", c);
+    expect(r.error).toBe(true);
+    expect(r.lines.join("\n")).toContain("name is required");
+  });
+
+  it("is unavailable without a bound client", async () => {
+    const r = await runCommand("array c --count 2", ctx());
+    expect(r.error).toBe(true);
+    expect(r.lines.join("\n")).toContain("no SpawnClient bound");
+  });
+});
