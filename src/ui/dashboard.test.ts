@@ -423,4 +423,13 @@ describe("Dashboard truffle instance picker", () => {
     await typeQuery(p.q, "");
     expect(p.matches.hidden).toBe(true);
   });
+
+  it("supports a glob pattern query (truffle-ts 0.2.0)", async () => {
+    const { dash } = setup();
+    const p = trufflePicker(dash);
+    await typeQuery(p.q, "m7g*");
+    const types = [...p.matches.querySelectorAll(".tm-type")].map((e) => e.textContent);
+    expect(types.length).toBeGreaterThan(0);
+    expect(types.every((t) => t!.startsWith("m7g."))).toBe(true);
+  });
 });
