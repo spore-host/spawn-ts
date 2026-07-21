@@ -298,3 +298,45 @@ describe("CLI array (job arrays)", () => {
     expect(r.lines.join("\n")).toContain("no SpawnClient bound");
   });
 });
+
+describe("CLI on-idle + lifecycle hooks", () => {
+  it("--on-idle hibernate sets the hibernate-on-idle tag", async () => {
+    const c = ctx();
+    await runCommand("launch job --ttl 4h --idle-timeout 30m --on-idle hibernate", c);
+    expect((await c.provider.get("job"))!.tags["spawn:hibernate-on-idle"]).toBe("true");
+  });
+
+  it("--on-idle stop does not set hibernate-on-idle", async () => {
+    const c = ctx();
+    await runCommand("launch job --ttl 4h --idle-timeout 30m --on-idle stop", c);
+    expect((await c.provider.get("job"))!.tags["spawn:hibernate-on-idle"]).toBeUndefined();
+  });
+
+  it("rejects --on-idle terminate with a pointer to --on-complete", async () => {
+    const r = await runCommand("launch job --on-idle terminate", ctx());
+    expect(r.error).toBe(true);
+    expect(r.lines.join("\n")).toContain("on-complete terminate");
+  });
+
+  it("emits pre-stop + notify + active-processes tags a real spored honors", async () => {
+    const c = ctx();
+    await runCommand(
+      'launch job --ttl 4h --pre-stop "sync.sh" --pre-stop-timeout 2m --notify-url https://x --notify-platform slack --active-processes python,rsync',
+      c,
+    );
+    const t = (await c.provider.get("job"))!.tags;
+    expect(t["spawn:pre-stop"]).toBe("sync.sh");
+    expect(t["spawn:pre-stop-timeout"]).toBe("2m");
+    expect(t["spawn:notify-url"]).toBe("https://x");
+    expect(t["spawn:notify-platform"]).toBe("slack");
+    expect(t["spawn:active-processes"]).toBe("python,rsync");
+  });
+
+  it("status surfaces the hooks", async () => {
+    const c = ctx();
+    await runCommand('launch job --ttl 4h --pre-stop "sync.sh" --notify-url https://x', c);
+    const out = (await runCommand("status job", c)).lines.join("\n");
+    expect(out).toContain("pre-stop:");
+    expect(out).toContain("notify:");
+  });
+});

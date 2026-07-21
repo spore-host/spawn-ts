@@ -47,6 +47,15 @@ export interface LaunchSpec {
   sessionTimeoutMs: number;
 
   /**
+   * Daemon-enforced lifecycle hooks (optional). spawn-ts is a browser launcher
+   * with no on-instance daemon, so it can only WRITE these as spawn:* tags — a
+   * real spored on the instance runs them. Included so a spawn-ts launch is fully
+   * honored by spored, and to stay wire-compatible with the Go tool. Undefined
+   * fields emit no tag.
+   */
+  hooks?: LifecycleHooks;
+
+  /**
    * Parameter-sweep membership (optional). Set when this instance is one member
    * of a `spawn sweep` fan-out; written to spawn:sweep-* tags so the whole sweep
    * is discoverable and wire-compatible with the Go tool. Undefined for a plain
@@ -62,6 +71,33 @@ export interface LaunchSpec {
    * member); a job array's members are identical but for JOB_ARRAY_INDEX.
    */
   jobArray?: JobArrayMembership;
+}
+
+/**
+ * Daemon-enforced lifecycle hooks, written to spawn:* tags at launch and run by
+ * spored ON THE INSTANCE — spawn-ts (a browser launcher) cannot execute these
+ * itself. Every field maps to the identically-named tag(s) the Go tool writes
+ * (pkg/aws/tags.go), so a real spored honors a spawn-ts launch. All optional.
+ */
+export interface LifecycleHooks {
+  /** Shell command run on-instance before any lifecycle-triggered stop/terminate. spawn:pre-stop. */
+  preStop?: string;
+  /** Timeout for the pre-stop hook (Go duration, e.g. "5m"). spawn:pre-stop-timeout. */
+  preStopTimeoutMs?: number;
+  /** URL spored POSTs to on a spot-interruption notice. spawn:spot-webhook-url. */
+  spotWebhookUrl?: string;
+  /** Opaque blob echoed back in the webhook payload for correlation. spawn:webhook-correlation. */
+  webhookCorrelation?: string;
+  /** Webhook POST timeout (Go duration). spawn:webhook-timeout. */
+  webhookTimeoutMs?: number;
+  /** Lifecycle-notification target URL (Slack/Teams/Discord bot). spawn:notify-url. */
+  notifyUrl?: string;
+  /** Notification platform, e.g. "slack" | "teams" | "discord". spawn:notify-platform. */
+  notifyPlatform?: string;
+  /** Slash command routing hint for the notify bot. spawn:notify-command. */
+  notifyCommand?: string;
+  /** Comma-separated process names that keep the box non-idle while running. spawn:active-processes. */
+  activeProcesses?: string;
 }
 
 /**
@@ -161,6 +197,13 @@ export interface ManagedInstance {
    * Undefined when the instance is not part of a job array.
    */
   jobArray?: JobArrayMembership;
+
+  /**
+   * Daemon-enforced lifecycle hooks decoded from the instance's spawn:* tags
+   * (pre-stop / spot-webhook / notify / active-processes). Undefined when none
+   * are set. Informational here — enforced by spored on the instance.
+   */
+  hooks?: LifecycleHooks;
 }
 
 /** A single lifecycle decision the engine can emit on a tick. */

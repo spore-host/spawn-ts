@@ -4,11 +4,13 @@ import {
   decodeSweepTags,
   buildJobArrayTags,
   decodeJobArrayTags,
+  buildHookTags,
+  decodeHookTags,
   buildLaunchTags,
   tag,
   PARAM_TAG_PREFIX,
 } from "./tags.js";
-import type { LaunchSpec, SweepMembership, JobArrayMembership } from "./types.js";
+import type { LaunchSpec, SweepMembership, JobArrayMembership, LifecycleHooks } from "./types.js";
 
 const membership: SweepMembership = {
   id: "hp-20260720-000000",
@@ -104,6 +106,49 @@ describe("job-array tags", () => {
     expect(buildLaunchTags(baseSpec(), 0)[tag("job-array-id")]).toBeUndefined();
     const withArr = buildLaunchTags({ ...baseSpec(), jobArray: m }, 0);
     expect(withArr[tag("job-array-id")]).toBe("arr-20260721-0000ab");
+  });
+});
+
+describe("lifecycle-hook tags", () => {
+  const hooks: LifecycleHooks = {
+    preStop: "aws s3 sync /out s3://bucket/",
+    preStopTimeoutMs: 5 * 60_000,
+    spotWebhookUrl: "https://hook.example/spot",
+    webhookCorrelation: "run-42",
+    webhookTimeoutMs: 2000,
+    notifyUrl: "https://hooks.slack.com/x",
+    notifyPlatform: "slack",
+    notifyCommand: "/deploys",
+    activeProcesses: "python,rsync",
+  };
+
+  it("buildHookTags emits the wire-compatible spawn:* tag set", () => {
+    const t = buildHookTags(hooks);
+    expect(t[tag("pre-stop")]).toBe("aws s3 sync /out s3://bucket/");
+    expect(t[tag("pre-stop-timeout")]).toBe("5m");
+    expect(t[tag("spot-webhook-url")]).toBe("https://hook.example/spot");
+    expect(t[tag("webhook-correlation")]).toBe("run-42");
+    expect(t[tag("webhook-timeout")]).toBe("2s");
+    expect(t[tag("notify-url")]).toBe("https://hooks.slack.com/x");
+    expect(t[tag("notify-platform")]).toBe("slack");
+    expect(t[tag("notify-command")]).toBe("/deploys");
+    expect(t[tag("active-processes")]).toBe("python,rsync");
+  });
+
+  it("round-trips through decodeHookTags", () => {
+    expect(decodeHookTags(buildHookTags(hooks))).toEqual(hooks);
+  });
+
+  it("omits webhook companions when no url, and returns undefined when empty", () => {
+    // correlation/timeout without a URL → not emitted.
+    expect(buildHookTags({ webhookCorrelation: "x", webhookTimeoutMs: 1000 })).toEqual({});
+    expect(decodeHookTags({ [tag("managed")]: "true" })).toBeUndefined();
+  });
+
+  it("buildLaunchTags includes hook tags only when hooks are set", () => {
+    expect(buildLaunchTags(baseSpec(), 0)[tag("pre-stop")]).toBeUndefined();
+    const withHooks = buildLaunchTags({ ...baseSpec(), hooks: { preStop: "sync.sh" } }, 0);
+    expect(withHooks[tag("pre-stop")]).toBe("sync.sh");
   });
 });
 

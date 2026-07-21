@@ -488,3 +488,22 @@ describe("Dashboard job-array card", () => {
     expect((await client.refresh()).every((i) => i.jobArray?.name === "compute")).toBe(true);
   });
 });
+
+describe("Dashboard lifecycle-hook inputs", () => {
+  beforeEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  it("launches with pre-stop + notify hooks from the form", async () => {
+    const { client, dash } = setup();
+    setField(dash, "name", "hooked");
+    setField(dash, "ttl", "4h");
+    (form(dash).elements.namedItem("preStop") as HTMLInputElement).value = "sync.sh";
+    (form(dash).elements.namedItem("notifyUrl") as HTMLInputElement).value = "https://slack";
+    await submit(dash);
+    const inst = await client.get("hooked");
+    expect(inst!.hooks?.preStop).toBe("sync.sh");
+    expect(inst!.hooks?.notifyUrl).toBe("https://slack");
+    expect(inst!.tags["spawn:pre-stop"]).toBe("sync.sh");
+  });
+});

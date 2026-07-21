@@ -8,6 +8,7 @@ import type {
   ManagedInstance,
   SweepMembership,
   JobArrayMembership,
+  LifecycleHooks,
 } from "./types.js";
 import { formatDuration, parseDuration } from "./duration.js";
 
@@ -57,7 +58,10 @@ export function buildLaunchTags(spec: LaunchSpec, launchTimeMs: number): Record<
   }
   if (spec.idleTimeoutMs > 0) {
     tags[tag("idle-timeout")] = formatDuration(spec.idleTimeoutMs);
-    tags[tag("hibernate-on-idle")] = spec.hibernateOnIdle ? "true" : "false";
+    // Only emit hibernate-on-idle when true (matches the Go tool; the default
+    // idle action is stop, so an absent tag = stop). decodeConfigTags reads
+    // `=== "true"`, so omitting it is equivalent to the old "false".
+    if (spec.hibernateOnIdle) tags[tag("hibernate-on-idle")] = "true";
     if (spec.idleCpuPercent > 0) tags[tag("idle-cpu")] = String(spec.idleCpuPercent);
   }
   if (spec.costLimit > 0) tags[tag("cost-limit")] = String(spec.costLimit);
@@ -71,6 +75,7 @@ export function buildLaunchTags(spec: LaunchSpec, launchTimeMs: number): Record<
   if (spec.sessionTimeoutMs > 0) {
     tags[tag("session-timeout")] = formatDuration(spec.sessionTimeoutMs);
   }
+  if (spec.hooks) Object.assign(tags, buildHookTags(spec.hooks));
   if (spec.sweep) Object.assign(tags, buildSweepTags(spec.sweep));
   if (spec.jobArray) Object.assign(tags, buildJobArrayTags(spec.jobArray));
   return tags;
@@ -214,4 +219,56 @@ export function decodeJobArrayTags(tags: Record<string, string>): JobArrayMember
     index: int(tags[tag("job-array-index")]),
     size: int(tags[tag("job-array-size")]),
   };
+}
+
+/**
+ * Build the spawn:* tags for daemon-enforced lifecycle hooks. Each field emits
+ * its tag only when set; durations serialize to Go duration strings. These are
+ * written verbatim to the shape the Go tool uses (pkg/aws/tags.go) so a real
+ * spored on the instance runs them — spawn-ts never executes them itself.
+ */
+export function buildHookTags(h: LifecycleHooks): Record<string, string> {
+  const tags: Record<string, string> = {};
+  if (h.preStop) {
+    tags[tag("pre-stop")] = h.preStop;
+    if (h.preStopTimeoutMs && h.preStopTimeoutMs > 0)
+      tags[tag("pre-stop-timeout")] = formatDuration(h.preStopTimeoutMs);
+  }
+  if (h.spotWebhookUrl) {
+    tags[tag("spot-webhook-url")] = h.spotWebhookUrl;
+    // Correlation + timeout are companions, meaningful only with a URL.
+    if (h.webhookCorrelation) tags[tag("webhook-correlation")] = h.webhookCorrelation;
+    if (h.webhookTimeoutMs && h.webhookTimeoutMs > 0)
+      tags[tag("webhook-timeout")] = formatDuration(h.webhookTimeoutMs);
+  }
+  if (h.notifyUrl) tags[tag("notify-url")] = h.notifyUrl;
+  if (h.notifyPlatform) tags[tag("notify-platform")] = h.notifyPlatform;
+  if (h.notifyCommand) tags[tag("notify-command")] = h.notifyCommand;
+  if (h.activeProcesses) tags[tag("active-processes")] = h.activeProcesses;
+  return tags;
+}
+
+/**
+ * Decode lifecycle-hook tags back into a LifecycleHooks, or undefined if none
+ * are present. Inverse of buildHookTags; used by `status` and round-trip tests.
+ */
+export function decodeHookTags(tags: Record<string, string>): LifecycleHooks | undefined {
+  const h: LifecycleHooks = {};
+  const dur = (v: string | undefined): number | undefined => {
+    if (v === undefined) return undefined;
+    const d = parseDuration(v);
+    return d === null ? undefined : d;
+  };
+  if (tags[tag("pre-stop")]) h.preStop = tags[tag("pre-stop")];
+  const pst = dur(tags[tag("pre-stop-timeout")]);
+  if (pst !== undefined) h.preStopTimeoutMs = pst;
+  if (tags[tag("spot-webhook-url")]) h.spotWebhookUrl = tags[tag("spot-webhook-url")];
+  if (tags[tag("webhook-correlation")]) h.webhookCorrelation = tags[tag("webhook-correlation")];
+  const wt = dur(tags[tag("webhook-timeout")]);
+  if (wt !== undefined) h.webhookTimeoutMs = wt;
+  if (tags[tag("notify-url")]) h.notifyUrl = tags[tag("notify-url")];
+  if (tags[tag("notify-platform")]) h.notifyPlatform = tags[tag("notify-platform")];
+  if (tags[tag("notify-command")]) h.notifyCommand = tags[tag("notify-command")];
+  if (tags[tag("active-processes")]) h.activeProcesses = tags[tag("active-processes")];
+  return Object.keys(h).length > 0 ? h : undefined;
 }
