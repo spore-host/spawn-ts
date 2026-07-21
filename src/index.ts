@@ -30,6 +30,7 @@ export type {
   LifecycleWarning,
   TickResult,
   SweepMembership,
+  JobArrayMembership,
 } from "./core/types.js";
 
 export { evaluate, accumulatedCost, ttlDeadline } from "./core/lifecycle.js";
@@ -39,8 +40,10 @@ export type { Orphan } from "./core/orphans.js";
 export {
   buildLaunchTags,
   buildSweepTags,
+  buildJobArrayTags,
   decodeConfigTags,
   decodeSweepTags,
+  decodeJobArrayTags,
   isManaged,
   tag,
   TAG_PREFIX,
@@ -62,6 +65,8 @@ export type {
 } from "./core/fanout.js";
 export { Sweep, buildSweep, generateSweepId } from "./core/sweep.js";
 export type { SweepOptions, BuiltSweep } from "./core/sweep.js";
+export { JobArray, buildJobArray, generateJobArrayId } from "./core/jobarray.js";
+export type { JobArrayOptions, BuiltJobArray } from "./core/jobarray.js";
 
 // Batch job queues (issue #5), built on the same fan-out engine.
 export {

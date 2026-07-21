@@ -53,6 +53,15 @@ export interface LaunchSpec {
    * single launch.
    */
   sweep?: SweepMembership;
+
+  /**
+   * Job-array membership (optional). Set when this instance is one indexed
+   * member of a `spawn` job array — N identical launches from one base config,
+   * differing only by index. Written to spawn:job-array-* tags. Undefined for a
+   * plain single launch. Distinct from a sweep (which varies parameters per
+   * member); a job array's members are identical but for JOB_ARRAY_INDEX.
+   */
+  jobArray?: JobArrayMembership;
 }
 
 /**
@@ -69,6 +78,20 @@ export interface SweepMembership {
   /** Total members in the sweep. */
   size: number;
   parameters: Record<string, string>;
+}
+
+/**
+ * A launch's membership in a job array. Serialized to the spawn:job-array-*
+ * tags the Go tool writes; the instance's spored surfaces `index` as the
+ * JOB_ARRAY_INDEX env var so the workload knows which slice it is.
+ */
+export interface JobArrayMembership {
+  id: string;
+  name: string;
+  /** 0-based index of this member within the array. */
+  index: number;
+  /** Total members in the array. */
+  size: number;
 }
 
 /** Lifecycle state as observed through the provider (mirrors EC2 states). */
@@ -132,6 +155,12 @@ export interface ManagedInstance {
    * spawn:param:* tags. Undefined when the instance is not part of a sweep.
    */
   sweep?: SweepMembership;
+
+  /**
+   * Job-array membership, decoded from the instance's spawn:job-array-* tags.
+   * Undefined when the instance is not part of a job array.
+   */
+  jobArray?: JobArrayMembership;
 }
 
 /** A single lifecycle decision the engine can emit on a tick. */

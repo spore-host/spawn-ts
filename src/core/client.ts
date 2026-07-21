@@ -20,6 +20,7 @@ import type {
   LifecycleAction,
   ManagedInstance,
   SweepMembership,
+  JobArrayMembership,
 } from "./types.js";
 import { evaluate } from "./lifecycle.js";
 import { findOrphans, type Orphan } from "./orphans.js";
@@ -29,6 +30,7 @@ import { MockProvider } from "./mock.js";
 import { FanOut, type FanOutMemberStatus, type FanOutSummary } from "./fanout.js";
 import { buildSweep, Sweep, type SweepOptions } from "./sweep.js";
 import { buildQueue, Queue, type QueueConfig, type QueueOptions } from "./queue.js";
+import { buildJobArray, JobArray, type JobArrayOptions } from "./jobarray.js";
 import type { ParamSpec } from "./params.js";
 
 export type SpawnEvent =
@@ -39,7 +41,8 @@ export type SpawnEvent =
   | { type: "info"; instance: string; message: string }
   | { type: "provider"; label: string; isReal: boolean }
   | { type: "sweep"; id: string; name: string; summary: FanOutSummary; done: boolean }
-  | { type: "queue"; id: string; name: string; summary: FanOutSummary; done: boolean };
+  | { type: "queue"; id: string; name: string; summary: FanOutSummary; done: boolean }
+  | { type: "jobarray"; id: string; name: string; summary: FanOutSummary; done: boolean };
 
 export type EventHandler = (e: SpawnEvent) => void;
 
@@ -79,6 +82,8 @@ export interface LaunchInput {
   allowUnbounded?: boolean;
   /** Parameter-sweep membership; stamps spawn:sweep-* / spawn:param:* tags. */
   sweep?: SweepMembership;
+  /** Job-array membership; stamps spawn:job-array-* tags. */
+  jobArray?: JobArrayMembership;
 }
 
 export class SpawnClient {
@@ -92,7 +97,7 @@ export class SpawnClient {
   /** Active fan-outs (sweeps/queues) pumped on each monitor tick. */
   private fanOuts = new Map<
     string,
-    { kind: "sweep" | "queue"; name: string; fanOut: FanOut }
+    { kind: "sweep" | "queue" | "jobarray"; name: string; fanOut: FanOut }
   >();
 
   constructor(opts: ClientOptions = {}) {
@@ -258,6 +263,23 @@ export class SpawnClient {
     return new Queue(built, fanOut);
   }
 
+  /**
+   * Start a job array: N identical launches from one base input, each stamped
+   * with its index via the spawn:job-array-* tags, fanned out under the monitor
+   * loop (concurrency cap / launch delay). Returns the built JobArray; progress
+   * arrives via "jobarray" events. Same cost-safety guard as launch().
+   */
+  startJobArray(base: LaunchInput, size: number, opts: JobArrayOptions = {}): JobArray {
+    const built = buildJobArray(base, size, { nowMs: this.now(), ...opts });
+    const fanOut = new FanOut(this, built.members, {
+      maxConcurrent: opts.maxConcurrent,
+      launchDelayMs: opts.launchDelayMs,
+    });
+    this.fanOuts.set(built.id, { kind: "jobarray", name: built.name, fanOut });
+    void this.pumpFanOuts();
+    return new JobArray(built, fanOut);
+  }
+
   /** Snapshot of a registered fan-out's per-member status, or null if unknown. */
   sweepStatus(id: string): FanOutMemberStatus[] | null {
     return this.fanOuts.get(id)?.fanOut.status ?? null;
@@ -421,6 +443,7 @@ export class SpawnClient {
       pricePerHour: input.pricePerHour ?? 0,
       sessionTimeoutMs: dur(input.sessionTimeout),
       sweep: input.sweep,
+      jobArray: input.jobArray,
     };
   }
 }

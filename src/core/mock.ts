@@ -9,7 +9,7 @@
 
 import type { Provider } from "./provider.js";
 import type { LaunchSpec, LifecycleAction, ManagedInstance } from "./types.js";
-import { buildLaunchTags, decodeConfigTags, decodeSweepTags, isManaged, tag } from "./tags.js";
+import { buildLaunchTags, decodeConfigTags, decodeSweepTags, decodeJobArrayTags, isManaged, tag } from "./tags.js";
 
 let idCounter = 0;
 function newInstanceId(): string {
@@ -52,6 +52,7 @@ export class MockProvider implements Provider {
       lastActivityMs: launchTimeMs,
       cpuPercent: 0,
       sweep: decodeSweepTags(tags),
+      jobArray: decodeJobArrayTags(tags),
       ...cfg,
     };
   }
