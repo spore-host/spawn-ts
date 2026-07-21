@@ -14,5 +14,8 @@
 - **[API reference](api.md)** — the `SpawnClient` public API. The generated
   [TypeDoc reference](https://spore-host.github.io/spawn-ts/api/) is published
   alongside the demo.
+- **[Integration with truffle-ts](integration.md)** — how the launcher/lifecycle
+  (spawn-ts) and instance-discovery (truffle-ts) tools compose, and the
+  tag-emit-vs-execution boundary.
 
 For a quick start and backend setup, see the [top-level README](../README.md).

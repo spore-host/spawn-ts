@@ -18,6 +18,7 @@ terminal are bundled as two consumers of that API.
 - [Architecture](docs/architecture.md) — layers and the provider seam
 - [Lifecycle engine](docs/lifecycle.md) — priority order and invariants
 - [API reference](docs/api.md) — the `SpawnClient` API
+- [Integration with truffle-ts](docs/integration.md) — how the two tools compose
 
 Full index in [`docs/`](docs/README.md).
 
