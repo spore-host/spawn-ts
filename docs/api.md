@@ -6,6 +6,12 @@
 import { SpawnClient, MockProvider, EC2Provider } from "spawn-ts";
 ```
 
+> **Generated reference:** this page is a hand-written tour of the API. For the
+> full, always-in-sync reference generated from the source types, see the
+> [**TypeDoc API reference**](https://spore-host.github.io/spawn-ts/api/) —
+> every exported class, function, and type from `src/index.ts`. Regenerate it
+> locally with `npm run docs` (output lands in `dist/api/`).
+
 ## Construction
 
 ```ts

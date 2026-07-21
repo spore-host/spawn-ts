@@ -1,5 +1,9 @@
 # The lifecycle engine
 
+> New here? Start with the [concepts guide](./concepts.md) for the _why_ —
+> TTL vs idle vs cost limit, why TTL always terminates, and the
+> absolute-deadline invariant. This page is the precise reference.
+
 `src/core/lifecycle.ts` is a faithful, **pure** port of the spore.host `spored`
 monitor loop (`spawn/pkg/agent/agent.go` `checkAndAct`). Given an instance's
 observed state at a moment `now`, it returns at most one action plus any

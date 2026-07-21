@@ -1,0 +1,14 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "entryPoints": ["src/index.ts"],
+  "out": "dist/api",
+  "name": "spawn-ts API reference",
+  "readme": "none",
+  "includeVersion": true,
+  "excludeInternal": true,
+  "hideGenerator": true,
+  "navigationLinks": {
+    "Demo": "https://spore-host.github.io/spawn-ts/",
+    "GitHub": "https://github.com/spore-host/spawn-ts"
+  }
+}
