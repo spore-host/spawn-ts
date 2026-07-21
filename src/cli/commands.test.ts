@@ -149,3 +149,51 @@ describe("CLI sweep", () => {
     expect(r.lines.join("\n")).toContain("no SpawnClient bound");
   });
 });
+
+describe("CLI queue", () => {
+  const cfg = `'{"queue_name":"p","jobs":[{"job_id":"build","command":"make","timeout":"20m"},{"job_id":"test","command":"make test","timeout":"20m","depends_on":["build"]}],"on_failure":"stop"}'`;
+
+  it("launches a job DAG in dependency order", async () => {
+    const { ctx: c, client } = clientCtx();
+    const r = await runCommand(`queue ${cfg}`, c);
+    expect(r.error).toBeFalsy();
+    const out = r.lines.join("\n");
+    expect(out).toContain("2 jobs");
+    expect(out).toContain("build → test");
+    expect(out).toContain("stop on failure");
+
+    await client.step(1000);
+    // Only the dependency-free "build" job is running initially.
+    const running = (await client.refresh()).filter((i) => i.state === "running");
+    expect(running).toHaveLength(1);
+    expect(running[0].sweep?.parameters.command).toBe("make");
+  });
+
+  it("rejects an invalid config", async () => {
+    const { ctx: c } = clientCtx();
+    const r = await runCommand(`queue '{"jobs":[]}'`, c);
+    expect(r.error).toBe(true);
+    expect(r.lines.join("\n")).toContain("at least one job");
+  });
+
+  it("rejects a circular dependency", async () => {
+    const { ctx: c } = clientCtx();
+    const bad = `'{"jobs":[{"job_id":"a","command":"x","timeout":"1m","depends_on":["b"]},{"job_id":"b","command":"y","timeout":"1m","depends_on":["a"]}]}'`;
+    const r = await runCommand(`queue ${bad}`, c);
+    expect(r.error).toBe(true);
+    expect(r.lines.join("\n")).toContain("circular dependency");
+  });
+
+  it("errors with no config", async () => {
+    const { ctx: c } = clientCtx();
+    const r = await runCommand("queue", c);
+    expect(r.error).toBe(true);
+    expect(r.lines.join("\n")).toContain("inline JSON queue config");
+  });
+
+  it("is unavailable without a bound client", async () => {
+    const r = await runCommand(`queue ${cfg}`, ctx());
+    expect(r.error).toBe(true);
+    expect(r.lines.join("\n")).toContain("no SpawnClient bound");
+  });
+});

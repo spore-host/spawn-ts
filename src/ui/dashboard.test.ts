@@ -261,7 +261,8 @@ describe("Dashboard sweep form", () => {
     const card = dash.el.querySelector(".sweep-card")!;
     expect(card).toBeTruthy();
     expect(card.textContent).toContain("hp");
-    expect(card.textContent).toContain("4/4 launched");
+    expect(card.textContent).toContain("4 members");
+    expect(card.textContent).toContain("4 running");
     // Every launched instance is tagged into the sweep.
     expect((await client.refresh()).every((i) => i.sweep?.name === "hp")).toBe(true);
   });
@@ -287,5 +288,61 @@ describe("Dashboard sweep form", () => {
     // Drive past the TTL so the single member terminates → sweep done.
     for (let i = 0; i < 3; i++) await client.step(6 * 60_000);
     expect(log.textContent).toContain("done");
+  });
+});
+
+function queueForm(dash: Dashboard): HTMLFormElement {
+  return dash.el.querySelector<HTMLFormElement>(".queue-form")!;
+}
+
+function setQueueConfig(dash: Dashboard, json: string) {
+  (queueForm(dash).elements.namedItem("config") as HTMLTextAreaElement).value = json;
+}
+
+async function submitQueue(dash: Dashboard) {
+  queueForm(dash).dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
+  await new Promise((r) => setTimeout(r, 0));
+}
+
+describe("Dashboard queue form", () => {
+  beforeEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  const cfg = JSON.stringify({
+    queue_name: "p",
+    jobs: [
+      { job_id: "build", command: "make", timeout: "20m" },
+      { job_id: "test", command: "make test", timeout: "20m", depends_on: ["build"] },
+    ],
+  });
+
+  it("comes pre-filled with a valid example config", async () => {
+    const { client, dash } = setup();
+    await submitQueue(dash);
+    expect(dash.el.querySelector(".queue-msg")!.className).toContain("good");
+    await client.step(1000);
+    expect(dash.el.querySelector(".sweep-card.queue")).toBeTruthy();
+  });
+
+  it("starts a queue and renders a card that shows blocked jobs", async () => {
+    const { client, dash } = setup();
+    setQueueConfig(dash, cfg);
+    await submitQueue(dash);
+    expect(dash.el.querySelector(".queue-msg")!.textContent).toContain("2 jobs");
+
+    await client.step(1000);
+    const card = dash.el.querySelector(".sweep-card.queue")!;
+    expect(card.textContent).toContain("2 jobs");
+    // "test" depends on "build", so it's blocked until build completes.
+    expect(card.textContent).toContain("1 blocked");
+  });
+
+  it("shows a validation error for a bad config without launching", async () => {
+    const { client, dash } = setup();
+    setQueueConfig(dash, '{"jobs":[]}');
+    await submitQueue(dash);
+    expect(dash.el.querySelector(".queue-msg")!.className).toContain("bad");
+    expect(client.activeSweeps()).toHaveLength(0);
   });
 });

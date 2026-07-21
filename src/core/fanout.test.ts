@@ -93,4 +93,108 @@ describe("FanOut", () => {
     expect(snapshots.length).toBeGreaterThan(0);
     expect(snapshots.at(-1)).toBe(2);
   });
+
+  it("blocks a member until its dependency completes", async () => {
+    const c = client();
+    const f = new FanOut(c, [
+      { key: "a", input: { name: "a", ttl: "5m" } },
+      { key: "b", input: { name: "b", ttl: "5m" }, dependsOn: ["a"] },
+    ]);
+    await f.pump(T0);
+    await c.refresh();
+    // a launches; b is blocked on it.
+    expect(f.status.find((s) => s.key === "a")?.state).toBe("running");
+    expect(f.status.find((s) => s.key === "b")?.state).toBe("blocked");
+
+    // Complete a → b becomes eligible and launches.
+    await c.terminate(f.status.find((s) => s.key === "a")!.instanceId!);
+    await f.pump(T0 + 1000);
+    await c.refresh();
+    expect(f.status.find((s) => s.key === "b")?.state).toBe("running");
+  });
+
+  it("skips a member whose dependency fails, cascading down the chain", async () => {
+    const c = client();
+    const f = new FanOut(c, [
+      { key: "a", input: { name: "a", ttl: "5m" } },
+      { key: "b", input: { name: "b", ttl: "5m" }, dependsOn: ["a"] },
+      { key: "c", input: { name: "c", ttl: "5m" }, dependsOn: ["b"] },
+    ]);
+    // Force a's launch to fail.
+    const real = c.launch.bind(c);
+    (c as unknown as { launch: SpawnClient["launch"] }).launch = ((input: LaunchInput) =>
+      input.name === "a" ? Promise.reject(new Error("nope")) : real(input)) as SpawnClient["launch"];
+
+    await f.pump(T0);
+    expect(f.summary.failed).toBe(1);
+    expect(f.status.find((s) => s.key === "b")?.state).toBe("skipped");
+    expect(f.status.find((s) => s.key === "c")?.state).toBe("skipped");
+    expect(f.isComplete).toBe(true);
+  });
+
+  it("retries a failed launch up to maxAttempts", async () => {
+    const c = client();
+    let attempts = 0;
+    const real = c.launch.bind(c);
+    (c as unknown as { launch: SpawnClient["launch"] }).launch = ((input: LaunchInput) => {
+      attempts++;
+      if (attempts < 3) return Promise.reject(new Error("transient"));
+      return real(input);
+    }) as SpawnClient["launch"];
+
+    const f = new FanOut(c, [{ key: "a", input: { name: "a", ttl: "5m" }, maxAttempts: 3 }]);
+    // Each pump makes one attempt; retryDelayMs=0 so it retries immediately.
+    await f.pump(T0);
+    await f.pump(T0 + 1);
+    await f.pump(T0 + 2);
+    await c.refresh();
+    expect(attempts).toBe(3);
+    expect(f.status[0].state).toBe("running");
+    expect(f.status[0].attempts).toBe(3);
+  });
+
+  it("waits retryDelayMs before re-attempting a failed launch", async () => {
+    const c = client();
+    let attempts = 0;
+    const real = c.launch.bind(c);
+    (c as unknown as { launch: SpawnClient["launch"] }).launch = ((input: LaunchInput) => {
+      attempts++;
+      if (attempts < 2) return Promise.reject(new Error("transient"));
+      return real(input);
+    }) as SpawnClient["launch"];
+
+    const f = new FanOut(c, [{ key: "a", input: { name: "a", ttl: "5m" }, maxAttempts: 2 }], {
+      retryDelayMs: 10_000,
+    });
+    await f.pump(T0); // attempt 1 fails → back to pending
+    expect(attempts).toBe(1);
+    await f.pump(T0 + 5_000); // still within the retry window → no attempt
+    expect(attempts).toBe(1);
+    await f.pump(T0 + 12_000); // window elapsed → attempt 2 succeeds
+    await c.refresh();
+    expect(attempts).toBe(2);
+    expect(f.status[0].state).toBe("running");
+  });
+
+  it("on-failure 'stop' skips not-yet-started members after a failure", async () => {
+    const c = client();
+    // Two independent members; the first fails. With "stop", the second is
+    // skipped instead of launched.
+    const real = c.launch.bind(c);
+    (c as unknown as { launch: SpawnClient["launch"] }).launch = ((input: LaunchInput) =>
+      input.name === "a" ? Promise.reject(new Error("x")) : real(input)) as SpawnClient["launch"];
+
+    const f = new FanOut(
+      c,
+      [
+        { key: "a", input: { name: "a", ttl: "5m" } },
+        { key: "b", input: { name: "b", ttl: "5m" } },
+      ],
+      { maxConcurrent: 1, onFailure: "stop" },
+    );
+    await f.pump(T0);
+    await f.pump(T0 + 1);
+    expect(f.summary.failed).toBe(1);
+    expect(f.status.find((s) => s.key === "b")?.state).toBe("skipped");
+  });
 });

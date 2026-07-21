@@ -56,9 +56,27 @@ export type {
   FanOutMemberStatus,
   FanOutOptions,
   FanOutSummary,
+  OnFailure,
 } from "./core/fanout.js";
 export { Sweep, buildSweep, generateSweepId } from "./core/sweep.js";
 export type { SweepOptions, BuiltSweep } from "./core/sweep.js";
+
+// Batch job queues (issue #5), built on the same fan-out engine.
+export {
+  Queue,
+  buildQueue,
+  validateQueue,
+  topologicalSort,
+  parseQueueConfig,
+  generateQueueId,
+} from "./core/queue.js";
+export type {
+  QueueConfig,
+  JobConfig,
+  RetryConfig,
+  QueueOptions,
+  BuiltQueue,
+} from "./core/queue.js";
 
 // CLI (used by the terminal pane, but reusable for a headless REPL/test).
 export { runCommand } from "./cli/commands.js";

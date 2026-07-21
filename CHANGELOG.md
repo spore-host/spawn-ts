@@ -9,6 +9,20 @@ Pre-1.0, breaking changes bump the MINOR version.
 ## [Unreleased]
 
 ### Added
+- **Batch job queues** (`spawn queue`, issue #5) — launch a DAG of jobs, one
+  instance per job, as dependencies complete and capacity allows. Built on the
+  sweep's fan-out engine, now extended with generic **dependency gating**
+  (`dependsOn`), **launch retries** (`maxAttempts` + `retryDelayMs`), and an
+  **on-failure policy** (`stop` halts the queue; `continue` keeps launching
+  independent jobs; a failed job always skips its dependents). The core
+  (`src/core/queue.ts`) ports `pkg/queue` — config validation, Kahn's-algorithm
+  topological ordering with cycle detection, and the retry model — and loads an
+  existing Go `simple-queue.json` / `ml-pipeline-queue.json` unchanged. Each
+  job's instance carries the queue as `spawn:sweep-*` tags with the command +
+  env as `spawn:param:*`. Wired into the terminal (`spawn queue '<json>'`) and
+  the dashboard (a config editor + progress cards showing blocked/skipped jobs).
+  The Go tool's on-box sequential runner and S3/Lambda result collection are out
+  of scope for the browser. See [docs/queues.md](docs/queues.md).
 - **Parameter sweeps** (`spawn sweep`, issue #4) — fan a parameter grid out into
   many instances. A pure, testable core (`src/core/params.ts`, `sweep.ts`)
   expands a spec (`params` list and/or cartesian `grid`, with `defaults`) into

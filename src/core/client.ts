@@ -27,6 +27,7 @@ import { tag } from "./tags.js";
 import { MockProvider } from "./mock.js";
 import { FanOut, type FanOutMemberStatus, type FanOutSummary } from "./fanout.js";
 import { buildSweep, Sweep, type SweepOptions } from "./sweep.js";
+import { buildQueue, Queue, type QueueConfig, type QueueOptions } from "./queue.js";
 import type { ParamSpec } from "./params.js";
 
 export type SpawnEvent =
@@ -36,7 +37,8 @@ export type SpawnEvent =
   | { type: "warning"; instance: string; rule: string; message: string }
   | { type: "info"; instance: string; message: string }
   | { type: "provider"; label: string; isReal: boolean }
-  | { type: "sweep"; id: string; name: string; summary: FanOutSummary; done: boolean };
+  | { type: "sweep"; id: string; name: string; summary: FanOutSummary; done: boolean }
+  | { type: "queue"; id: string; name: string; summary: FanOutSummary; done: boolean };
 
 export type EventHandler = (e: SpawnEvent) => void;
 
@@ -85,7 +87,10 @@ export class SpawnClient {
   private warned = new Set<string>();
   private lastInstances: ManagedInstance[] = [];
   /** Active fan-outs (sweeps/queues) pumped on each monitor tick. */
-  private fanOuts = new Map<string, { name: string; fanOut: FanOut }>();
+  private fanOuts = new Map<
+    string,
+    { kind: "sweep" | "queue"; name: string; fanOut: FanOut }
+  >();
 
   constructor(opts: ClientOptions = {}) {
     this.provider = opts.provider ?? new MockProvider();
@@ -199,10 +204,10 @@ export class SpawnClient {
    */
   private async pumpFanOuts(): Promise<void> {
     if (this.fanOuts.size === 0) return;
-    for (const [id, { name, fanOut }] of [...this.fanOuts]) {
+    for (const [id, { kind, name, fanOut }] of [...this.fanOuts]) {
       await fanOut.pump(this.now());
-      const done = fanOut.isComplete && !fanOut.hasPending;
-      this.emit({ type: "sweep", id, name, summary: fanOut.summary, done });
+      const done = fanOut.isComplete;
+      this.emit({ type: kind, id, name, summary: fanOut.summary, done });
       if (done) this.fanOuts.delete(id);
     }
     // Launches during the pump changed the world; reflect it.
@@ -224,11 +229,30 @@ export class SpawnClient {
       maxConcurrent: opts.maxConcurrent,
       launchDelayMs: opts.launchDelayMs,
     });
-    this.fanOuts.set(built.id, { name: built.name, fanOut });
+    this.fanOuts.set(built.id, { kind: "sweep", name: built.name, fanOut });
     // Kick the first batch immediately so callers see progress without waiting
     // a full tick; the monitor loop takes over from here.
     void this.pumpFanOuts();
     return new Sweep(built, fanOut);
+  }
+
+  /**
+   * Start a batch job queue: validate + order the config into a DAG of members
+   * and register a fan-out that the monitor loop pumps each tick, launching each
+   * job's instance as its dependencies complete and capacity allows. Returns the
+   * built Queue; progress arrives via "queue" events. Same cost-safety guard as
+   * launch() applies to a real backend.
+   */
+  startQueue(cfg: QueueConfig, opts: QueueOptions = {}): Queue {
+    const built = buildQueue(cfg, { nowMs: this.now(), ...opts });
+    const fanOut = new FanOut(this, built.members, {
+      maxConcurrent: opts.maxConcurrent,
+      launchDelayMs: opts.launchDelayMs,
+      onFailure: cfg.onFailure ?? "continue",
+    });
+    this.fanOuts.set(built.id, { kind: "queue", name: built.name, fanOut });
+    void this.pumpFanOuts();
+    return new Queue(built, fanOut);
   }
 
   /** Snapshot of a registered fan-out's per-member status, or null if unknown. */
@@ -236,7 +260,7 @@ export class SpawnClient {
     return this.fanOuts.get(id)?.fanOut.status ?? null;
   }
 
-  /** Ids of fan-outs still running (not yet fully launched + settled). */
+  /** Ids of fan-outs (sweeps + queues) still running. */
   activeSweeps(): string[] {
     return [...this.fanOuts.keys()];
   }

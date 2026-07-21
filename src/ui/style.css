@@ -220,6 +220,23 @@ body {
   background: rgba(88,166,255,.04);
 }
 .sweep-card.done { opacity: .7; }
+.sweep-card.queue { background: rgba(210,153,34,.05); }
+
+/* Batch queue form: a JSON textarea + the shared button/message styling. */
+.queue-form textarea {
+  width: 100%; background: var(--bg); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 6px; padding: 8px;
+  font-family: var(--mono); font-size: 12px; resize: vertical; margin-bottom: 8px;
+}
+.queue-form label { display: block; font-size: 10px; color: var(--muted); margin-bottom: 3px; text-transform: uppercase; letter-spacing: .05em; }
+.queue-btn {
+  margin-top: 10px; background: var(--accent); color: #0d1117; border: none;
+  border-radius: 6px; padding: 7px 18px; font-family: var(--mono); font-weight: 700; cursor: pointer;
+}
+.queue-btn:hover { filter: brightness(1.1); }
+.queue-msg { margin-left: 10px; font-size: 11px; }
+.queue-msg.good { color: var(--green); }
+.queue-msg.bad { color: var(--red); }
 .sweep-card .row1 { display: flex; align-items: baseline; gap: 8px; }
 .sweep-card .name { font-weight: 700; color: #fff; }
 .sweep-card .id { color: var(--muted); font-size: 11px; }
