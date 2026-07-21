@@ -114,24 +114,34 @@ fi
 chmod +x "$SPORED_TMP"
 mv -f "$SPORED_TMP" /usr/local/bin/spored
 
+# systemd unit — kept byte-for-byte identical to the Go bootstrap's
+# (pkg/launcher/bootstrap.go). The daemon is the BARE spored invocation with no
+# subcommand; passing an unknown subcommand makes spored exit non-zero and the
+# unit crash-loops, never enforcing the TTL (spawn-ts#19). Do not diverge here.
 cat > /etc/systemd/system/spored.service <<'EOF'
 [Unit]
-Description=spore.host lifecycle daemon
+Description=Spawn Agent - Instance self-monitoring
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/spored run
-Restart=always
-RestartSec=5
-User=root
+Type=simple
+Environment=SPORE_DNS_SIGV4=1
+ExecStart=/usr/local/bin/spored
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable --now spored.service
+systemctl enable spored
+systemctl start spored
 `;
 }
 

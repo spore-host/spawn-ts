@@ -6,10 +6,16 @@ import { describe, it, expect } from "vitest";
 import { buildLinuxBootstrap, encodeUserData } from "./userdata.js";
 
 describe("buildLinuxBootstrap", () => {
-  it("installs and enables spored via systemd", () => {
+  it("installs and enables spored via systemd, matching the Go unit", () => {
     const s = buildLinuxBootstrap({ username: "ec2-user" });
     expect(s).toContain("/usr/local/bin/spored");
-    expect(s).toContain("systemctl enable --now spored.service");
+    // The daemon is the BARE `spored` invocation — never `spored run` (that
+    // unknown subcommand crash-looped the unit, spawn-ts#19). Match Go exactly.
+    expect(s).toContain("ExecStart=/usr/local/bin/spored\n");
+    expect(s).not.toContain("spored run");
+    expect(s).toContain("Environment=SPORE_DNS_SIGV4=1");
+    expect(s).toContain("Restart=on-failure");
+    expect(s).toContain("systemctl enable spored");
     expect(s).toContain("LOCAL_USERNAME=ec2-user");
   });
 
