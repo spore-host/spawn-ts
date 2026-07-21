@@ -20,14 +20,24 @@ export interface BootstrapOptions {
   publicKey?: string;
   /** Optional workload command, embedded in user-data (not the length-capped tag). */
   command?: string;
-  /** spored release channel/version to install (default: latest). */
-  sporedVersion?: string;
+  /**
+   * Base host for the spored binary bucket. Defaults to the spore.host regional
+   * S3 scheme (`spawn-binaries-<region>.s3.amazonaws.com`), resolved at runtime
+   * from IMDS. Override only for testing/mirrors.
+   */
+  binaryBucketPrefix?: string;
 }
 
-/** Build the plaintext bootstrap script. */
+/**
+ * Build the plaintext bootstrap script. Installs spored the same way the Go tool
+ * does (pkg/launcher/bootstrap.go): detect arch (amd64/arm64), read the region
+ * from IMDS, download `spored-linux-<arch>` from the regional S3 bucket with a
+ * us-east-1 fallback and both prefixed + legacy paths, verify the SHA256, and
+ * install atomically. The earlier GitHub-release URL was a fiction (404) and
+ * amd64-only — see spawn-ts#17.
+ */
 export function buildLinuxBootstrap(opts: BootstrapOptions): string {
   const user = opts.username || "ec2-user";
-  const version = opts.sporedVersion || "latest";
   const keyLine = opts.publicKey
     ? `echo ${shellSingleQuote(opts.publicKey)} >> /home/${user}/.ssh/authorized_keys`
     : `# no SSH key supplied — SSM-only instance`;
@@ -41,14 +51,6 @@ chmod 600 /etc/spawn/command
 `
     : "";
 
-  // spored reads spawn:* tags via IMDS + ec2:DescribeTags, so the instance role
-  // must allow DescribeTags/DescribeInstances and the self-lifecycle calls
-  // (TerminateInstances/StopInstances) scoped to spawn:managed=true resources.
-  const dl =
-    version === "latest"
-      ? "https://github.com/spore-host/spawn/releases/latest/download/spored_linux_amd64"
-      : `https://github.com/spore-host/spawn/releases/download/${version}/spored_linux_amd64`;
-
   return `#!/bin/bash
 set -e
 
@@ -59,9 +61,58 @@ chown -R ${user}:${user} /home/${user}/.ssh 2>/dev/null || true
 
 ${commandBlock}
 # Install spored — the in-instance lifecycle daemon. It reads the spawn:* tags
-# this instance was launched with and enforces TTL/idle/cost/completion locally.
-curl -fsSL -o /usr/local/bin/spored ${dl}
-chmod +x /usr/local/bin/spored
+# this instance was launched with (via IMDS + ec2:DescribeTags) and enforces
+# TTL/idle/cost/completion locally, so the instance self-terminates even if the
+# browser tab is gone. Requires an IAM instance profile allowing DescribeTags/
+# DescribeInstances + TerminateInstances/StopInstances on spawn:managed=true.
+
+# Detect architecture.
+ARCH=$(uname -m)
+case "$ARCH" in
+  x86_64) BINARY="spored-linux-amd64" ;;
+  aarch64) BINARY="spored-linux-arm64" ;;
+  *) echo "unsupported architecture: $ARCH" >&2; exit 1 ;;
+esac
+
+# Detect region from IMDS (v2 token first, fall back to v1, then us-east-1).
+TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" 2>/dev/null || true)
+if [ -n "$TOKEN" ]; then
+  REGION=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/region 2>/dev/null)
+else
+  REGION=$(curl -s http://169.254.169.254/latest/meta-data/placement/region 2>/dev/null)
+fi
+[ -n "$REGION" ] || REGION=us-east-1
+
+REGIONAL="https://spawn-binaries-\${REGION}.s3.amazonaws.com"
+FALLBACK="https://spawn-binaries-us-east-1.s3.amazonaws.com"
+SPORED_TMP="$(mktemp /tmp/spored.XXXXXX)"
+
+# Try regional bucket (prefixed then legacy path), then us-east-1 (same).
+if curl -f -o "$SPORED_TMP" "\${REGIONAL}/spawn/\${BINARY}" 2>/dev/null; then
+  CHECKSUM_URL="\${REGIONAL}/spawn/\${BINARY}.sha256"
+elif curl -f -o "$SPORED_TMP" "\${REGIONAL}/\${BINARY}" 2>/dev/null; then
+  CHECKSUM_URL="\${REGIONAL}/\${BINARY}.sha256"
+elif curl -f -o "$SPORED_TMP" "\${FALLBACK}/spawn/\${BINARY}" 2>/dev/null; then
+  CHECKSUM_URL="\${FALLBACK}/spawn/\${BINARY}.sha256"
+else
+  curl -f -o "$SPORED_TMP" "\${FALLBACK}/\${BINARY}" || { echo "failed to download spored" >&2; rm -f "$SPORED_TMP"; exit 1; }
+  CHECKSUM_URL="\${FALLBACK}/\${BINARY}.sha256"
+fi
+
+# Verify SHA256 (best-effort: the checksum sits beside the binary, so this
+# guards corruption, not authenticity — matches the Go bootstrap's default).
+if curl -f -s -o /tmp/spored.sha256 "$CHECKSUM_URL" 2>/dev/null; then
+  EXPECTED=$(awk '{print $1}' /tmp/spored.sha256)
+  ACTUAL=$(sha256sum "$SPORED_TMP" | awk '{print $1}')
+  if [ -n "$EXPECTED" ] && [ "$EXPECTED" != "$ACTUAL" ]; then
+    echo "spored checksum mismatch (expected $EXPECTED, got $ACTUAL)" >&2
+    rm -f "$SPORED_TMP"; exit 1
+  fi
+fi
+
+# Atomic install — rename works even if an old spored is executing (#27).
+chmod +x "$SPORED_TMP"
+mv -f "$SPORED_TMP" /usr/local/bin/spored
 
 cat > /etc/systemd/system/spored.service <<'EOF'
 [Unit]

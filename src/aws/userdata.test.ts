@@ -36,10 +36,24 @@ describe("buildLinuxBootstrap", () => {
     expect(s).toContain("chmod 600 /etc/spawn/command");
   });
 
-  it("uses the latest release URL by default and a pinned URL for a version", () => {
-    expect(buildLinuxBootstrap({ username: "ec2-user" })).toContain("releases/latest/download");
-    const pinned = buildLinuxBootstrap({ username: "ec2-user", sporedVersion: "v1.2.3" });
-    expect(pinned).toContain("releases/download/v1.2.3/");
+  it("installs spored from the regional S3 bucket for the detected arch", () => {
+    const s = buildLinuxBootstrap({ username: "ec2-user" });
+    // Arch detection covers both amd64 and arm64 (the old script was amd64-only).
+    expect(s).toContain("spored-linux-amd64");
+    expect(s).toContain("spored-linux-arm64");
+    expect(s).toContain('ARCH=$(uname -m)');
+    // Real install path: regional S3 bucket resolved from IMDS, us-east-1 fallback.
+    expect(s).toContain("spawn-binaries-");
+    expect(s).toContain(".s3.amazonaws.com");
+    expect(s).toContain("spawn-binaries-us-east-1.s3.amazonaws.com");
+    // Reads the region from IMDS.
+    expect(s).toContain("169.254.169.254/latest/meta-data/placement/region");
+    // Verifies a checksum and installs atomically (rename, not in-place write).
+    expect(s).toContain("sha256sum");
+    expect(s).toContain("mv -f");
+    // The old fictional GitHub-release URL is gone (spawn-ts#17).
+    expect(s).not.toContain("releases/latest/download");
+    expect(s).not.toContain("github.com/spore-host/spawn/releases");
   });
 });
 

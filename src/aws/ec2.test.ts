@@ -9,12 +9,13 @@ import {
   EC2Client,
   RunInstancesCommand,
   DescribeInstancesCommand,
+  DescribeImagesCommand,
   TerminateInstancesCommand,
   StopInstancesCommand,
   StartInstancesCommand,
   CreateTagsCommand,
 } from "@aws-sdk/client-ec2";
-import { EC2Provider } from "./ec2.js";
+import { EC2Provider, archForInstanceType } from "./ec2.js";
 import type { LaunchSpec } from "../core/types.js";
 import { tag } from "../core/tags.js";
 
@@ -147,6 +148,57 @@ describe("EC2Provider.launch", () => {
   it("throws when RunInstances returns no instance", async () => {
     handler = () => ({ Instances: [] });
     await expect(provider().launch(baseSpec, T0)).rejects.toThrow(/no instance/);
+  });
+
+  it("attaches the IAM instance profile (name or ARN) when configured", async () => {
+    handler = () => ({ Instances: [{ InstanceId: "i-1", State: { Name: "pending" } }] });
+
+    await provider().launch(baseSpec, T0);
+    expect(lastOf(RunInstancesCommand).input.IamInstanceProfile).toBeUndefined();
+
+    sent = [];
+    await provider({ iamInstanceProfile: "spored-role" }).launch(baseSpec, T0);
+    expect(lastOf(RunInstancesCommand).input.IamInstanceProfile).toEqual({ Name: "spored-role" });
+
+    sent = [];
+    const arn = "arn:aws:iam::111122223333:instance-profile/spored";
+    await provider({ iamInstanceProfile: arn }).launch(baseSpec, T0);
+    expect(lastOf(RunInstancesCommand).input.IamInstanceProfile).toEqual({ Arn: arn });
+  });
+
+  it("resolves an AL2023 AMI via DescribeImages when spec.ami is empty", async () => {
+    handler = (cmd) => {
+      if (cmd instanceof DescribeImagesCommand)
+        return {
+          Images: [
+            { ImageId: "ami-old", CreationDate: "2026-01-01T00:00:00Z", Architecture: "arm64" },
+            { ImageId: "ami-new", CreationDate: "2026-06-01T00:00:00Z", Architecture: "arm64" },
+          ],
+        };
+      return { Instances: [{ InstanceId: "i-1", State: { Name: "pending" } }] };
+    };
+    // arm64 instance type + no ami → resolve, pick the newest.
+    await provider().launch({ ...baseSpec, ami: undefined, instanceType: "t4g.nano" }, T0);
+    const desc = lastOf(DescribeImagesCommand);
+    expect(desc.input.Filters!.some((f: any) => f.Name === "architecture" && f.Values[0] === "arm64")).toBe(true);
+    expect(lastOf(RunInstancesCommand).input.ImageId).toBe("ami-new");
+  });
+
+  it("does not resolve an AMI when one is supplied", async () => {
+    handler = () => ({ Instances: [{ InstanceId: "i-1", State: { Name: "pending" } }] });
+    await provider().launch(baseSpec, T0);
+    expect(sent.some((c) => c instanceof DescribeImagesCommand)).toBe(false);
+  });
+});
+
+describe("archForInstanceType", () => {
+  it("maps Graviton + accelerator families to arm64, else x86_64", () => {
+    for (const t of ["t4g.nano", "m7g.large", "c7gn.xlarge", "r8g.2xlarge", "hpc7g.4xlarge", "trn1.2xlarge", "inf2.xlarge"]) {
+      expect(archForInstanceType(t), t).toBe("arm64");
+    }
+    for (const t of ["c6a.xlarge", "m7i.large", "p5.48xlarge", "t3.micro", "r7i.large"]) {
+      expect(archForInstanceType(t), t).toBe("x86_64");
+    }
   });
 });
 
