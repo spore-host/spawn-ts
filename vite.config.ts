@@ -18,6 +18,7 @@ export default defineConfig({
       exclude: [
         "src/**/*.test.ts",
         "src/core/types.ts",
+        "src/core/provider.ts", // pure interface — no executable code
         "src/index.ts",
         "src/main.ts",
       ],
