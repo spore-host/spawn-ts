@@ -8,6 +8,23 @@ Pre-1.0, breaking changes bump the MINOR version.
 
 ## [Unreleased]
 
+### Added
+- **Lifecycle-hook tags** (#25) — emit the `spawn:*` tags for daemon-enforced
+  hooks so an instance spawn-ts launches is honored by a real spored (spawn-ts,
+  a browser launcher, can't run them itself): `pre-stop` (+timeout),
+  `spot-webhook-url`/`webhook-correlation`/`webhook-timeout`, `notify-url`/
+  `notify-platform`/`notify-command`, and `active-processes`. New `LifecycleHooks`
+  on `LaunchSpec`/`LaunchInput`, `buildHookTags`/`decodeHookTags`, decoded onto
+  `ManagedInstance.hooks` and shown in `spawn status`. CLI `launch` flags + the
+  dashboard exposes pre-stop and notify. Docs state these run **on the instance**.
+- **`--on-idle stop|hibernate`** — the modern spelling of `--hibernate-on-idle`
+  (rejects `terminate` with a pointer to `--on-complete`); both map to the same
+  `spawn:hibernate-on-idle` tag.
+
+### Changed
+- `spawn:hibernate-on-idle` is now emitted **only when true** (matches the Go
+  tool; an absent tag means the default idle action, stop). Decode is unchanged.
+
 ## [0.4.0] — 2026-07-21
 
 ### Added

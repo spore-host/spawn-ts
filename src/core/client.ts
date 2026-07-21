@@ -21,6 +21,7 @@ import type {
   ManagedInstance,
   SweepMembership,
   JobArrayMembership,
+  LifecycleHooks,
 } from "./types.js";
 import { evaluate } from "./lifecycle.js";
 import { findOrphans, type Orphan } from "./orphans.js";
@@ -84,6 +85,8 @@ export interface LaunchInput {
   sweep?: SweepMembership;
   /** Job-array membership; stamps spawn:job-array-* tags. */
   jobArray?: JobArrayMembership;
+  /** Daemon-enforced lifecycle hooks; stamps the pre-stop/webhook/notify tags. */
+  hooks?: LifecycleHooks;
 }
 
 export class SpawnClient {
@@ -444,6 +447,7 @@ export class SpawnClient {
       sessionTimeoutMs: dur(input.sessionTimeout),
       sweep: input.sweep,
       jobArray: input.jobArray,
+      hooks: input.hooks,
     };
   }
 }

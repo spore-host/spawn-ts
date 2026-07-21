@@ -5,7 +5,7 @@
 
 import type { Provider } from "../core/provider.js";
 import type { SpawnClient, LaunchInput } from "../core/client.js";
-import type { LaunchSpec, ManagedInstance } from "../core/types.js";
+import type { LaunchSpec, ManagedInstance, LifecycleHooks } from "../core/types.js";
 import type { ParamSpec, ParamSet } from "../core/params.js";
 import { parseGridShorthand } from "../core/params.js";
 import { parseQueueConfig } from "../core/queue.js";
@@ -116,9 +116,12 @@ function help(): CmdResult {
     "  orphans [--reap] [-y]   find (and optionally terminate) instances past their TTL",
     "  array <name> --count N  launch N indexed copies (job array) with the launch flags",
     "",
-    "launch flags: --instance-type --region --ttl --idle-timeout --hibernate-on-idle",
+    "launch flags: --instance-type --region --ttl --idle-timeout --on-idle stop|hibernate",
     "              --cost-limit --price-per-hour --on-complete --spot --ami --key",
     "              --session-timeout (idle-SSH-shell auto-logout, e.g. 30m)",
+    "  hooks (run by spored on the instance): --pre-stop <cmd> --pre-stop-timeout",
+    "              --spot-webhook-url --webhook-correlation --notify-url --notify-platform",
+    "              --active-processes <names>",
     "",
     "sweep: <spec> is inline JSON ({\"params\":[...]} or {\"grid\":{...}}), or use",
     "       --grid 'lr=0.1,0.2 bs=32,64' for a quick cartesian product.",
@@ -150,6 +153,31 @@ async function launch(p: ParsedArgs, ctx: ShellCtx): Promise<CmdResult> {
     return err(`launch: invalid --on-complete "${onComplete}" (terminate|stop|hibernate|exit)`);
   }
 
+  // --on-idle stop|hibernate — the modern spelling of --hibernate-on-idle. Both
+  // resolve to the same spawn:hibernate-on-idle tag (the idle daemon never
+  // terminates; "terminate" is --on-complete's job). Mirrors the Go flags.
+  const onIdle = flagStr(p.flags, "on-idle");
+  if (onIdle && onIdle !== "stop" && onIdle !== "hibernate") {
+    return err(
+      `launch: invalid --on-idle "${onIdle}" (stop|hibernate)`,
+      onIdle === "terminate" ? "  use --on-complete terminate to terminate on completion" : "",
+    );
+  }
+  const hibernateOnIdle = onIdle === "hibernate" || flagBool(p.flags, "hibernate-on-idle");
+
+  // Daemon-enforced lifecycle hooks (tag-emit only; spored runs them on the box).
+  const preStopTimeout = durFlag(p, "pre-stop-timeout");
+  if (preStopTimeout.error) return err(preStopTimeout.error);
+  const hooks: LifecycleHooks = {};
+  if (flagStr(p.flags, "pre-stop")) hooks.preStop = flagStr(p.flags, "pre-stop");
+  if (preStopTimeout.ms) hooks.preStopTimeoutMs = preStopTimeout.ms;
+  if (flagStr(p.flags, "spot-webhook-url")) hooks.spotWebhookUrl = flagStr(p.flags, "spot-webhook-url");
+  if (flagStr(p.flags, "webhook-correlation")) hooks.webhookCorrelation = flagStr(p.flags, "webhook-correlation");
+  if (flagStr(p.flags, "notify-url")) hooks.notifyUrl = flagStr(p.flags, "notify-url");
+  if (flagStr(p.flags, "notify-platform")) hooks.notifyPlatform = flagStr(p.flags, "notify-platform");
+  if (flagStr(p.flags, "active-processes")) hooks.activeProcesses = flagStr(p.flags, "active-processes");
+  const hasHooks = Object.keys(hooks).length > 0;
+
   const spec: LaunchSpec = {
     name,
     instanceType: flagStr(p.flags, "instance-type", "c6a.xlarge"),
@@ -159,7 +187,7 @@ async function launch(p: ParsedArgs, ctx: ShellCtx): Promise<CmdResult> {
     spot: flagBool(p.flags, "spot"),
     ttlMs: ttl.ms,
     idleTimeoutMs: idle.ms,
-    hibernateOnIdle: flagBool(p.flags, "hibernate-on-idle"),
+    hibernateOnIdle,
     idleCpuPercent: Number(flagStr(p.flags, "idle-cpu", "0")) || 0,
     costLimit: Number(flagStr(p.flags, "cost-limit", "0")) || 0,
     onComplete: onComplete || "",
@@ -167,6 +195,7 @@ async function launch(p: ParsedArgs, ctx: ShellCtx): Promise<CmdResult> {
     completionDelayMs: delay.ms,
     pricePerHour: Number(flagStr(p.flags, "price-per-hour", "0")) || 0,
     sessionTimeoutMs: session.ms,
+    hooks: hasHooks ? hooks : undefined,
   };
 
   if (ctx.provider.isReal && spec.ttlMs === 0 && spec.costLimit === 0) {
@@ -249,6 +278,13 @@ async function status(p: ParsedArgs, ctx: ShellCtx): Promise<CmdResult> {
     lines.push(
       `  job array:    ${i.jobArray.name} [${i.jobArray.index + 1}/${i.jobArray.size}] ${i.jobArray.id}`,
     );
+  }
+  if (i.hooks) {
+    const h = i.hooks;
+    if (h.preStop) lines.push(`  pre-stop:     ${h.preStop} (run by spored on the instance)`);
+    if (h.spotWebhookUrl) lines.push(`  spot webhook: ${h.spotWebhookUrl}`);
+    if (h.notifyUrl) lines.push(`  notify:       ${h.notifyPlatform ? h.notifyPlatform + " → " : ""}${h.notifyUrl}`);
+    if (h.activeProcesses) lines.push(`  active-procs: ${h.activeProcesses}`);
   }
   return ok(...lines);
 }

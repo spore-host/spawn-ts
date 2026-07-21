@@ -31,6 +31,7 @@ export type {
   TickResult,
   SweepMembership,
   JobArrayMembership,
+  LifecycleHooks,
 } from "./core/types.js";
 
 export { evaluate, accumulatedCost, ttlDeadline } from "./core/lifecycle.js";
@@ -41,9 +42,11 @@ export {
   buildLaunchTags,
   buildSweepTags,
   buildJobArrayTags,
+  buildHookTags,
   decodeConfigTags,
   decodeSweepTags,
   decodeJobArrayTags,
+  decodeHookTags,
   isManaged,
   tag,
   TAG_PREFIX,

@@ -94,6 +94,8 @@ export class Dashboard {
           </div>
           <div><label>$/hr (for cost meter)</label><input name="pricePerHour" value="0.153" /></div>
           <div><label>cost limit ($)</label><input name="costLimit" placeholder="0 = none" /></div>
+          <div><label>pre-stop <span class="picker-hint">(run by spored)</span></label><input name="preStop" placeholder="aws s3 sync … (on the instance)" /></div>
+          <div><label>notify url <span class="picker-hint">(spored)</span></label><input name="notifyUrl" placeholder="Slack/Teams webhook" /></div>
           <div class="checks">
             <label class="inline"><input type="checkbox" name="spot" /> spot</label>
             <label class="inline"><input type="checkbox" name="hibernateOnIdle" /> hibernate on idle</label>
@@ -235,6 +237,13 @@ export class Dashboard {
           costLimit: numOr("costLimit", 0),
           spot: fd.get("spot") === "on",
           hibernateOnIdle: fd.get("hibernateOnIdle") === "on",
+          hooks:
+            s("preStop") || s("notifyUrl")
+              ? {
+                  ...(s("preStop") ? { preStop: s("preStop") } : {}),
+                  ...(s("notifyUrl") ? { notifyUrl: s("notifyUrl") } : {}),
+                }
+              : undefined,
         });
         msg.textContent = `launched ${inst.name}`;
         msg.className = "launch-msg good";
