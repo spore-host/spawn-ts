@@ -9,6 +9,13 @@ Pre-1.0, breaking changes bump the MINOR version.
 ## [Unreleased]
 
 ### Fixed
+- **spored now self-terminates on TTL** (spawn-ts#19, closes #2). The systemd
+  unit invoked `spored run` — an unknown subcommand — so spored exited non-zero
+  and the unit crash-looped, never enforcing the TTL. The daemon is the bare
+  `spored` invocation; the unit is now byte-for-byte the Go bootstrap's
+  (`Type=simple`, `Environment=SPORE_DNS_SIGV4=1`, `ExecStart=/usr/local/bin/spored`,
+  `Restart=on-failure`, journal output). Validated on real AWS: a t4g.nano with a
+  5-min TTL self-terminated ~35s after its deadline, unattended, leak-checked clean.
 - **Real-AWS bootstrap now installs spored** (spawn-ts#17, blocks #2). The
   user-data fetched a GitHub-release URL that 404s and was hardcoded to amd64, so
   spored never installed on a real instance — the self-termination guarantee was
@@ -25,10 +32,11 @@ Pre-1.0, breaking changes bump the MINOR version.
   hardcoded AMI id. Added `archForInstanceType`.
 
 ### Added
-- **Real-AWS launch validated end-to-end** (#2): launched a t4g.nano in us-east-1
-  with the `spored-instance-profile` and a 10-min TTL, confirmed it reached
-  `running` with a resolved arm64 AL2023 AMI, then explicitly terminated +
-  leak-checked (no orphaned instance/volume). See the issue for the full writeup.
+- **Real-AWS launch validated end-to-end** (#2): a t4g.nano in us-east-1
+  (`spored-instance-profile`, resolved arm64 AL2023 AMI) launched, reached
+  `running`, and **self-terminated on its TTL via spored** — unattended, ~35s
+  past the deadline, leak-checked clean. The full self-termination guarantee is
+  proven on real AWS, not just substrate.
 - **Truffle instance picker** in the launch form — a natural-language query box
   ("h100 efa", "cheapest graviton 32gb") backed by
   [`@spore-host/truffle-ts`](https://github.com/spore-host/truffle-ts) resolves
