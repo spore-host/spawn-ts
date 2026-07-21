@@ -16,6 +16,9 @@ Pre-1.0, breaking changes bump the MINOR version.
   instance-type field and its estimated $/hr. truffle-ts is a git dependency;
   CI/Pages rewrite `git@github`→HTTPS so `npm ci` clones it. spawn-ts owns the
   picker UI — truffle-ts only supplies data + logic.
+- Bumped `@spore-host/truffle-ts` to `v0.2.0`, so the picker also accepts
+  **glob/regex patterns** (`m7i*`, `c[6-8]i.large`) alongside natural-language
+  queries.
 
 ## [0.2.0] — 2026-07-20
 

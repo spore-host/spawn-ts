@@ -35,7 +35,7 @@
   "dependencies": {
     "@aws-sdk/client-ec2": "^3.700.0",
     "@aws-sdk/client-sts": "^3.700.0",
-    "@spore-host/truffle-ts": "git+https://github.com/spore-host/truffle-ts.git#v0.1.1"
+    "@spore-host/truffle-ts": "git+https://github.com/spore-host/truffle-ts.git#v0.2.0"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
