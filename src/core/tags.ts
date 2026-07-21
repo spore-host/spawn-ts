@@ -63,6 +63,9 @@ export function buildLaunchTags(spec: LaunchSpec, launchTimeMs: number): Record<
     if (spec.completionDelayMs > 0)
       tags[tag("completion-delay")] = formatDuration(spec.completionDelayMs);
   }
+  if (spec.sessionTimeoutMs > 0) {
+    tags[tag("session-timeout")] = formatDuration(spec.sessionTimeoutMs);
+  }
   if (spec.sweep) Object.assign(tags, buildSweepTags(spec.sweep));
   return tags;
 }

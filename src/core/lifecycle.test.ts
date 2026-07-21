@@ -156,6 +156,7 @@ describe("tag round-trip", () => {
       completionFile: "/tmp/done",
       completionDelayMs: 0,
       pricePerHour: 0.153,
+      sessionTimeoutMs: 0,
     };
     const tags = buildLaunchTags(spec, T0);
     expect(tags["spawn:managed"]).toBe("true");

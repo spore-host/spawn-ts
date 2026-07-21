@@ -42,6 +42,24 @@ describe("buildLinuxBootstrap", () => {
     expect(s).toContain("chmod 600 /etc/spawn/command");
   });
 
+  it("injects an idle-session-timeout block only when set", () => {
+    expect(buildLinuxBootstrap({ username: "ec2-user" })).not.toContain("TMOUT");
+    // 30m → TMOUT=1800, ClientAliveInterval = 1800/6 = 300s.
+    const s = buildLinuxBootstrap({ username: "ec2-user", sessionTimeoutMs: 30 * 60_000 });
+    expect(s).toContain("export TMOUT=1800");
+    expect(s).toContain("readonly TMOUT");
+    expect(s).toContain("ClientAliveInterval 300");
+    expect(s).toContain("ClientAliveCountMax 3");
+    expect(s).toContain("/etc/profile.d/session-timeout.sh");
+  });
+
+  it("floors the ssh keepalive interval at 60s for short timeouts", () => {
+    // 2m → 120/6 = 20 → floored to 60.
+    const s = buildLinuxBootstrap({ username: "ec2-user", sessionTimeoutMs: 2 * 60_000 });
+    expect(s).toContain("ClientAliveInterval 60");
+    expect(s).toContain("export TMOUT=120");
+  });
+
   it("installs spored from the regional S3 bucket for the detected arch", () => {
     const s = buildLinuxBootstrap({ username: "ec2-user" });
     // Arch detection covers both amd64 and arm64 (the old script was amd64-only).

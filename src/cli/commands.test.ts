@@ -41,6 +41,20 @@ describe("CLI commands", () => {
     expect(r.lines.join("\n")).toContain("invalid --ttl");
   });
 
+  it("launch --session-timeout stamps the spawn:session-timeout tag", async () => {
+    const c = ctx();
+    const r = await runCommand("launch job --ttl 4h --session-timeout 30m", c);
+    expect(r.error).toBeFalsy();
+    const inst = await c.provider.get("job");
+    expect(inst?.tags["spawn:session-timeout"]).toBe("30m");
+  });
+
+  it("rejects an invalid --session-timeout duration", async () => {
+    const r = await runCommand("launch job --session-timeout huh", ctx());
+    expect(r.error).toBe(true);
+    expect(r.lines.join("\n")).toContain("invalid --session-timeout");
+  });
+
   it("rejects invalid on-complete", async () => {
     const r = await runCommand("launch job --on-complete explode", ctx());
     expect(r.error).toBe(true);

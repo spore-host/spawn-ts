@@ -72,6 +72,8 @@ export interface LaunchInput {
   onComplete?: LifecycleAction | "";
   completionFile?: string;
   completionDelay?: string | number;
+  /** Idle-SSH-shell auto-logout (Go-form duration or ms). 0/absent = disabled. */
+  sessionTimeout?: string | number;
   /** Bypass the "real launch needs a bound" safety check. */
   allowUnbounded?: boolean;
   /** Parameter-sweep membership; stamps spawn:sweep-* / spawn:param:* tags. */
@@ -386,6 +388,7 @@ export class SpawnClient {
       completionFile: input.completionFile ?? "",
       completionDelayMs: dur(input.completionDelay),
       pricePerHour: input.pricePerHour ?? 0,
+      sessionTimeoutMs: dur(input.sessionTimeout),
       sweep: input.sweep,
     };
   }

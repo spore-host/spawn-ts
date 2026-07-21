@@ -64,6 +64,7 @@ const baseSpec: LaunchSpec = {
   completionFile: "",
   completionDelayMs: 0,
   pricePerHour: 0.153,
+  sessionTimeoutMs: 0,
 };
 
 function lastOf<T>(type: new (...a: any[]) => T): T {

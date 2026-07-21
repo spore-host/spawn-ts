@@ -111,6 +111,7 @@ function help(): CmdResult {
     "",
     "launch flags: --instance-type --region --ttl --idle-timeout --hibernate-on-idle",
     "              --cost-limit --price-per-hour --on-complete --spot --ami --key",
+    "              --session-timeout (idle-SSH-shell auto-logout, e.g. 30m)",
     "",
     "sweep: <spec> is inline JSON ({\"params\":[...]} or {\"grid\":{...}}), or use",
     "       --grid 'lr=0.1,0.2 bs=32,64' for a quick cartesian product.",
@@ -134,6 +135,8 @@ async function launch(p: ParsedArgs, ctx: ShellCtx): Promise<CmdResult> {
   if (idle.error) return err(idle.error);
   const delay = durFlag(p, "completion-delay");
   if (delay.error) return err(delay.error);
+  const session = durFlag(p, "session-timeout");
+  if (session.error) return err(session.error);
 
   const onComplete = flagStr(p.flags, "on-complete") as LaunchSpec["onComplete"];
   if (onComplete && !["terminate", "stop", "hibernate", "exit"].includes(onComplete)) {
@@ -156,6 +159,7 @@ async function launch(p: ParsedArgs, ctx: ShellCtx): Promise<CmdResult> {
     completionFile: flagStr(p.flags, "completion-file"),
     completionDelayMs: delay.ms,
     pricePerHour: Number(flagStr(p.flags, "price-per-hour", "0")) || 0,
+    sessionTimeoutMs: session.ms,
   };
 
   if (ctx.provider.isReal && spec.ttlMs === 0 && spec.costLimit === 0) {

@@ -26,6 +26,13 @@ export interface BootstrapOptions {
    * from IMDS. Override only for testing/mirrors.
    */
   binaryBucketPrefix?: string;
+  /**
+   * Idle-SSH-shell auto-logout, in ms. 0/undefined = disabled. Writes an sshd
+   * ClientAlive config + a readonly TMOUT in /etc/profile.d/. Mirrors the Go
+   * bootstrap (pkg/launcher/bootstrap.go). Disconnects idle login sessions; it
+   * does NOT stop/terminate the instance (that's the idle-instance lifecycle).
+   */
+  sessionTimeoutMs?: number;
 }
 
 /**
@@ -51,6 +58,12 @@ chmod 600 /etc/spawn/command
 `
     : "";
 
+  // Idle-SSH-shell auto-logout (spawn:session-timeout). Mirrors the Go bootstrap:
+  // sshd ClientAlive (keepalive = 1/6 of the timeout, min 60s) disconnects idle
+  // connections, and a readonly TMOUT in /etc/profile.d/ auto-logs-out idle
+  // shells. Seconds are computed here so the script needs no duration parser.
+  const sessionBlock = buildSessionTimeoutBlock(opts.sessionTimeoutMs ?? 0);
+
   return `#!/bin/bash
 set -e
 
@@ -59,7 +72,7 @@ mkdir -p /home/${user}/.ssh && chmod 700 /home/${user}/.ssh
 ${keyLine}
 chown -R ${user}:${user} /home/${user}/.ssh 2>/dev/null || true
 
-${commandBlock}
+${commandBlock}${sessionBlock}
 # Install spored — the in-instance lifecycle daemon. It reads the spawn:* tags
 # this instance was launched with (via IMDS + ec2:DescribeTags) and enforces
 # TTL/idle/cost/completion locally, so the instance self-terminates even if the
@@ -142,6 +155,33 @@ EOF
 systemctl daemon-reload
 systemctl enable spored
 systemctl start spored
+`;
+}
+
+/**
+ * Bootstrap fragment for idle-SSH-shell auto-logout. Empty when disabled
+ * (timeoutMs <= 0). Sets sshd ClientAlive (interval = 1/6 of the timeout, min
+ * 60s, ×3 count) and a readonly TMOUT for all shells. Ports the Go bootstrap's
+ * session-timeout block; the seconds are precomputed so no shell parser is needed.
+ */
+function buildSessionTimeoutBlock(timeoutMs: number): string {
+  if (timeoutMs <= 0) return "";
+  const seconds = Math.round(timeoutMs / 1000);
+  const sshInterval = Math.max(60, Math.floor(seconds / 6));
+  return `
+# Idle session auto-logout (spawn:session-timeout).
+if ! grep -q "^ClientAliveInterval" /etc/ssh/sshd_config; then
+  echo "ClientAliveInterval ${sshInterval}" >> /etc/ssh/sshd_config
+  echo "ClientAliveCountMax 3" >> /etc/ssh/sshd_config
+  systemctl reload sshd 2>/dev/null || service sshd reload 2>/dev/null || true
+fi
+cat > /etc/profile.d/session-timeout.sh <<'EOFTIMEOUT'
+# Automatic logout for idle shells; readonly prevents users from unsetting it.
+export TMOUT=${seconds}
+readonly TMOUT
+EOFTIMEOUT
+chmod 644 /etc/profile.d/session-timeout.sh
+
 `;
 }
 
