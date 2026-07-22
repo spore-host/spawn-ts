@@ -45,3 +45,21 @@ enable:
    (default `spored-instance-profile`).
 
 Then run the workflow with `tier: real-aws` (or `both`).
+
+### Cross-account launch (identity in one account, compute in another)
+
+By default the instance launches in the same account the OIDC role lives in. To
+keep the **identity anchor** and the **ephemeral compute** in separate accounts —
+the control-plane/compute-plane split (a small-scale rehearsal of the spore.host
+bring-your-own-account model) — set one more variable:
+
+- `LIVE_SMOKE_LAUNCH_ROLE_ARN` — a role in the *compute* account that trusts the
+  OIDC-anchor role as its principal and holds the `ec2:RunInstances`/`Terminate`/
+  `CreateTags` + `iam:PassRole` (for that account's `spored-instance-profile`)
+  perms. When set, the workflow **role-chains** into it after OIDC, so the launch
+  lands in the compute account; the anchor account only needs `sts:AssumeRole` on
+  this role. Leave it unset for a single-account launch.
+
+Current wiring (#38): OIDC anchor is `GitHubActions-spore-host-integration-tests`
+in the infra account (`966362334030`); the compute account is dev
+(`435415984226`), where `GitHubActions-spawn-ts-live-smoke` launches the instance.

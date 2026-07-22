@@ -72,7 +72,9 @@ jobs:
   # observes spored self-terminate on a short TTL, and leak-checks. DISABLED
   # until an OIDC role that trusts this repo's `live-smoke` environment exists
   # (see docs/live-smoke.md). To enable: set vars.LIVE_SMOKE_ROLE_ARN +
-  # vars.LIVE_SMOKE_REGION and flip the `if:` below.
+  # vars.LIVE_SMOKE_REGION and flip the `if:` below. Optionally set
+  # vars.LIVE_SMOKE_LAUNCH_ROLE_ARN to role-chain into a separate compute
+  # account so the launch lands there, not in the OIDC-anchor account (#38).
   real-aws:
     name: real AWS (OIDC)
     if: ${{ (inputs.tier == 'real-aws' || inputs.tier == 'both') && vars.LIVE_SMOKE_ROLE_ARN != '' }}
@@ -90,12 +92,27 @@ jobs:
       - run: git config --global url."https://github.com/".insteadOf "git@github.com:"
       - run: npm ci
 
-      - name: Assume the smoke-test role via OIDC
+      # Step 1: OIDC → the infra identity-anchor role (LIVE_SMOKE_ROLE_ARN).
+      - name: Assume the infra OIDC role
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.LIVE_SMOKE_ROLE_ARN }}
           role-session-name: spawn-ts-live-smoke
           aws-region: ${{ vars.LIVE_SMOKE_REGION || 'us-east-1' }}
+
+      # Step 2 (optional): hop cross-account into the dev compute account, where
+      # the ephemeral instance actually launches. This keeps the identity anchor
+      # in infra and the compute in dev — the control-plane/compute-plane split.
+      # Skipped (launch stays in the infra account) if LIVE_SMOKE_LAUNCH_ROLE_ARN
+      # is unset, so this composes with the single-account setup.
+      - name: Hop into the dev launch role
+        if: ${{ vars.LIVE_SMOKE_LAUNCH_ROLE_ARN != '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.LIVE_SMOKE_LAUNCH_ROLE_ARN }}
+          role-session-name: spawn-ts-live-smoke-dev
+          aws-region: ${{ vars.LIVE_SMOKE_REGION || 'us-east-1' }}
+          role-chaining: true
 
       - name: Launch → observe self-terminate → leak-check
         env:
