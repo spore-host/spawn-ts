@@ -8,6 +8,8 @@ Pre-1.0, breaking changes bump the MINOR version.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-07-22
+
 ### Added
 - **Live smoke test** (`workflow_dispatch`, #27) — a manual regression guard for
   the self-termination guarantee (which silently regressed once, #19). Two tiers:
@@ -177,7 +179,8 @@ Pre-1.0, breaking changes bump the MINOR version.
 - **Tests** — lifecycle, client end-to-end, CLI, and live integration tests
   against a substrate emulator (auto-skip when unreachable).
 
-[Unreleased]: https://github.com/spore-host/spawn-ts/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/spore-host/spawn-ts/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/spore-host/spawn-ts/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/spore-host/spawn-ts/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/spore-host/spawn-ts/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/spore-host/spawn-ts/releases/tag/v0.2.0
