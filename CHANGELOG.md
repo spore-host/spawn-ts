@@ -8,6 +8,16 @@ Pre-1.0, breaking changes bump the MINOR version.
 
 ## [Unreleased]
 
+### Added
+- **Cross-account launch for the live smoke test** (#38) — the real-aws tier can
+  now role-chain from the OIDC identity-anchor account into a separate compute
+  account, so the ephemeral instance launches there rather than in the anchor
+  account. Set `LIVE_SMOKE_LAUNCH_ROLE_ARN` to a launch role in the compute
+  account (trusting the anchor role) and the workflow hops into it after OIDC;
+  leave it unset for a single-account launch. This is the control-plane/
+  compute-plane split — a small-scale rehearsal of the bring-your-own-account
+  model. See `docs/live-smoke.md`.
+
 ## [0.5.0] — 2026-07-22
 
 ### Added
