@@ -9,6 +9,13 @@ Pre-1.0, breaking changes bump the MINOR version.
 ## [Unreleased]
 
 ### Added
+- **Live smoke test** (`workflow_dispatch`, #27) — a manual regression guard for
+  the self-termination guarantee (which silently regressed once, #19). Two tiers:
+  a **substrate** tier (default, zero-credential) that boots the emulator and runs
+  the `EC2Provider` integration tests with `SUBSTRATE_REQUIRED=1` so a failed-boot
+  can't masquerade as green; and an opt-in **real-aws** tier that launches one
+  t4g.nano via GitHub OIDC (no stored keys), observes spored self-terminate on
+  its TTL, and leak-checks. Never runs on push/PR. See `docs/live-smoke.md`.
 - **Optional spored signature verification** (#26) — an `EC2Provider`
   `sporedSigningPublicKey` (PEM) makes the bootstrap verify the downloaded
   `spored`'s detached signature (`openssl`, fail-closed) against a launcher-held

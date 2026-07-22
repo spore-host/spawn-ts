@@ -1,0 +1,104 @@
+name: Live smoke test
+
+# Manually triggered only — never on push/PR. Two tiers:
+#   - substrate: boots the substrate AWS emulator and runs the EC2Provider
+#     integration tests (launch → tags → self-terminate over the real SDK path),
+#     with SUBSTRATE_REQUIRED=1 so a substrate that failed to boot fails the run
+#     rather than silently skipping (the trap that hid #19). Zero AWS, zero cost.
+#   - real-aws: (added once an OIDC role exists) launches one t4g.nano on real
+#     AWS via OIDC, observes spored self-terminate on its TTL, and leak-checks.
+#     Gated behind the `live-smoke` environment. See the `real-aws` job (disabled
+#     until the role ARN is wired).
+on:
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: "Which tier to run"
+        type: choice
+        options: [substrate, real-aws, both]
+        default: substrate
+
+permissions:
+  contents: read
+
+jobs:
+  substrate:
+    name: substrate emulator
+    if: ${{ inputs.tier == 'substrate' || inputs.tier == 'both' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      # The truffle-ts git dependency is cloned over HTTPS (npm normalizes to ssh).
+      - run: git config --global url."https://github.com/".insteadOf "git@github.com:"
+      - run: npm ci
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      # Build substrate from source at a pinned tag and start it with CORS on.
+      # (No published binary/image, so source build is the reliable path.)
+      - name: Build + start substrate
+        env:
+          SUBSTRATE_REF: v0.73.0
+        run: |
+          git clone --depth 1 --branch "$SUBSTRATE_REF" https://github.com/scttfrdmn/substrate.git /tmp/substrate
+          ( cd /tmp/substrate && go build -o /tmp/substrate-bin ./cmd/substrate )
+          SUBSTRATE_SERVER_CORS_ENABLED=true /tmp/substrate-bin server --address :4566 &
+          echo "SUBSTRATE_ENDPOINT=http://localhost:4566" >> "$GITHUB_ENV"
+
+      - name: Wait for substrate to be ready
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:4566/health >/dev/null; then echo "substrate up"; exit 0; fi
+            sleep 1
+          done
+          echo "substrate did not become ready" >&2; exit 1
+
+      # SUBSTRATE_REQUIRED=1 → the integration tests fail (not skip) if substrate
+      # is somehow unreachable, so this job can't go green without exercising it.
+      - name: Run EC2Provider integration tests against substrate
+        env:
+          SUBSTRATE_REQUIRED: "1"
+        run: npx vitest run src/aws/ec2.integration.test.ts
+
+  # ---------------------------------------------------------------------------
+  # real-aws: launches ONE t4g.nano on real AWS via OIDC (no stored keys),
+  # observes spored self-terminate on a short TTL, and leak-checks. DISABLED
+  # until an OIDC role that trusts this repo's `live-smoke` environment exists
+  # (see docs/live-smoke.md). To enable: set vars.LIVE_SMOKE_ROLE_ARN +
+  # vars.LIVE_SMOKE_REGION and flip the `if:` below.
+  real-aws:
+    name: real AWS (OIDC)
+    if: ${{ (inputs.tier == 'real-aws' || inputs.tier == 'both') && vars.LIVE_SMOKE_ROLE_ARN != '' }}
+    runs-on: ubuntu-latest
+    environment: live-smoke
+    permissions:
+      contents: read
+      id-token: write # OIDC — no stored AWS keys
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: git config --global url."https://github.com/".insteadOf "git@github.com:"
+      - run: npm ci
+
+      - name: Assume the smoke-test role via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.LIVE_SMOKE_ROLE_ARN }}
+          role-session-name: spawn-ts-live-smoke
+          aws-region: ${{ vars.LIVE_SMOKE_REGION || 'us-east-1' }}
+
+      - name: Launch → observe self-terminate → leak-check
+        env:
+          LIVE_SMOKE_REGION: ${{ vars.LIVE_SMOKE_REGION || 'us-east-1' }}
+          LIVE_SMOKE_INSTANCE_PROFILE: ${{ vars.LIVE_SMOKE_INSTANCE_PROFILE || 'spored-instance-profile' }}
+        run: node scripts/live-smoke.mjs
