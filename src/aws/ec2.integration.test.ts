@@ -15,6 +15,11 @@ import { tag } from "../core/tags.js";
 const ENDPOINT = process.env.SUBSTRATE_ENDPOINT ?? "http://localhost:4566";
 const T0 = Date.UTC(2026, 6, 20, 12, 0, 0);
 
+// SUBSTRATE_REQUIRED=1 turns the "unreachable → skip" convenience into a hard
+// failure. CI's live-smoke workflow sets it so a substrate that failed to boot
+// can't masquerade as a green run (the silent-skip trap that hid spawn-ts#19).
+const REQUIRED = process.env.SUBSTRATE_REQUIRED === "1";
+
 let reachable = false;
 beforeAll(async () => {
   try {
@@ -24,6 +29,11 @@ beforeAll(async () => {
     reachable = false;
   }
   if (!reachable) {
+    if (REQUIRED) {
+      throw new Error(
+        `[integration] SUBSTRATE_REQUIRED=1 but substrate is not reachable at ${ENDPOINT}`,
+      );
+    }
     console.warn(`[integration] substrate not reachable at ${ENDPOINT}; skipping`);
     return;
   }
