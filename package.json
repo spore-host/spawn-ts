@@ -26,6 +26,7 @@
     "dev": "vite",
     "dev:demo": "vite demo/direct",
     "dev:portal": "tsx demo/portal/server.ts",
+    "build:portal-ui": "node demo/portal/build-ui.mjs",
     "build": "tsc && vite build && npm run docs",
     "docs": "typedoc",
     "preview": "vite preview",

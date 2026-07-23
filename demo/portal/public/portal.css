@@ -58,3 +58,11 @@ code { background: #0d0f14; padding: 1px 5px; border-radius: 4px; font-size: 12p
 .inst .row span { color: var(--muted); }
 .state-running { color: var(--ok); }
 .state-shutting-down, .state-terminated { color: #fbbf24; }
+.term {
+  height: 320px;
+  margin-top: 10px;
+  background: #0d0f14;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+}

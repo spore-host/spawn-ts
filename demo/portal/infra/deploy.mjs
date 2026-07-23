@@ -37,6 +37,18 @@ const aws = (...args) => execFileSync("aws", [...args, "--region", REGION], { st
 // 1) Bundle the Lambda handler (ESM, node20) + copy static assets into a workdir.
 const work = mkdtempSync(join(tmpdir(), "portal-deploy-"));
 console.log(`[deploy] bundling into ${work}`);
+
+// Bundle the browser terminal (public/portal-terminal.js + .css) so the deployed
+// static assets include it.
+await build({
+  entryPoints: [join(PORTAL, "portal-terminal.ts")],
+  bundle: true,
+  format: "esm",
+  platform: "browser",
+  target: "es2022",
+  outfile: join(PORTAL, "public", "portal-terminal.js"),
+});
+
 await build({
   entryPoints: [join(PORTAL, "lambda.ts")],
   bundle: true,

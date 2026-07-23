@@ -4,7 +4,7 @@
 
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { SsmSession, type SsmSessionInit } from "../lib/ssm/index.js";
+import { SsmSession, type SsmSessionInit } from "./ssm/index.js";
 
 export interface AttachedTerminal {
   term: Terminal;

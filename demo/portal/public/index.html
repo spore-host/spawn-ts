@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>spawn-ts demo · portal (BYOA, the portal drives)</title>
     <link rel="stylesheet" href="./portal.css" />
+    <link rel="stylesheet" href="./portal-terminal.css" />
   </head>
   <body>
     <div id="app">
@@ -42,7 +43,17 @@
         <button class="refresh">Refresh</button>
         <div class="instances"></div>
       </section>
+
+      <section class="card term-card" hidden>
+        <h3>Terminal (brokered by the portal)</h3>
+        <div class="hint">This shell is opened by the <b>portal</b> via SSM — the portal
+        called <code>StartSession</code> and handed your browser only a session token, never
+        AWS credentials. You couldn't open this yourself.</div>
+        <button class="term-close">Close terminal</button>
+        <div class="term"></div>
+      </section>
     </div>
+    <script type="module" src="./portal-terminal.js"></script>
     <script type="module" src="./portal.js"></script>
   </body>
 </html>

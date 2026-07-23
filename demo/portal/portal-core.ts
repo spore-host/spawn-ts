@@ -9,6 +9,7 @@
 
 import type { STSClient } from "@aws-sdk/client-sts";
 import { AssumeRoleCommand } from "@aws-sdk/client-sts";
+import { SSMClient, StartSessionCommand, TerminateSessionCommand } from "@aws-sdk/client-ssm";
 import { SpawnClient } from "../../src/core/client.js";
 import { EC2Provider } from "../../src/aws/ec2.js";
 import type { ManagedInstance } from "../../src/core/types.js";
@@ -40,6 +41,26 @@ export interface PortalInstanceView {
  * own infra identity) is injected so this is testable with a stub.
  */
 export async function clientForUserAccount(sts: STSClient, cfg: PortalConfig): Promise<SpawnClient> {
+  const c = await assumeUserAccount(sts, cfg);
+  return new SpawnClient({
+    provider: new EC2Provider({
+      region: cfg.region,
+      accessKeyId: c.accessKeyId,
+      secretAccessKey: c.secretAccessKey,
+      sessionToken: c.sessionToken,
+      iamInstanceProfile: cfg.instanceProfile,
+    }),
+  });
+}
+
+interface TempCreds {
+  accessKeyId: string;
+  secretAccessKey: string;
+  sessionToken: string;
+}
+
+/** Assume the user-account role and return the raw temporary credentials. */
+async function assumeUserAccount(sts: STSClient, cfg: PortalConfig): Promise<TempCreds> {
   const assumed = await sts.send(
     new AssumeRoleCommand({
       RoleArn: cfg.roleArn,
@@ -52,15 +73,43 @@ export async function clientForUserAccount(sts: STSClient, cfg: PortalConfig): P
   if (!c?.AccessKeyId || !c.SecretAccessKey || !c.SessionToken) {
     throw new Error("AssumeRole returned no credentials");
   }
-  return new SpawnClient({
-    provider: new EC2Provider({
-      region: cfg.region,
-      accessKeyId: c.AccessKeyId,
-      secretAccessKey: c.SecretAccessKey,
-      sessionToken: c.SessionToken,
-      iamInstanceProfile: cfg.instanceProfile,
-    }),
+  return { accessKeyId: c.AccessKeyId, secretAccessKey: c.SecretAccessKey, sessionToken: c.SessionToken };
+}
+
+/** The session-scoped tuple handed to the browser. NOT AWS credentials. */
+export interface BrokeredSession {
+  sessionId: string;
+  streamUrl: string;
+  tokenValue: string;
+}
+
+/**
+ * Broker an SSM shell session for an instance: assume the user-account role, call
+ * ssm:StartSession, and return ONLY the session-scoped {sessionId, streamUrl,
+ * tokenValue}. The browser opens the data channel with this tuple — it never
+ * receives AWS credentials, so the portal remains the sole authorizer of access.
+ */
+export async function startBrokeredSession(sts: STSClient, cfg: PortalConfig, instanceId: string): Promise<BrokeredSession> {
+  const c = await assumeUserAccount(sts, cfg);
+  const ssm = new SSMClient({
+    region: cfg.region,
+    credentials: { accessKeyId: c.accessKeyId, secretAccessKey: c.secretAccessKey, sessionToken: c.sessionToken },
   });
+  const started = await ssm.send(new StartSessionCommand({ Target: instanceId }));
+  if (!started.SessionId || !started.StreamUrl || !started.TokenValue) {
+    throw new Error("StartSession returned an incomplete session");
+  }
+  return { sessionId: started.SessionId, streamUrl: started.StreamUrl, tokenValue: started.TokenValue };
+}
+
+/** Terminate a brokered SSM session (assume role → ssm:TerminateSession). */
+export async function terminateBrokeredSession(sts: STSClient, cfg: PortalConfig, sessionId: string): Promise<void> {
+  const c = await assumeUserAccount(sts, cfg);
+  const ssm = new SSMClient({
+    region: cfg.region,
+    credentials: { accessKeyId: c.accessKeyId, secretAccessKey: c.secretAccessKey, sessionToken: c.sessionToken },
+  });
+  await ssm.send(new TerminateSessionCommand({ SessionId: sessionId }));
 }
 
 /**

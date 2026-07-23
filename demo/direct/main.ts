@@ -18,7 +18,7 @@ import { STSClient, GetCallerIdentityCommand } from "@aws-sdk/client-sts";
 import { SSMClient, StartSessionCommand, TerminateSessionCommand } from "@aws-sdk/client-ssm";
 import { sporeHostName } from "../lib/dns-name.js";
 import { resolveA } from "../lib/dns-resolve.js";
-import { attachTerminal, type AttachedTerminal } from "./terminal.js";
+import { attachTerminal, type AttachedTerminal } from "../lib/terminal.js";
 
 const app = document.getElementById("app")!;
 
