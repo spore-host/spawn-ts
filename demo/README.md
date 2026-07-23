@@ -39,6 +39,14 @@ green — that's live confirmation that `spored` registered with infra. (You can
 confirm out-of-band by resolving the name yourself, or reading the spored journal on the
 box for `✓ DNS registered`.)
 
+> **Known infra issue (spawn#435):** the infra DNS Function URL has moved to
+> `AuthType: AWS_IAM`, and `spored`'s registration requests are currently being rejected
+> before they reach the Lambda — so the "DNS trust" row may stay yellow ("not resolvable
+> yet") even though the instance is healthy and self-terminates correctly. This is an
+> instance-side/infra-cutover matter tracked on the `spawn` repo, not a demo bug: the
+> demo faithfully sets `SPORE_DNS_SIGV4=1`, points at real infra, and only turns the row
+> green on a genuine match. The self-termination guarantee is unaffected.
+
 ### Run
 
 ```bash
