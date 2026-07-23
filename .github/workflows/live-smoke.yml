@@ -33,8 +33,6 @@ jobs:
         with:
           node-version: 20
           cache: npm
-      # The truffle-ts git dependency is cloned over HTTPS (npm normalizes to ssh).
-      - run: git config --global url."https://github.com/".insteadOf "git@github.com:"
       - run: npm ci
 
       - uses: actions/setup-go@v5
@@ -89,7 +87,6 @@ jobs:
         with:
           node-version: 20
           cache: npm
-      - run: git config --global url."https://github.com/".insteadOf "git@github.com:"
       - run: npm ci
 
       # Step 1: OIDC → the infra identity-anchor role (LIVE_SMOKE_ROLE_ARN).
