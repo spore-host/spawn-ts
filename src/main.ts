@@ -28,6 +28,7 @@ topbar.innerHTML = `
       <option value="3600">3600× (1h/s)</option>
     </select>
   </label>
+  <a class="demo-link" href="./demo/direct/">BYOA demo →</a>
   <button class="pick-backend">Backend…</button>`;
 app.appendChild(topbar);
 
