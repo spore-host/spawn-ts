@@ -111,6 +111,10 @@ export class SsmSession {
       case PayloadType.Output:
       case PayloadType.StdErr:
       case PayloadType.Error:
+        // Shell output flowing means the session is live — some agents don't send
+        // a distinct HandshakeComplete for a default shell, so treat first output
+        // as "ready" too.
+        this.handshakeDone = true;
         this.handlers.onOutput?.(this.dec.decode(m.payload));
         break;
       case PayloadType.HandshakeRequest:
