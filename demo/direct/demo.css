@@ -43,6 +43,12 @@ button {
 button.primary { background: var(--accent); color: #0b1020; border-color: transparent; font-weight: 600; }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 .warn { color: var(--warn); font-size: 12px; margin-top: 10px; }
+.globus-note { color: var(--muted); font-size: 13px; margin-bottom: 10px; }
+.globus-note b { color: var(--text); }
+.globus-config-hint { font-size: 11px; margin-top: 6px; word-break: break-all; }
+.muted { color: var(--muted); }
+.paste-fallback { margin-top: 14px; }
+.paste-fallback summary { color: var(--muted); cursor: pointer; font-size: 13px; }
 .whoami { margin-top: 12px; font-size: 13px; }
 .whoami.ok { color: var(--ok); }
 .whoami.err { color: var(--err); }
