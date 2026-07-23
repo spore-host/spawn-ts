@@ -8,6 +8,11 @@ Pre-1.0, breaking changes bump the MINOR version.
 
 ## [Unreleased]
 
+### Changed
+- **`@spore-host/truffle-ts` is now an npm dependency** (`^0.4.0`) instead of a
+  git URL (#28). The three CI/Pages `git@github`→HTTPS rewrite steps are removed —
+  `npm ci` resolves it from the registry like any other package.
+
 ### Added
 - **Cross-account launch for the live smoke test** (#38) — the real-aws tier can
   now role-chain from the OIDC identity-anchor account into a separate compute

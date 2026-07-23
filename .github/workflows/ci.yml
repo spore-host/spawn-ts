@@ -24,9 +24,6 @@ jobs:
       # The @spore-host/truffle-ts dependency is a public git dependency; npm
       # normalizes its lockfile URL to git+ssh, which CI runners can't clone.
       # Rewrite git@github → https so `npm ci` fetches it over HTTPS.
-      - name: Use HTTPS for GitHub git dependencies
-        run: git config --global url."https://github.com/".insteadOf "git@github.com:"
-
       - name: Install dependencies
         run: npm ci
 
