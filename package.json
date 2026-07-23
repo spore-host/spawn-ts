@@ -26,6 +26,7 @@
     "dev": "vite",
     "dev:demo": "vite demo/direct",
     "dev:portal": "tsx demo/portal/server.ts",
+    "build:portal-ui": "node demo/portal/build-ui.mjs",
     "build": "tsc && vite build && npm run docs",
     "docs": "typedoc",
     "preview": "vite preview",
@@ -36,8 +37,10 @@
   },
   "dependencies": {
     "@aws-sdk/client-ec2": "^3.700.0",
+    "@aws-sdk/client-ssm": "^3.1093.0",
     "@aws-sdk/client-sts": "^3.700.0",
-    "@spore-host/truffle-ts": "^0.4.0"
+    "@spore-host/truffle-ts": "^0.4.0",
+    "@xterm/xterm": "^6.0.0"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",

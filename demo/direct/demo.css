@@ -58,3 +58,12 @@ code { background: #0d0f14; padding: 1px 5px; border-radius: 4px; font-size: 12p
 .state-shutting-down, .state-terminated { color: var(--warn); }
 .log { margin-top: 14px; font-family: ui-monospace, monospace; font-size: 12px; }
 .logline { padding: 3px 0; color: var(--muted); border-top: 1px dashed var(--border); }
+.term-wrap { margin-top: 14px; }
+.term-note { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+.term {
+  height: 320px;
+  background: #0d0f14;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+}

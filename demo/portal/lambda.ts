@@ -11,7 +11,13 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, extname } from "node:path";
 import { STSClient } from "@aws-sdk/client-sts";
-import { clientForUserAccount, toPortalView, portalConfigFromEnv } from "./portal-core.js";
+import {
+  clientForUserAccount,
+  toPortalView,
+  portalConfigFromEnv,
+  startBrokeredSession,
+  terminateBrokeredSession,
+} from "./portal-core.js";
 
 // Lambda Function URL event/response shapes (subset we use). Kept local so the
 // demo needs no @types/aws-lambda dependency.
@@ -82,6 +88,17 @@ export async function handler(event: FunctionUrlEvent): Promise<FunctionUrlResul
       if (!instanceId) return json(400, { error: "instanceId required" });
       const client = await clientForUserAccount(sts, CFG);
       await client.terminate(instanceId, "portal-mediated terminate");
+      return json(200, { ok: true });
+    }
+    if (method === "POST" && path === "/api/session") {
+      const instanceId = String(body.instanceId ?? "");
+      if (!instanceId) return json(400, { error: "instanceId required" });
+      return json(200, await startBrokeredSession(sts, CFG, instanceId));
+    }
+    if (method === "POST" && path === "/api/session/terminate") {
+      const sessionId = String(body.sessionId ?? "");
+      if (!sessionId) return json(400, { error: "sessionId required" });
+      await terminateBrokeredSession(sts, CFG, sessionId);
       return json(200, { ok: true });
     }
     return staticFile(path);

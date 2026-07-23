@@ -33,6 +33,8 @@ import {
   clientForUserAccount,
   toPortalView as view,
   portalConfigFromEnv,
+  startBrokeredSession,
+  terminateBrokeredSession,
   type PortalConfig,
 } from "./portal-core.js";
 
@@ -129,6 +131,25 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     if (!instanceId) return sendJson(res, 400, { error: "instanceId required" });
     const client = await clientForUserAccount(sts, CFG);
     await client.terminate(instanceId, "portal-mediated terminate");
+    return sendJson(res, 200, { ok: true });
+  }
+
+  // POST /api/session { instanceId } → portal brokers an SSM shell session and
+  // returns ONLY the session tuple (no AWS creds ever reach the browser).
+  if (req.method === "POST" && path === "/api/session") {
+    const body = await readBody(req);
+    const instanceId = String(body.instanceId ?? "");
+    if (!instanceId) return sendJson(res, 400, { error: "instanceId required" });
+    const session = await startBrokeredSession(sts, CFG, instanceId);
+    return sendJson(res, 200, session);
+  }
+
+  // POST /api/session/terminate { sessionId } → portal ends the brokered session.
+  if (req.method === "POST" && path === "/api/session/terminate") {
+    const body = await readBody(req);
+    const sessionId = String(body.sessionId ?? "");
+    if (!sessionId) return sendJson(res, 400, { error: "sessionId required" });
+    await terminateBrokeredSession(sts, CFG, sessionId);
     return sendJson(res, 200, { ok: true });
   }
 

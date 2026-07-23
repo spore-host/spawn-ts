@@ -40,6 +40,12 @@ $(".launch").addEventListener("click", async () => {
 
 $(".refresh").addEventListener("click", () => void refresh());
 
+$(".term-close").addEventListener("click", async () => {
+  await window.portalTerminal.close();
+  $(".term-card").hidden = true;
+  $(".term-card .term").innerHTML = "";
+});
+
 async function refresh() {
   const wrap = $(".instances");
   wrap.innerHTML = "<div class='hint'>Loading…</div>";
@@ -61,6 +67,26 @@ async function refresh() {
         <div class="row"><span>TTL deadline</span>${deadline}</div>
         <div class="row"><span>controlled by</span><b>${i.managedBy}</b> (not you)</div>
       `;
+      if (i.state === "running") {
+        const openTerm = document.createElement("button");
+        openTerm.textContent = "Open terminal (via portal)";
+        openTerm.addEventListener("click", async () => {
+          openTerm.disabled = true;
+          openTerm.textContent = "Opening…";
+          try {
+            document.querySelector(".term-card").hidden = false;
+            await window.portalTerminal.open(i.instanceId, document.querySelector(".term-card .term"));
+            msg(`Portal brokered an SSM session into ${i.instanceId}.`, "ok");
+          } catch (err) {
+            msg(`Terminal failed: ${err.message}`, "err");
+          } finally {
+            openTerm.disabled = false;
+            openTerm.textContent = "Open terminal (via portal)";
+          }
+        });
+        card.appendChild(openTerm);
+      }
+
       const term = document.createElement("button");
       term.textContent = "Terminate (via portal)";
       term.addEventListener("click", async () => {

@@ -1,13 +1,44 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { STSClient } from "@aws-sdk/client-sts";
 import { EC2Provider } from "../../src/aws/ec2.js";
 import {
   clientForUserAccount,
   toPortalView,
   portalConfigFromEnv,
+  startBrokeredSession,
+  terminateBrokeredSession,
   type PortalConfig,
 } from "./portal-core.js";
 import type { ManagedInstance } from "../../src/core/types.js";
+
+// Capture SSM commands sent through a stubbed SSMClient.
+const ssmSends: unknown[] = [];
+vi.mock("@aws-sdk/client-ssm", async (orig) => {
+  const actual = await orig<typeof import("@aws-sdk/client-ssm")>();
+  return {
+    ...actual,
+    SSMClient: class {
+      config: unknown;
+      constructor(cfg: unknown) {
+        this.config = cfg;
+      }
+      send(cmd: unknown) {
+        ssmSends.push(cmd);
+        const name = (cmd as { constructor: { name: string } }).constructor.name;
+        if (name === "StartSessionCommand") {
+          return Promise.resolve({ SessionId: "s-abc", StreamUrl: "wss://ssmmessages/data-channel/s-abc?stream=input", TokenValue: "SESSION_TOKEN" });
+        }
+        return Promise.resolve({});
+      }
+    },
+  };
+});
+
+function assumeStub() {
+  return vi.fn().mockResolvedValue({
+    Credentials: { AccessKeyId: "ASIA", SecretAccessKey: "sk", SessionToken: "st", Expiration: new Date(0) },
+  });
+}
 
 const CFG: PortalConfig = {
   roleArn: "arn:aws:iam::435415984226:role/spawn-ts-portal-launch",
@@ -139,5 +170,45 @@ describe("clientForUserAccount", () => {
       send: vi.fn().mockRejectedValue(new Error("AccessDenied: not authorized to perform: sts:AssumeRole")),
     } as unknown as STSClient;
     await expect(clientForUserAccount(sts, CFG)).rejects.toThrow(/sts:AssumeRole/);
+  });
+});
+
+describe("startBrokeredSession", () => {
+  beforeEach(() => {
+    ssmSends.length = 0;
+  });
+
+  it("assumes the role, calls StartSession, and returns ONLY the session tuple", async () => {
+    const sts = { send: assumeStub() } as unknown as STSClient;
+    const session = await startBrokeredSession(sts, CFG, "i-0abc");
+
+    // returns exactly the session-scoped tuple — no AWS credentials
+    expect(session).toEqual({
+      sessionId: "s-abc",
+      streamUrl: "wss://ssmmessages/data-channel/s-abc?stream=input",
+      tokenValue: "SESSION_TOKEN",
+    });
+    expect(session).not.toHaveProperty("accessKeyId");
+    expect(session).not.toHaveProperty("secretAccessKey");
+    expect(session).not.toHaveProperty("sessionToken");
+
+    // StartSession targeted the instance
+    const start = ssmSends.find((c) => (c as { constructor: { name: string } }).constructor.name === "StartSessionCommand");
+    expect((start as { input: { Target: string } }).input.Target).toBe("i-0abc");
+  });
+
+});
+
+describe("terminateBrokeredSession", () => {
+  beforeEach(() => {
+    ssmSends.length = 0;
+  });
+
+  it("assumes the role and calls TerminateSession with the session id", async () => {
+    const sts = { send: assumeStub() } as unknown as STSClient;
+    await terminateBrokeredSession(sts, CFG, "s-xyz");
+    const term = ssmSends.find((c) => (c as { constructor: { name: string } }).constructor.name === "TerminateSessionCommand");
+    expect(term).toBeTruthy();
+    expect((term as { input: { SessionId: string } }).input.SessionId).toBe("s-xyz");
   });
 });

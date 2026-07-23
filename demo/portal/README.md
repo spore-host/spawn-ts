@@ -19,8 +19,20 @@ Browser (portal UI, no credentials)
 
 The instance runs under the **portal's** assumed role, not yours — so the UI offers
 only portal-mediated actions (status, terminate-via-portal). There is deliberately no
-credential entry and no direct-SSH affordance: you don't hold the credential that
-controls the box.
+credential entry: you don't hold the credential that controls the box.
+
+### Terminal — brokered by the portal
+
+A running instance gets an **Open terminal (via portal)** button. The portal calls
+`ssm:StartSession` with its assumed role and hands your browser **only** the
+session-scoped `{sessionId, streamUrl, tokenValue}` — never AWS credentials. Your browser
+opens the SSM data channel with that token and renders the shell (xterm). This is the
+faithful "access is brokered by the portal" model: the portal is the sole authorizer, and
+you could not open the session yourself. Closing calls `ssm:TerminateSession`.
+
+Validated live end-to-end: the browser authenticates the SSM WebSocket with the token
+message alone (no SigV4 header, which browsers can't send) and runs a real shell —
+confirmed `whoami` → `ssm-user`.
 
 ## Prerequisites — the dev portal-launch role (one-time IAM)
 
