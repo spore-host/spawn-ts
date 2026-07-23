@@ -20,6 +20,29 @@ export function tag(key: string): string {
 }
 
 /**
+ * Convert a name into a single RFC-1035 DNS label safe for the FQDN segment
+ * {label}.{base36(account)}.spore.host, or "" if it can't. Port of the Go tool's
+ * slugifyDNSLabel (pkg/aws/tags.go): lowercase; keep [a-z0-9]; collapse any run
+ * of other chars to a single hyphen; no leading/trailing hyphen; ≤63 chars.
+ */
+export function slugifyDnsLabel(name: string): string {
+  let out = "";
+  let lastHyphen = false;
+  for (const ch of name.toLowerCase()) {
+    if ((ch >= "a" && ch <= "z") || (ch >= "0" && ch <= "9")) {
+      out += ch;
+      lastHyphen = false;
+    } else if (!lastHyphen && out.length > 0) {
+      out += "-";
+      lastHyphen = true;
+    }
+  }
+  out = out.replace(/^-+|-+$/g, "");
+  if (out.length > 63) out = out.slice(0, 63).replace(/-+$/g, "");
+  return out;
+}
+
+/**
  * Prefix for per-member parameter tags: spawn:param:<key>=<value>. Mirrors the
  * Go tool (pkg/aws/tags.go), which caps parameter tags to stay under the AWS
  * 50-tag limit; buildSweepTags applies the same cap.
@@ -50,6 +73,14 @@ export function buildLaunchTags(spec: LaunchSpec, launchTimeMs: number): Record<
     [tag("launch-time")]: rfc3339(launchTimeMs),
     [tag("compute-seconds")]: "0",
   };
+
+  // DNS name: spored registers {dns-name}.{base36(account)}.spore.host only when
+  // spawn:dns-name is present (agent.go gates on a non-empty config.DNSName). The
+  // Go launcher defaults --dns to the required --name, so it always sets this; we
+  // mirror that — default to the (slugified) launch name unless overridden. An
+  // empty slug (e.g. a name with no DNS-safe chars) omits the tag, disabling DNS.
+  const dnsLabel = slugifyDnsLabel(spec.dnsName ?? spec.name);
+  if (dnsLabel) tags[tag("dns-name")] = dnsLabel;
 
   if (spec.ttlMs > 0) {
     tags[tag("ttl")] = formatDuration(spec.ttlMs);

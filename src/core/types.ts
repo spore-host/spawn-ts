@@ -19,6 +19,14 @@ export interface LaunchSpec {
   keyPair?: string;
   spot: boolean;
 
+  /**
+   * DNS label for the instance's spore.host name. spored registers
+   * {dnsName}.{base36(account)}.spore.host only when this is set (mirrors the Go
+   * tool, whose --dns defaults to the required --name). Undefined = default to a
+   * slugified `name`; an empty result omits spawn:dns-name (DNS disabled).
+   */
+  dnsName?: string;
+
   /** TTL in ms. Always terminates on expiry — the hard cost backstop. 0 = none. */
   ttlMs: number;
   /** Idle timeout in ms. Stops (or hibernates) after inactivity. 0 = none. */
