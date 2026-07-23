@@ -55,6 +55,7 @@ app.innerHTML = `
     </select>
     <div class="dns-preview"></div>
     <button class="primary go">Launch t4g.nano</button>
+    <button class="reset" hidden>Reset (launch again)</button>
   </section>
 
   <section class="card status" hidden>
@@ -152,8 +153,28 @@ $(".go").addEventListener("click", async () => {
     poll(inst.instanceId, name);
   } catch (err) {
     log(`Launch failed: ${(err as Error).message}`);
-    ($<HTMLButtonElement>(".go")).disabled = false;
+    showReset();
   }
+});
+
+// Reveal the reset control when a run is done (terminated or failed) so the demo
+// can be run again without re-entering credentials — the connected client is
+// reused as-is.
+function showReset() {
+  ($<HTMLButtonElement>(".reset")).hidden = false;
+}
+
+// Reset for another run: keep the connection/creds, clear the per-run view and
+// DNS state, and re-arm the launch button.
+$(".reset").addEventListener("click", () => {
+  dnsStatus = "pending";
+  dnsConfirmed = false;
+  $(".inst").innerHTML = "";
+  $(".log").innerHTML = "";
+  $(".status").hidden = true;
+  ($<HTMLButtonElement>(".reset")).hidden = true;
+  ($<HTMLButtonElement>(".go")).disabled = false;
+  updateDnsPreview();
 });
 
 // Tracks the outcome of the DNS "trust with infra" check, shown in render().
@@ -174,6 +195,7 @@ function poll(instanceId: string, name: string) {
     if (!inst) {
       log(`${name} no longer visible — terminated and reaped.`);
       clearInterval(timer);
+      showReset();
       return;
     }
     void checkDns(inst);
@@ -187,6 +209,7 @@ function poll(instanceId: string, name: string) {
     }
     if (inst.state === "terminated") {
       clearInterval(timer);
+      showReset();
     }
   }, 15_000);
 }
