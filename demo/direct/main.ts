@@ -167,6 +167,7 @@ let dnsConfirmed = false;
 // spored actually registered it with infra (an instance-side action we can't see
 // directly, but can confirm by resolution).
 function poll(instanceId: string, name: string) {
+  let announced = false;
   const timer = setInterval(async () => {
     if (!client) return;
     const inst = await client.get(instanceId);
@@ -177,8 +178,14 @@ function poll(instanceId: string, name: string) {
     }
     void checkDns(inst);
     render(inst);
-    if (inst.state === "shutting-down" || inst.state === "terminated") {
-      log(`✅ spored self-terminated ${instanceId} on its TTL (state: ${inst.state}).`);
+    // Announce the self-terminate the first time we see it wind down, but keep
+    // polling so the card reaches its true final state ("terminated") rather
+    // than freezing on "shutting-down".
+    if (!announced && (inst.state === "shutting-down" || inst.state === "terminated")) {
+      announced = true;
+      log(`✅ spored self-terminated ${instanceId} on its TTL.`);
+    }
+    if (inst.state === "terminated") {
       clearInterval(timer);
     }
   }, 15_000);
