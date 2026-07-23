@@ -53,8 +53,54 @@ box for `✓ DNS registered`.)
 npx vite demo/direct
 ```
 
-Open the printed URL, paste dev credentials (a `t4g.nano` on a 5-minute TTL costs well
-under 1¢), and launch. The instance self-terminates on its TTL even if you close the tab.
+Open the printed URL. Authenticate one of two ways:
+
+- **Sign in with Globus (no paste)** — shown when the page is opened with Globus + role
+  config (see below). You log in with your **institutional identity** (Globus →
+  CILogon/InCommon), and the browser exchanges that for short-lived AWS credentials in your
+  own account. No keys.
+- **Paste AWS credentials** (fallback) — under the "Or paste AWS credentials" disclosure.
+
+Then launch (a `t4g.nano` on a 5-minute TTL costs well under 1¢). The instance
+self-terminates on its TTL even if you close the tab.
+
+### No-paste sign-in via Globus (BYOA)
+
+The no-paste path is **Globus Auth (OIDC) → AWS STS `AssumeRoleWithWebIdentity`**, entirely
+in the browser (no backend). Globus federates CILogon/InCommon, so it's institution-agnostic:
+one Globus app + one AWS trust works for every InCommon school. Enable it by opening the demo
+with URL params:
+
+```
+demo/direct/?globus_client_id=<globus-client-uuid>&role_arn=<role-arn>&region=us-east-1
+```
+
+**One-time operator setup:**
+
+1. **Register a public Globus app** at [developers.globus.org](https://developers.globus.org)
+   (free — no subscription). Type: **public client** (native/SPA, no secret). Add the demo's
+   URL as a **redirect URI**. Note the **client-ID (UUID)**.
+2. **In the target AWS account**, create an IAM OIDC identity provider + a role that trusts it
+   (reuse the templates in [`scttfrdmn/aws-oidc-globus-auth`](https://github.com/scttfrdmn/aws-oidc-globus-auth)):
+   - OIDC provider URL: **`https://auth.globus.org`**; client-id-list: your Globus client-ID.
+   - Role trust policy: `sts:AssumeRoleWithWebIdentity` with
+     `StringEquals {"auth.globus.org:aud": "<client-id>"}` and
+     `StringLike {"auth.globus.org:sub": "*"}` (optionally tighten with `email_verified` /
+     `email` domain / `groups`, and map claims → `PrincipalTag` for per-user attribution).
+   - The role needs the EC2 launch + `iam:PassRole` (for `spored-instance-profile`) perms,
+     same as any spawn launch.
+
+This "point-to your account" step is the BYOA configuration — one-time per account.
+
+> **Verify at first wire-up:** decode the returned id_token (the demo logs its `aud`/`sub`)
+> and confirm `aud` equals your client-ID — that's what the AWS trust checks. AWS accepts
+> Globus's RS512-signed tokens.
+
+**Alternative — point directly at a university IdP:** instead of Globus-as-broker, you can
+federate a single institution's Shibboleth via SAML (`AssumeRoleWithSAML` + an IAM SAML
+provider per institution). Heavier (per-school metadata exchange) and not implemented here;
+Globus-as-broker is the recommended default because it abstracts every InCommon IdP behind
+one trust.
 
 > **Note:** launching requires the `spored-instance-profile` to exist in the target
 > account (it grants the instance the self-terminate + DNS-invoke permissions). It already

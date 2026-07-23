@@ -19,6 +19,7 @@ import { SSMClient, StartSessionCommand, TerminateSessionCommand } from "@aws-sd
 import { sporeHostName } from "../lib/dns-name.js";
 import { resolveA } from "../lib/dns-resolve.js";
 import { attachTerminal, type AttachedTerminal } from "../lib/terminal.js";
+import { beginLogin, completeLogin, hasAuthCode, credsFromIdToken } from "../lib/auth/index.js";
 
 const app = document.getElementById("app")!;
 
@@ -29,20 +30,34 @@ app.innerHTML = `
   </header>
 
   <section class="explain">
-    <p>You authenticate with <b>your own AWS credentials</b>. Compute launches into
-    <b>your account</b>. The instance's <code>spored</code> daemon registers a DNS name with
+    <p>You authenticate to <b>your own account</b> — ideally with your <b>institutional
+    identity</b> via Globus (no keys to paste), or by pasting credentials. Compute launches
+    into your account; the instance's <code>spored</code> daemon registers a DNS name with
     spore.host infra and <b>self-terminates on its TTL</b> — even if you close this tab.
     You own and control the instance.</p>
   </section>
 
   <section class="card creds">
     <h3>1 · Authenticate to your account</h3>
-    <label>region</label><input class="f-region" value="us-east-1" />
-    <label>access key id</label><input class="f-akid" autocomplete="off" />
-    <label>secret access key</label><input class="f-secret" type="password" autocomplete="off" />
-    <label>session token (optional, for STS temp creds)</label><input class="f-token" autocomplete="off" />
-    <div class="warn">Credentials are held in memory only, never stored. The launch below is a real, billable EC2 instance (a t4g.nano — well under 1¢ for a short TTL).</div>
-    <button class="primary connect">Connect</button>
+
+    <div class="globus" hidden>
+      <div class="globus-note">Sign in with your <b>institutional identity</b> (via Globus → CILogon/InCommon).
+      No credentials to paste — the browser exchanges your login for short-lived AWS credentials
+      in your own account.</div>
+      <button class="primary globus-signin">Sign in with Globus</button>
+      <div class="globus-config-hint muted"></div>
+    </div>
+
+    <details class="paste-fallback">
+      <summary>Or paste AWS credentials</summary>
+      <label>region</label><input class="f-region" value="us-east-1" />
+      <label>access key id</label><input class="f-akid" autocomplete="off" />
+      <label>secret access key</label><input class="f-secret" type="password" autocomplete="off" />
+      <label>session token (optional, for STS temp creds)</label><input class="f-token" autocomplete="off" />
+      <div class="warn">Credentials are held in memory only, never stored. The launch below is a real, billable EC2 instance (a t4g.nano — well under 1¢ for a short TTL).</div>
+      <button class="primary connect">Connect</button>
+    </details>
+
     <div class="whoami"></div>
   </section>
 
@@ -92,11 +107,82 @@ function log(msg: string) {
   $(".log").prepend(line);
 }
 
-// Step 1 — connect: verify creds via STS GetCallerIdentity (which also gives us
-// the account id we need to show the DNS name spored will register), then build
-// a real EC2Provider-backed client.
+// --- Config (URL params so the demo needs no hardcoded values) ---------------
+// ?globus_client_id=<uuid>&role_arn=<arn>&region=<r>
+const params = new URLSearchParams(window.location.search);
+const GLOBUS_CLIENT_ID = params.get("globus_client_id") ?? "";
+const ROLE_ARN = params.get("role_arn") ?? "";
+const CONFIG_REGION = params.get("region") ?? "us-east-1";
+// The redirect URI is this page, without the query string (Globus must allowlist it).
+const REDIRECT_URI = window.location.origin + window.location.pathname;
+
+// Shared: given verified creds + account, build the client and reveal the launch
+// step. Used by both the Globus and paste paths.
+function connectWithCreds(
+  c: { accessKeyId: string; secretAccessKey: string; sessionToken?: string },
+  acct: string,
+  who: string,
+  regionForClient: string,
+) {
+  region = regionForClient;
+  accountId = acct;
+  creds = c;
+  client = new SpawnClient({
+    provider: new EC2Provider({
+      region,
+      accessKeyId: c.accessKeyId,
+      secretAccessKey: c.secretAccessKey,
+      sessionToken: c.sessionToken,
+      // The spored instance profile in the target account — required for the
+      // instance to self-terminate and invoke the infra DNS Lambda.
+      iamInstanceProfile: "spored-instance-profile",
+    }),
+  });
+  client.startMonitor();
+  const whoami = $(".whoami");
+  whoami.innerHTML = `Connected to account <b>${escapeHtml(acct)}</b> ${who}`;
+  whoami.className = "whoami ok";
+  $(".launch").hidden = false;
+  updateDnsPreview();
+}
+
+// Globus is offered when a client id + role arn are configured.
+if (GLOBUS_CLIENT_ID && ROLE_ARN) {
+  $(".globus").hidden = false;
+  $(".globus-config-hint").textContent = `role: ${ROLE_ARN}`;
+}
+
+// "Sign in with Globus" → redirect to Globus (PKCE). Returns to this page with ?code=.
+$(".globus-signin").addEventListener("click", () => {
+  void beginLogin({ clientId: GLOBUS_CLIENT_ID, redirectUri: REDIRECT_URI });
+});
+
+// On load, if we're back from Globus with a code, finish the exchange → STS creds.
+async function handleGlobusRedirect() {
+  if (!hasAuthCode() || !GLOBUS_CLIENT_ID || !ROLE_ARN) return;
+  const whoami = $(".whoami");
+  whoami.textContent = "Completing Globus sign-in…";
+  whoami.className = "whoami";
+  try {
+    const { idToken, claims } = await completeLogin({ clientId: GLOBUS_CLIENT_ID, redirectUri: REDIRECT_URI });
+    log(`Globus sign-in ok (aud=${String(claims.aud)}, sub=${String(claims.sub)}) — federating to AWS…`);
+    const c = await credsFromIdToken(idToken, { roleArn: ROLE_ARN, region: CONFIG_REGION, sessionName: "globus-byoa-demo" });
+    // Resolve the account from the assumed identity.
+    const sts = new STSClient({ region: CONFIG_REGION, credentials: c });
+    const id = await sts.send(new GetCallerIdentityCommand({}));
+    connectWithCreds(c, id.Account ?? "", `via Globus (${escapeHtml(String(claims.email ?? claims.sub ?? ""))})`, CONFIG_REGION);
+    // Clean the ?code= from the URL so a refresh doesn't re-run the exchange.
+    window.history.replaceState({}, "", REDIRECT_URI);
+  } catch (err) {
+    whoami.textContent = `Globus sign-in failed: ${(err as Error).message}`;
+    whoami.className = "whoami err";
+  }
+}
+void handleGlobusRedirect();
+
+// Step 1 (fallback) — paste creds: verify via STS GetCallerIdentity, then connect.
 $(".connect").addEventListener("click", async () => {
-  region = val(".f-region") || "us-east-1";
+  const pasteRegion = val(".f-region") || "us-east-1";
   const accessKeyId = val(".f-akid");
   const secretAccessKey = val(".f-secret");
   const sessionToken = val(".f-token") || undefined;
@@ -109,28 +195,9 @@ $(".connect").addEventListener("click", async () => {
   whoami.textContent = "Verifying…";
   whoami.className = "whoami";
   try {
-    const sts = new STSClient({ region, credentials: { accessKeyId, secretAccessKey, sessionToken } });
+    const sts = new STSClient({ region: pasteRegion, credentials: { accessKeyId, secretAccessKey, sessionToken } });
     const id = await sts.send(new GetCallerIdentityCommand({}));
-    accountId = id.Account ?? "";
-    creds = { accessKeyId, secretAccessKey, sessionToken };
-    whoami.innerHTML = `Connected to account <b>${accountId}</b> as <code>${escapeHtml(id.Arn ?? "")}</code>`;
-    whoami.className = "whoami ok";
-
-    client = new SpawnClient({
-      provider: new EC2Provider({
-        region,
-        accessKeyId,
-        secretAccessKey,
-        sessionToken,
-        // The spored instance profile in the target account — required for the
-        // instance to self-terminate and invoke the infra DNS Lambda.
-        iamInstanceProfile: "spored-instance-profile",
-      }),
-    });
-    client.startMonitor();
-
-    $(".launch").hidden = false;
-    updateDnsPreview();
+    connectWithCreds({ accessKeyId, secretAccessKey, sessionToken }, id.Account ?? "", `as <code>${escapeHtml(id.Arn ?? "")}</code>`, pasteRegion);
   } catch (err) {
     whoami.textContent = `Could not authenticate: ${(err as Error).message}`;
     whoami.className = "whoami err";
