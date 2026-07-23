@@ -1,0 +1,103 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  spawn-ts Demo 2 portal — the BYOA compute plane, served from infra. A Lambda
+  behind a Function URL that assumes a role in the user/dev account and launches
+  ephemeral compute there. The Lambda execution role IS the portal's infra
+  identity; the browser never receives AWS credentials.
+
+Parameters:
+  PortalLaunchRoleArn:
+    Type: String
+    Description: Role in the user/dev account the portal assumes (BYOA launch role).
+    Default: arn:aws:iam::435415984226:role/spawn-ts-portal-launch
+  PortalExternalId:
+    Type: String
+    NoEcho: true
+    Description: Confused-deputy external id required when assuming the launch role.
+  PortalRegion:
+    Type: String
+    Default: us-east-1
+  PortalInstanceProfile:
+    Type: String
+    Default: spored-instance-profile
+
+Resources:
+  PortalFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: spawn-ts-portal
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: assume-launch-role
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # The portal's ONLY privileged action: assume the user-account
+              # launch role (which itself carries the EC2/PassRole perms). The
+              # ExternalId is supplied by the function at call time.
+              - Sid: AssumePortalLaunchRole
+                Effect: Allow
+                Action: sts:AssumeRole
+                Resource: !Ref PortalLaunchRoleArn
+      Tags:
+        - { Key: project, Value: spawn-ts }
+        - { Key: purpose, Value: portal-demo }
+
+  PortalFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: spawn-ts-portal
+      Runtime: nodejs20.x
+      Handler: handler.handler
+      Role: !GetAtt PortalFunctionRole.Arn
+      Timeout: 60
+      MemorySize: 256
+      # Code is uploaded by deploy.mjs (esbuild bundle + static public/). This
+      # placeholder is replaced on deploy.
+      Code:
+        ZipFile: "export const handler = async () => ({ statusCode: 503, body: 'not deployed' });"
+      Environment:
+        Variables:
+          PORTAL_LAUNCH_ROLE_ARN: !Ref PortalLaunchRoleArn
+          PORTAL_EXTERNAL_ID: !Ref PortalExternalId
+          PORTAL_REGION: !Ref PortalRegion
+          PORTAL_INSTANCE_PROFILE: !Ref PortalInstanceProfile
+      Tags:
+        - { Key: project, Value: spawn-ts }
+        - { Key: purpose, Value: portal-demo }
+
+  PortalFunctionUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !Ref PortalFunction
+      # A public demo portal. Note the portal exposes NO credentials and can only
+      # launch bounded t4g.nano instances (short TTL, self-terminating) into the
+      # connected account — the launch role is the sole privileged capability.
+      AuthType: NONE
+      Cors:
+        AllowOrigins: ["*"]
+        AllowMethods: ["*"]
+        AllowHeaders: ["content-type"]
+
+  PortalUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref PortalFunction
+      Action: lambda:InvokeFunctionUrl
+      Principal: "*"
+      FunctionUrlAuthType: NONE
+
+Outputs:
+  PortalUrl:
+    Description: The portal's public Function URL.
+    Value: !GetAtt PortalFunctionUrl.FunctionUrl
+  PortalRoleArn:
+    Description: The portal's infra identity (Lambda execution role).
+    Value: !GetAtt PortalFunctionRole.Arn

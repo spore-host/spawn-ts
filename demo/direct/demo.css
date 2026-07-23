@@ -1,0 +1,60 @@
+:root {
+  --bg: #0f1115;
+  --card: #171a21;
+  --border: #262b35;
+  --text: #e6e9ef;
+  --muted: #8b93a3;
+  --accent: #6ea8fe;
+  --ok: #4ade80;
+  --err: #f87171;
+  --warn: #fbbf24;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
+#app { max-width: 720px; margin: 0 auto; padding: 24px 16px 64px; }
+header {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 12px; margin-bottom: 8px; flex-wrap: wrap;
+}
+.brand { font-size: 18px; font-weight: 600; }
+.spore { color: var(--accent); }
+.mode { color: var(--muted); }
+.explain { color: var(--muted); margin: 8px 0 20px; }
+.explain b { color: var(--text); }
+.card {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 10px; padding: 16px; margin-bottom: 16px;
+}
+.card h3 { margin: 0 0 12px; font-size: 15px; }
+label { display: block; color: var(--muted); margin: 10px 0 4px; font-size: 12px; }
+input, select {
+  width: 100%; padding: 8px 10px; background: #0d0f14; color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px; font: inherit;
+}
+button {
+  margin-top: 14px; padding: 8px 16px; border-radius: 6px; border: 1px solid var(--border);
+  background: #222835; color: var(--text); cursor: pointer; font: inherit;
+}
+button.primary { background: var(--accent); color: #0b1020; border-color: transparent; font-weight: 600; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+.warn { color: var(--warn); font-size: 12px; margin-top: 10px; }
+.whoami { margin-top: 12px; font-size: 13px; }
+.whoami.ok { color: var(--ok); }
+.whoami.err { color: var(--err); }
+.dns-preview { margin-top: 12px; color: var(--muted); font-size: 13px; }
+.dns-preview b { color: var(--accent); }
+code { background: #0d0f14; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+.inst .row {
+  display: flex; justify-content: space-between; gap: 12px;
+  padding: 6px 0; border-bottom: 1px solid var(--border);
+}
+.inst .row span { color: var(--muted); }
+.state-running { color: var(--ok); }
+.state-shutting-down, .state-terminated { color: var(--warn); }
+.log { margin-top: 14px; font-family: ui-monospace, monospace; font-size: 12px; }
+.logline { padding: 3px 0; color: var(--muted); border-top: 1px dashed var(--border); }

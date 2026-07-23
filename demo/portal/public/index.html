@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>spawn-ts demo · portal (BYOA, the portal drives)</title>
+    <link rel="stylesheet" href="./portal.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <div class="brand"><span class="spore">spore</span>.host · spawn-ts demo</div>
+        <div class="mode">Demo 2 — portal · <b>BYOA, the portal drives</b></div>
+      </header>
+
+      <section class="explain">
+        <p>This is the <b>portal</b>. Notice there is <b>nowhere to enter AWS credentials</b> —
+        that's the point. The portal has its own identity; it <b>assumes a role in your
+        account</b> and launches compute there. Those instances run under the <b>portal's</b>
+        role, not yours: you reach them only through this portal, never directly. spored
+        still registers DNS with infra and self-terminates on its TTL.</p>
+      </section>
+
+      <section class="card">
+        <h3>Launch (into your connected account, via the portal)</h3>
+        <label>name</label><input class="f-name" value="portal-demo" />
+        <label>TTL</label>
+        <select class="f-ttl">
+          <option value="5m" selected>5 minutes</option>
+          <option value="10m">10 minutes</option>
+          <option value="15m">15 minutes</option>
+        </select>
+        <button class="primary launch">Ask the portal to launch</button>
+        <div class="msg"></div>
+      </section>
+
+      <section class="card">
+        <h3>Portal-managed instances</h3>
+        <div class="hint">These live in your account but are owned by the portal's role.
+        The only actions offered are portal-mediated — there is no direct SSH affordance,
+        because you don't hold the credential that controls the box.</div>
+        <button class="refresh">Refresh</button>
+        <div class="instances"></div>
+      </section>
+    </div>
+    <script type="module" src="./portal.js"></script>
+  </body>
+</html>
