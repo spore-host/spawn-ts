@@ -7,6 +7,7 @@ import {
   buildHookTags,
   decodeHookTags,
   buildLaunchTags,
+  slugifyDnsLabel,
   tag,
   PARAM_TAG_PREFIX,
 } from "./tags.js";
@@ -39,6 +40,36 @@ function baseSpec(sweep?: SweepMembership): LaunchSpec {
     sweep,
   };
 }
+
+describe("dns-name tag", () => {
+  it("defaults spawn:dns-name to the slugified launch name (so spored registers DNS)", () => {
+    // spored (agent.go) only registers {name}.{base36(account)}.spore.host when
+    // config.DNSName — from spawn:dns-name — is non-empty. The Go launcher's
+    // --dns defaults to --name; we mirror that. (Regression guard for spawn#435.)
+    expect(buildLaunchTags(baseSpec(), 0)[tag("dns-name")]).toBe("hp-2");
+  });
+
+  it("honors an explicit dnsName override", () => {
+    expect(buildLaunchTags({ ...baseSpec(), dnsName: "my-box" }, 0)[tag("dns-name")]).toBe("my-box");
+  });
+
+  it("slugifies a name with DNS-unsafe characters", () => {
+    expect(buildLaunchTags({ ...baseSpec(), name: "My Box_v2!" }, 0)[tag("dns-name")]).toBe("my-box-v2");
+  });
+
+  it("omits the tag when the name slugifies to empty (DNS disabled)", () => {
+    expect(buildLaunchTags({ ...baseSpec(), name: "!!!" }, 0)[tag("dns-name")]).toBeUndefined();
+  });
+
+  it("slugifyDnsLabel matches the Go rules", () => {
+    expect(slugifyDnsLabel("Hello World")).toBe("hello-world");
+    expect(slugifyDnsLabel("a__b..c")).toBe("a-b-c");
+    expect(slugifyDnsLabel("-lead-and-trail-")).toBe("lead-and-trail");
+    expect(slugifyDnsLabel("UPPER")).toBe("upper");
+    expect(slugifyDnsLabel("###")).toBe("");
+    expect(slugifyDnsLabel("x".repeat(80)).length).toBe(63);
+  });
+});
 
 describe("sweep tags", () => {
   it("buildSweepTags emits the wire-compatible spawn:sweep-* / spawn:param:* set", () => {

@@ -67,6 +67,8 @@ export interface LaunchInput {
   ami?: string;
   keyPair?: string;
   spot?: boolean;
+  /** DNS label override; defaults to a slugified `name` (see LaunchSpec.dnsName). */
+  dnsName?: string;
   /** Any Go-form duration string ("4h") or ms number. 0/absent = none. */
   ttl?: string | number;
   idleTimeout?: string | number;
@@ -434,6 +436,7 @@ export class SpawnClient {
       region: input.region ?? this.provider.label.split(":")[1] ?? "us-east-1",
       ami: input.ami,
       keyPair: input.keyPair,
+      dnsName: input.dnsName,
       spot: input.spot ?? false,
       ttlMs: dur(input.ttl),
       idleTimeoutMs: dur(input.idleTimeout),
