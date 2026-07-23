@@ -15,8 +15,10 @@ import { SpawnClient } from "../../src/core/client.js";
 import { EC2Provider } from "../../src/aws/ec2.js";
 import type { ManagedInstance } from "../../src/core/types.js";
 import { STSClient, GetCallerIdentityCommand } from "@aws-sdk/client-sts";
+import { SSMClient, StartSessionCommand, TerminateSessionCommand } from "@aws-sdk/client-ssm";
 import { sporeHostName } from "../lib/dns-name.js";
 import { resolveA } from "../lib/dns-resolve.js";
+import { attachTerminal, type AttachedTerminal } from "./terminal.js";
 
 const app = document.getElementById("app")!;
 
@@ -61,6 +63,11 @@ app.innerHTML = `
   <section class="card status" hidden>
     <h3>3 · Watch it self-terminate</h3>
     <div class="inst"></div>
+    <button class="connect-term" hidden>Connect terminal (SSM)</button>
+    <div class="term-wrap" hidden>
+      <div class="term-note">Live shell over AWS SSM — no SSH, no port 22, no key. Your browser talks to the instance via the SSM data channel.</div>
+      <div class="term"></div>
+    </div>
     <div class="log"></div>
   </section>
 `;
@@ -71,6 +78,12 @@ const val = (sel: string) => $<HTMLInputElement>(sel).value.trim();
 let client: SpawnClient | null = null;
 let accountId = "";
 let region = "us-east-1";
+// Held in memory only (like the provider's creds) so the terminal can call
+// ssm:StartSession for the running instance.
+let creds: { accessKeyId: string; secretAccessKey: string; sessionToken?: string } | null = null;
+let currentInstanceId = "";
+let terminal: AttachedTerminal | null = null;
+let sessionId = "";
 
 function log(msg: string) {
   const line = document.createElement("div");
@@ -99,6 +112,7 @@ $(".connect").addEventListener("click", async () => {
     const sts = new STSClient({ region, credentials: { accessKeyId, secretAccessKey, sessionToken } });
     const id = await sts.send(new GetCallerIdentityCommand({}));
     accountId = id.Account ?? "";
+    creds = { accessKeyId, secretAccessKey, sessionToken };
     whoami.innerHTML = `Connected to account <b>${accountId}</b> as <code>${escapeHtml(id.Arn ?? "")}</code>`;
     whoami.className = "whoami ok";
 
@@ -149,6 +163,7 @@ $(".go").addEventListener("click", async () => {
       pricePerHour: 0.0042, // t4g.nano on-demand, us-east-1 (display/cost math only)
     });
     log(`Launched ${inst.instanceId} — state ${inst.state}.`);
+    currentInstanceId = inst.instanceId;
     render(inst);
     poll(inst.instanceId, name);
   } catch (err) {
@@ -156,6 +171,52 @@ $(".go").addEventListener("click", async () => {
     showReset();
   }
 });
+
+// Step 3b — connect a live shell over SSM once the instance is running. The
+// browser calls ssm:StartSession itself (using the in-memory creds), gets a
+// session-scoped StreamUrl + token, and opens a data-channel WebSocket. No SSH.
+$(".connect-term").addEventListener("click", async () => {
+  if (!creds || !currentInstanceId) return;
+  const btn = $<HTMLButtonElement>(".connect-term");
+  btn.disabled = true;
+  btn.textContent = "Starting session…";
+  try {
+    const ssm = new SSMClient({ region, credentials: creds });
+    const started = await ssm.send(new StartSessionCommand({ Target: currentInstanceId }));
+    if (!started.StreamUrl || !started.TokenValue || !started.SessionId) {
+      throw new Error("StartSession returned an incomplete session");
+    }
+    sessionId = started.SessionId;
+    $(".term-wrap").hidden = false;
+    btn.hidden = true;
+    log(`SSM session ${sessionId} → opening shell…`);
+    terminal = await attachTerminal(
+      $(".term"),
+      { streamUrl: started.StreamUrl, tokenValue: started.TokenValue, sessionId: started.SessionId },
+      () => log(`SSM session ${sessionId} closed.`),
+    );
+  } catch (err) {
+    log(`Terminal failed: ${(err as Error).message}`);
+    btn.disabled = false;
+    btn.textContent = "Connect terminal (SSM)";
+  }
+});
+
+// Best-effort SSM session cleanup: close the socket and TerminateSession.
+async function cleanupTerminal() {
+  terminal?.dispose();
+  terminal = null;
+  if (creds && sessionId) {
+    try {
+      await new SSMClient({ region, credentials: creds }).send(new TerminateSessionCommand({ SessionId: sessionId }));
+    } catch {
+      /* session may already be gone */
+    }
+    sessionId = "";
+  }
+  $(".term-wrap").hidden = true;
+  ($<HTMLDivElement>(".term")).innerHTML = "";
+}
 
 // Reveal the reset control when a run is done (terminated or failed) so the demo
 // can be run again without re-entering credentials — the connected client is
@@ -167,11 +228,16 @@ function showReset() {
 // Reset for another run: keep the connection/creds, clear the per-run view and
 // DNS state, and re-arm the launch button.
 $(".reset").addEventListener("click", () => {
+  void cleanupTerminal();
+  currentInstanceId = "";
   dnsStatus = "pending";
   dnsConfirmed = false;
   $(".inst").innerHTML = "";
   $(".log").innerHTML = "";
   $(".status").hidden = true;
+  ($<HTMLButtonElement>(".connect-term")).hidden = true;
+  ($<HTMLButtonElement>(".connect-term")).disabled = false;
+  ($<HTMLButtonElement>(".connect-term")).textContent = "Connect terminal (SSM)";
   ($<HTMLButtonElement>(".reset")).hidden = true;
   ($<HTMLButtonElement>(".go")).disabled = false;
   updateDnsPreview();
@@ -200,12 +266,17 @@ function poll(instanceId: string, name: string) {
     }
     void checkDns(inst);
     render(inst);
+    // Offer the terminal once the box is running; withdraw + tear down the
+    // session as soon as it starts winding down.
+    ($<HTMLButtonElement>(".connect-term")).hidden = inst.state !== "running" || !!terminal;
     // Announce the self-terminate the first time we see it wind down, but keep
     // polling so the card reaches its true final state ("terminated") rather
     // than freezing on "shutting-down".
     if (!announced && (inst.state === "shutting-down" || inst.state === "terminated")) {
       announced = true;
       log(`✅ spored self-terminated ${instanceId} on its TTL.`);
+      void cleanupTerminal();
+      ($<HTMLButtonElement>(".connect-term")).hidden = true;
     }
     if (inst.state === "terminated") {
       clearInterval(timer);

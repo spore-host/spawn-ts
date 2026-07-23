@@ -72,7 +72,10 @@ const dec = new TextDecoder();
 
 /** SHA-256 of the payload via WebCrypto. */
 async function sha256(bytes: Uint8Array): Promise<Uint8Array> {
-  const buf = await crypto.subtle.digest("SHA-256", bytes);
+  // Copy into a fresh ArrayBuffer-backed view so the type is BufferSource
+  // regardless of the input's underlying ArrayBufferLike (e.g. a subarray view).
+  const input = bytes.slice();
+  const buf = await crypto.subtle.digest("SHA-256", input);
   return new Uint8Array(buf);
 }
 

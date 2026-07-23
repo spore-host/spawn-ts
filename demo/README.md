@@ -60,6 +60,19 @@ under 1¢), and launch. The instance self-terminates on its TTL even if you clos
 > account (it grants the instance the self-terminate + DNS-invoke permissions). It already
 > exists in the spore-host dev account.
 
+### Connect a terminal (SSM, no SSH)
+
+Once the instance is `running`, a **Connect terminal (SSM)** button opens a live shell in
+the browser over **AWS SSM Session Manager** — no SSH, no port 22, no key. The browser
+calls `ssm:StartSession` with your in-memory creds, gets a session-scoped StreamUrl +
+token, and opens the SSM data channel directly (rendered with xterm.js). The SSM
+data-channel protocol is reimplemented in `demo/lib/ssm/` (the AWS SDK doesn't provide it).
+Closing/reset calls `ssm:TerminateSession`.
+
+> Requires the pasted creds to allow **`ssm:StartSession`** + **`ssm:TerminateSession`**,
+> and the instance to be SSM-managed — which it is, since `spored-instance-role` carries
+> `AmazonSSMManagedInstanceCore`.
+
 ---
 
 ### Where it ships
