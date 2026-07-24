@@ -113,14 +113,15 @@ export class SsmSession {
       case PayloadType.Error:
         // Shell output flowing means the session is live — some agents don't send
         // a distinct HandshakeComplete for a default shell, so treat first output
-        // as "ready" too.
-        this.handshakeDone = true;
+        // as "ready" too (flushes any queued input).
+        void this.markReady();
         this.handlers.onOutput?.(this.dec.decode(m.payload));
         break;
       case PayloadType.HandshakeRequest:
         // Reply with a handshake response echoing the requested actions. A
         // minimal response (empty ProcessedClientActions) is accepted for a
-        // default Standard_Stream shell.
+        // default Standard_Stream shell. Sent directly (not gated) — this is what
+        // drives the handshake toward completion.
         await this.sendData(PayloadType.HandshakeResponse, this.enc.encode(JSON.stringify({
           ClientVersion: CLIENT_VERSION,
           ProcessedClientActions: [],
@@ -128,10 +129,17 @@ export class SsmSession {
         })));
         break;
       case PayloadType.HandshakeComplete:
-        this.handshakeDone = true;
+        void this.markReady();
         break;
       // ExitCode / others: ignore for a shell demo.
     }
+  }
+
+  // Mark the shell live and flush any input queued before the handshake finished.
+  private async markReady(): Promise<void> {
+    if (this.handshakeDone) return;
+    this.handshakeDone = true;
+    await this.flushPending();
   }
 
   private async sendAck(m: AgentMessage) {
@@ -148,13 +156,17 @@ export class SsmSession {
     this.ws?.send(await serialize(ack));
   }
 
+  // One monotonic sequence counter shared by ALL client→agent stream messages
+  // (handshake response, size, keystrokes), starting at 0. Flags is ALWAYS 0 —
+  // the AWS reference client never sets the SYN bit (verified against
+  // session-manager-plugin). Setting it here caused the agent to drop input.
   private async sendData(payloadType: number, payload: Uint8Array) {
     const m: AgentMessage = {
       messageType: MessageType.InputStreamData,
       schemaVersion: 1,
       createdDate: nowMs(),
       sequenceNumber: this.seq++,
-      flags: this.seq === 1 ? 1 : 0, // first data message carries the SYN flag
+      flags: 0,
       messageId: uuidv4(),
       payloadType,
       payload,
@@ -162,15 +174,33 @@ export class SsmSession {
     this.ws?.send(await serialize(m));
   }
 
+  // Input/size sent before the handshake completes never reaches the shell (the
+  // agent hasn't started the shell plugin yet). Queue until ready, then flush.
+  private pending: Array<{ payloadType: number; payload: Uint8Array }> = [];
+
+  private async enqueueOrSend(payloadType: number, payload: Uint8Array): Promise<void> {
+    if (this.handshakeDone) {
+      await this.sendData(payloadType, payload);
+    } else {
+      this.pending.push({ payloadType, payload });
+    }
+  }
+
+  private async flushPending(): Promise<void> {
+    const q = this.pending;
+    this.pending = [];
+    for (const { payloadType, payload } of q) await this.sendData(payloadType, payload);
+  }
+
   /** Send terminal keystrokes. A lone LF is normalized to CR (as the plugin does). */
   async sendInput(text: string): Promise<void> {
     const normalized = text === "\n" ? "\r" : text;
-    await this.sendData(PayloadType.Output, this.enc.encode(normalized));
+    await this.enqueueOrSend(PayloadType.Output, this.enc.encode(normalized));
   }
 
   /** Send a terminal resize. */
   async resize(cols: number, rows: number): Promise<void> {
-    await this.sendData(PayloadType.Size, sizePayload(cols, rows));
+    await this.enqueueOrSend(PayloadType.Size, sizePayload(cols, rows));
   }
 
   /** True once the agent handshake has completed and the shell is live. */

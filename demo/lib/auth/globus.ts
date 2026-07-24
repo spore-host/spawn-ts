@@ -26,6 +26,13 @@ export interface GlobusConfig {
   redirectUri: string;
   /** OAuth scopes; default "openid profile email". */
   scope?: string;
+  /**
+   * Force the Globus identity-provider chooser every time. Globus skips the
+   * "pick your institution/IdP" screen and jumps to consent when you already
+   * have an active session; prompt=login re-prompts. Good for demos that want to
+   * show the CILogon/InCommon university picker.
+   */
+  forcePrompt?: boolean;
 }
 
 const enc = new TextEncoder();
@@ -68,6 +75,9 @@ export async function beginLogin(cfg: GlobusConfig, redirect = true): Promise<st
     code_challenge: await codeChallengeS256(verifier),
     code_challenge_method: "S256",
   });
+  // Re-prompt for identity selection (show the IdP picker) instead of reusing an
+  // existing Globus session and jumping straight to consent.
+  if (cfg.forcePrompt) params.set("prompt", "login");
   const url = `${AUTHORIZE_URL}?${params.toString()}`;
   if (redirect) window.location.assign(url);
   return url;

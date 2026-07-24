@@ -50,6 +50,11 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .paste-fallback { margin-top: 14px; }
 .paste-fallback summary { color: var(--muted); cursor: pointer; font-size: 13px; }
 .whoami { margin-top: 12px; font-size: 13px; }
+.quotas { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 12px; }
+.quotas-title { font-size: 12px; color: var(--text); margin-bottom: 8px; }
+.quotas-body { font-size: 13px; }
+.qrow { display: flex; justify-content: space-between; padding: 3px 0; border-bottom: 1px dashed var(--border); }
+.qrow span { color: var(--muted); }
 .whoami.ok { color: var(--ok); }
 .whoami.err { color: var(--err); }
 .dns-preview { margin-top: 12px; color: var(--muted); font-size: 13px; }
@@ -72,4 +77,16 @@ code { background: #0d0f14; padding: 1px 5px; border-radius: 4px; font-size: 12p
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 8px;
+  margin: 2px; /* room for the focus outline so it isn't clipped */
+  cursor: text;
+}
+/* Highlight the terminal when it holds keyboard focus (xterm adds .focus to its
+   wrapper). Makes it obvious the shell is live + accepting input. The ring is
+   drawn INSIDE the box (outline-offset: -2px) so it can never be clipped by the
+   card edge — a positive offset gets cut on the right. */
+.term:has(.xterm.focus),
+.term:focus-within {
+  border-color: var(--accent);
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }

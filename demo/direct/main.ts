@@ -20,6 +20,7 @@ import { sporeHostName } from "../lib/dns-name.js";
 import { resolveA } from "../lib/dns-resolve.js";
 import { attachTerminal, type AttachedTerminal } from "../lib/terminal.js";
 import { beginLogin, completeLogin, hasAuthCode, credsFromIdToken } from "../lib/auth/index.js";
+import { fetchEc2Quotas } from "../lib/quotas.js";
 
 const app = document.getElementById("app")!;
 
@@ -59,6 +60,10 @@ app.innerHTML = `
     </details>
 
     <div class="whoami"></div>
+    <div class="quotas" hidden>
+      <div class="quotas-title">Your account's EC2 vCPU quotas <span class="muted">(read-only — no backend, just your federated session)</span></div>
+      <div class="quotas-body"></div>
+    </div>
   </section>
 
   <section class="card launch" hidden>
@@ -109,10 +114,25 @@ function log(msg: string) {
 
 // --- Config (URL params so the demo needs no hardcoded values) ---------------
 // ?globus_client_id=<uuid>&role_arn=<arn>&region=<r>
+//
+// The OAuth redirect back from Globus REPLACES our query string with ?code=&state=,
+// so read config from the URL when present and persist it in sessionStorage so it
+// survives the round-trip (the redirect-back load restores it).
+const CFG_KEY = "demo.globus.config";
 const params = new URLSearchParams(window.location.search);
-const GLOBUS_CLIENT_ID = params.get("globus_client_id") ?? "";
-const ROLE_ARN = params.get("role_arn") ?? "";
-const CONFIG_REGION = params.get("region") ?? "us-east-1";
+function cfg(param: string, fallbackKey: string): string {
+  const fromUrl = params.get(param);
+  if (fromUrl) {
+    const saved = JSON.parse(sessionStorage.getItem(CFG_KEY) ?? "{}");
+    saved[fallbackKey] = fromUrl;
+    sessionStorage.setItem(CFG_KEY, JSON.stringify(saved));
+    return fromUrl;
+  }
+  return (JSON.parse(sessionStorage.getItem(CFG_KEY) ?? "{}")[fallbackKey] as string) ?? "";
+}
+const GLOBUS_CLIENT_ID = cfg("globus_client_id", "clientId");
+const ROLE_ARN = cfg("role_arn", "roleArn");
+const CONFIG_REGION = cfg("region", "region") || "us-east-1";
 // The redirect URI is this page, without the query string (Globus must allowlist it).
 const REDIRECT_URI = window.location.origin + window.location.pathname;
 
@@ -144,6 +164,23 @@ function connectWithCreds(
   whoami.className = "whoami ok";
   $(".launch").hidden = false;
   updateDnsPreview();
+  void showQuotas(c, regionForClient);
+}
+
+// Read-only account inspection (like Coiled's setup shows) — fully browser-native
+// via the federated creds. Populates the quotas panel; degrades quietly.
+async function showQuotas(c: { accessKeyId: string; secretAccessKey: string; sessionToken?: string }, r: string) {
+  const panel = $(".quotas");
+  panel.hidden = false;
+  $(".quotas-body").textContent = "reading account quotas…";
+  try {
+    const rows = await fetchEc2Quotas(c, r);
+    $(".quotas-body").innerHTML = rows
+      .map((q) => `<div class="qrow"><span>${escapeHtml(q.label)}</span><b>${q.vcpus == null ? "—" : `${q.vcpus} vCPU`}</b></div>`)
+      .join("");
+  } catch (err) {
+    $(".quotas-body").textContent = `couldn't read quotas: ${(err as Error).message}`;
+  }
 }
 
 // Globus is offered when a client id + role arn are configured.
@@ -154,7 +191,9 @@ if (GLOBUS_CLIENT_ID && ROLE_ARN) {
 
 // "Sign in with Globus" → redirect to Globus (PKCE). Returns to this page with ?code=.
 $(".globus-signin").addEventListener("click", () => {
-  void beginLogin({ clientId: GLOBUS_CLIENT_ID, redirectUri: REDIRECT_URI });
+  // forcePrompt shows the Globus IdP picker (choose your university) instead of
+  // silently reusing an existing session — better for demoing the BYOA story.
+  void beginLogin({ clientId: GLOBUS_CLIENT_ID, redirectUri: REDIRECT_URI, forcePrompt: true });
 });
 
 // On load, if we're back from Globus with a code, finish the exchange → STS creds.
