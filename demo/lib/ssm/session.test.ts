@@ -115,23 +115,45 @@ describe("SsmSession", () => {
     expect(s.ready).toBe(true);
   });
 
-  it("normalizes a lone LF to CR on input", async () => {
-    const { s, ws } = await opened();
+  // Bring the session to the ready (post-handshake) state so input/size flush.
+  async function makeReady(s: SsmSession, ws: FakeWebSocket) {
+    ws.push(await agentFrame({ payloadType: PayloadType.HandshakeComplete, payload: enc.encode("{}") }));
+    await new Promise((r) => setTimeout(r, 5));
     ws.sent.length = 0;
+  }
+
+  it("normalizes a lone LF to CR on input, with Flags=0 (no SYN)", async () => {
+    const { s, ws } = await opened();
+    await makeReady(s, ws);
     await s.sendInput("\n");
     const m = deserialize(new Uint8Array(ws.sent[0] as ArrayBuffer));
     expect(m.messageType).toBe(MessageType.InputStreamData);
     expect(m.payloadType).toBe(PayloadType.Output);
+    expect(m.flags).toBe(0); // reference client never sets the SYN bit
     expect(dec.decode(m.payload)).toBe("\r");
   });
 
   it("sends a Size payload on resize", async () => {
     const { s, ws } = await opened();
-    ws.sent.length = 0;
+    await makeReady(s, ws);
     await s.resize(100, 30);
     const m = deserialize(new Uint8Array(ws.sent[0] as ArrayBuffer));
     expect(m.payloadType).toBe(PayloadType.Size);
     expect(JSON.parse(dec.decode(m.payload))).toEqual({ cols: 100, rows: 30 });
+  });
+
+  it("queues input sent BEFORE handshake completes, then flushes on ready", async () => {
+    const { s, ws } = await opened();
+    ws.sent.length = 0;
+    // type before HandshakeComplete — must NOT send yet (agent would drop it)
+    await s.sendInput("whoami\r");
+    expect(ws.sent.length).toBe(0);
+    // handshake completes → queued input flushes
+    ws.push(await agentFrame({ payloadType: PayloadType.HandshakeComplete, payload: enc.encode("{}") }));
+    await new Promise((r) => setTimeout(r, 5));
+    const inputs = ws.sent.map((b) => deserialize(new Uint8Array(b as ArrayBuffer))).filter((m) => m.payloadType === PayloadType.Output);
+    expect(inputs.length).toBeGreaterThan(0);
+    expect(dec.decode(inputs[0].payload)).toBe("whoami\r");
   });
 
   it("closes and reports channel-closed from the agent", async () => {
