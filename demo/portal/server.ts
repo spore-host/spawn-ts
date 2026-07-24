@@ -36,7 +36,7 @@ import {
   startBrokeredSession,
   terminateBrokeredSession,
   type PortalConfig,
-} from "./portal-core.js";
+} from "../../src/portal/portal-core.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = join(HERE, "public");

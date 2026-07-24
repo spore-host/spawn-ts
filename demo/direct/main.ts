@@ -16,11 +16,11 @@ import { EC2Provider } from "../../src/aws/ec2.js";
 import type { ManagedInstance } from "../../src/core/types.js";
 import { STSClient, GetCallerIdentityCommand } from "@aws-sdk/client-sts";
 import { SSMClient, StartSessionCommand, TerminateSessionCommand } from "@aws-sdk/client-ssm";
-import { sporeHostName } from "../lib/dns-name.js";
-import { resolveA } from "../lib/dns-resolve.js";
-import { attachTerminal, type AttachedTerminal } from "../lib/terminal.js";
-import { beginLogin, completeLogin, hasAuthCode, credsFromIdToken } from "../lib/auth/index.js";
-import { fetchEc2Quotas } from "../lib/quotas.js";
+import { sporeHostName } from "../../src/dns/dns-name.js";
+import { resolveA } from "../../src/dns/dns-resolve.js";
+import { attachTerminal, type AttachedTerminal } from "../../src/terminal.js";
+import { beginLogin, completeLogin, hasAuthCode, credsFromIdToken } from "../../src/auth/index.js";
+import { fetchEc2Quotas } from "../../src/quotas.js";
 
 const app = document.getElementById("app")!;
 

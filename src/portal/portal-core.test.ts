@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { STSClient } from "@aws-sdk/client-sts";
-import { EC2Provider } from "../../src/aws/ec2.js";
+import { EC2Provider } from "../aws/ec2.js";
 import {
   clientForUserAccount,
   toPortalView,
@@ -9,7 +9,7 @@ import {
   terminateBrokeredSession,
   type PortalConfig,
 } from "./portal-core.js";
-import type { ManagedInstance } from "../../src/core/types.js";
+import type { ManagedInstance } from "../core/types.js";
 
 // Capture SSM commands sent through a stubbed SSMClient.
 const ssmSends: unknown[] = [];

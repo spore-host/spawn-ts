@@ -10,9 +10,9 @@
 import type { STSClient } from "@aws-sdk/client-sts";
 import { AssumeRoleCommand } from "@aws-sdk/client-sts";
 import { SSMClient, StartSessionCommand, TerminateSessionCommand } from "@aws-sdk/client-ssm";
-import { SpawnClient } from "../../src/core/client.js";
-import { EC2Provider } from "../../src/aws/ec2.js";
-import type { ManagedInstance } from "../../src/core/types.js";
+import { SpawnClient } from "../core/client.js";
+import { EC2Provider } from "../aws/ec2.js";
+import type { ManagedInstance } from "../core/types.js";
 
 export interface PortalConfig {
   roleArn: string;
