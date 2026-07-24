@@ -1,7 +1,6 @@
 {
-  "name": "spawn-ts",
-  "version": "0.5.0",
-  "private": true,
+  "name": "@spore-host/spawn-ts",
+  "version": "0.6.0",
   "type": "module",
   "description": "Browser-native spawn: launch and self-terminate AWS EC2 instances, entirely from a web page.",
   "keywords": [
@@ -22,11 +21,28 @@
   },
   "license": "Apache-2.0",
   "author": "Scott Friedman",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./auth": { "types": "./dist/auth/index.d.ts", "import": "./dist/auth/index.js" },
+    "./ssm": { "types": "./dist/ssm/index.d.ts", "import": "./dist/ssm/index.js" },
+    "./terminal": { "types": "./dist/terminal.d.ts", "import": "./dist/terminal.js" },
+    "./quotas": { "types": "./dist/quotas.d.ts", "import": "./dist/quotas.js" },
+    "./dns": { "types": "./dist/dns/index.d.ts", "import": "./dist/dns/index.js" },
+    "./portal": { "types": "./dist/portal/portal-core.d.ts", "import": "./dist/portal/portal-core.js" },
+    "./ui": { "types": "./dist/ui/index.d.ts", "import": "./dist/ui/index.js" }
+  },
+  "files": ["dist"],
+  "sideEffects": false,
   "scripts": {
     "dev": "vite",
     "dev:demo": "vite demo/direct",
     "dev:portal": "tsx demo/portal/server.ts",
     "build:portal-ui": "node demo/portal/build-ui.mjs",
+    "build:lib": "tsc -p tsconfig.build.json",
+    "prepare": "npm run build:lib",
     "build": "tsc && vite build && npm run docs",
     "docs": "typedoc",
     "preview": "vite preview",

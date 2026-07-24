@@ -6,7 +6,7 @@
 // the browser and renders it with xterm. The portal is the sole authorizer; the
 // user cannot mint a session themselves.
 
-import { attachTerminal, type AttachedTerminal } from "../lib/terminal.js";
+import { attachTerminal, type AttachedTerminal } from "../../src/terminal.js";
 
 let active: { term: AttachedTerminal; sessionId: string } | null = null;
 

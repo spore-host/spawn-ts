@@ -17,7 +17,7 @@ import {
   portalConfigFromEnv,
   startBrokeredSession,
   terminateBrokeredSession,
-} from "./portal-core.js";
+} from "../../src/portal/portal-core.js";
 
 // Lambda Function URL event/response shapes (subset we use). Kept local so the
 // demo needs no @types/aws-lambda dependency.

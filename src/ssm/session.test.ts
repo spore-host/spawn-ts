@@ -116,7 +116,7 @@ describe("SsmSession", () => {
   });
 
   // Bring the session to the ready (post-handshake) state so input/size flush.
-  async function makeReady(s: SsmSession, ws: FakeWebSocket) {
+  async function makeReady(ws: FakeWebSocket) {
     ws.push(await agentFrame({ payloadType: PayloadType.HandshakeComplete, payload: enc.encode("{}") }));
     await new Promise((r) => setTimeout(r, 5));
     ws.sent.length = 0;
@@ -124,7 +124,7 @@ describe("SsmSession", () => {
 
   it("normalizes a lone LF to CR on input, with Flags=0 (no SYN)", async () => {
     const { s, ws } = await opened();
-    await makeReady(s, ws);
+    await makeReady(ws);
     await s.sendInput("\n");
     const m = deserialize(new Uint8Array(ws.sent[0] as ArrayBuffer));
     expect(m.messageType).toBe(MessageType.InputStreamData);
@@ -135,7 +135,7 @@ describe("SsmSession", () => {
 
   it("sends a Size payload on resize", async () => {
     const { s, ws } = await opened();
-    await makeReady(s, ws);
+    await makeReady(ws);
     await s.resize(100, 30);
     const m = deserialize(new Uint8Array(ws.sent[0] as ArrayBuffer));
     expect(m.payloadType).toBe(PayloadType.Size);
