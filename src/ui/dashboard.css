@@ -1,0 +1,207 @@
+/* Dashboard component styles — self-contained, so any consumer (the demo's
+ * full-page style.css @imports this; the spore.host portal imports it directly as
+ * @spore-host/spawn-ts/ui/style.css) gets a working Dashboard without pulling in
+ * demo-page chrome or fighting the host page's theme.
+ *
+ * Design tokens are scoped to the two DETACHED roots the library renders — the
+ * Dashboard element and the modal backdrop (modals mount at document.body, so a
+ * `.dashboard` ancestor selector wouldn't reach them). This keeps the component's
+ * dark console theme self-consistent and prevents it from leaking a `:root` block
+ * that would clash with the host page's tokens. */
+.dashboard,
+.modal-backdrop {
+  --bg: #0d1117;
+  --panel: #161b22;
+  --border: #30363d;
+  --fg: #c9d1d9;
+  --muted: #8b949e;
+  --accent: #58a6ff;
+  --green: #3fb950;
+  --yellow: #d29922;
+  --red: #f85149;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+/* Dashboard */
+.dashboard {
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  min-height: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 13px;
+  border-radius: 8px;
+}
+.dash-section { padding: 12px 14px; border-bottom: 1px solid var(--border); }
+.dash-section:last-child { border-bottom: none; }
+.dash-section h2 {
+  margin: 0 0 10px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+.inst {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  background: var(--panel);
+}
+.inst .row1 { display: flex; align-items: baseline; gap: 8px; }
+.inst .name { font-weight: 700; color: #fff; }
+.inst .id { color: var(--muted); font-size: 11px; }
+.inst .state { margin-left: auto; padding: 1px 8px; border-radius: 10px; font-size: 11px; }
+.state.running { background: rgba(63,185,80,.15); color: var(--green); }
+.state.stopped, .state.hibernated { background: rgba(210,153,34,.15); color: var(--yellow); }
+.state.terminated, .state\.shutting-down { background: rgba(248,81,73,.15); color: var(--red); }
+.state.pending { background: rgba(88,166,255,.15); color: var(--accent); }
+.inst .meta { color: var(--muted); font-size: 11px; margin-top: 4px; }
+
+.meter { height: 6px; background: #21262d; border-radius: 3px; margin-top: 6px; overflow: hidden; }
+.meter > span { display: block; height: 100%; background: var(--accent); }
+.meter.ttl > span { background: var(--green); }
+.meter.ttl.warn > span { background: var(--yellow); }
+.meter.ttl.crit > span { background: var(--red); }
+.meter.cost > span { background: var(--yellow); }
+.meter.cost.crit > span { background: var(--red); }
+
+.inst .actions { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
+.inst .actions button {
+  background: #21262d; color: var(--fg); border: 1px solid var(--border);
+  border-radius: 6px; padding: 2px 8px; cursor: pointer; font-family: var(--mono); font-size: 11px;
+}
+.inst .actions button:hover { border-color: var(--accent); }
+
+.log-line { font-size: 11px; padding: 2px 0; color: var(--muted); }
+.log-line .t { color: #6e7681; }
+.log-line .inst-name { color: var(--accent); }
+.log-line.warning { color: var(--yellow); }
+.log-line.action { color: var(--fg); }
+
+/* Modal */
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,.6);
+  display: flex; align-items: center; justify-content: center; z-index: 10;
+}
+.modal {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  padding: 20px; width: 460px; max-width: 90vw;
+  color: var(--fg); font-family: var(--mono); font-size: 13px;
+}
+.modal h3 { margin: 0 0 12px; color: #fff; }
+.modal label { display: block; font-size: 11px; color: var(--muted); margin: 10px 0 4px; }
+.modal input, .modal select {
+  width: 100%; background: var(--bg); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px;
+  font-family: var(--mono); font-size: 12px;
+}
+.modal .buttons { margin-top: 16px; display: flex; gap: 8px; justify-content: flex-end; }
+.modal .buttons button {
+  background: #21262d; color: var(--fg); border: 1px solid var(--border);
+  border-radius: 6px; padding: 6px 14px; cursor: pointer; font-family: var(--mono);
+}
+.modal .buttons button.primary { background: var(--accent); color: #0d1117; border-color: var(--accent); font-weight: 700; }
+.modal .warn { color: var(--yellow); font-size: 11px; margin-top: 10px; }
+.empty { color: var(--muted); font-style: italic; }
+
+.orphan-banner {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 10px;
+  padding: 8px 12px; border-radius: 6px;
+  background: rgba(248,81,73,.12); border: 1px solid var(--red); color: var(--red);
+  font-size: 12px;
+}
+.orphan-banner button {
+  margin-left: auto; background: var(--red); color: #fff; border: none;
+  border-radius: 6px; padding: 5px 12px; font-family: var(--mono); font-weight: 700; cursor: pointer;
+}
+.orphan-banner button:hover { filter: brightness(1.1); }
+.orphan-banner button:disabled { opacity: .5; cursor: default; }
+
+/* Launch form */
+.launch-form .grid2, .sweep-form .grid2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 12px;
+}
+.launch-form label, .sweep-form label { display: block; font-size: 10px; color: var(--muted); margin-bottom: 3px; text-transform: uppercase; letter-spacing: .05em; }
+.launch-form input, .launch-form select, .sweep-form input, .sweep-form select {
+  width: 100%; background: var(--bg); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px;
+  font-family: var(--mono); font-size: 12px;
+}
+.launch-form .checks { display: flex; gap: 14px; align-items: flex-end; }
+.launch-form label.inline { display: flex; align-items: center; gap: 5px; text-transform: none; font-size: 12px; color: var(--fg); }
+.launch-form label.inline input { width: auto; }
+.launch-btn {
+  margin-top: 10px; background: var(--accent); color: #0d1117; border: none;
+  border-radius: 6px; padding: 7px 18px; font-family: var(--mono); font-weight: 700; cursor: pointer;
+}
+.launch-btn:hover { filter: brightness(1.1); }
+.launch-msg { margin-left: 10px; font-size: 11px; }
+.launch-msg.good { color: var(--green); }
+.launch-msg.bad { color: var(--red); }
+
+/* truffle instance picker: a query box + a dropdown of matched instance types. */
+.launch-form .picker { position: relative; }
+.picker-hint { text-transform: none; color: var(--muted); font-size: 10px; letter-spacing: 0; }
+.truffle-matches {
+  position: absolute; z-index: 5; left: 0; right: 0; margin-top: 2px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+  max-height: 260px; overflow-y: auto; box-shadow: 0 8px 24px rgba(0,0,0,.4);
+}
+.truffle-match {
+  display: grid; grid-template-columns: 1fr auto; grid-template-areas: "type price" "spec price";
+  gap: 0 10px; width: 100%; text-align: left; background: transparent; color: var(--fg);
+  border: none; border-bottom: 1px solid var(--border); padding: 7px 10px; cursor: pointer;
+  font-family: var(--mono);
+}
+.truffle-match:hover { background: rgba(88,166,255,.1); }
+.truffle-match:last-child { border-bottom: none; }
+.tm-type { grid-area: type; font-weight: 700; color: #fff; font-size: 12px; }
+.tm-spec { grid-area: spec; color: var(--muted); font-size: 11px; }
+.tm-price { grid-area: price; align-self: center; color: var(--yellow); font-size: 11px; white-space: nowrap; }
+.truffle-empty { padding: 8px 10px; color: var(--muted); font-size: 11px; }
+
+/* Parameter sweep: reuse the launch-form grid + button styling, add a progress card. */
+.sweep-form { display: block; }
+.sweep-btn {
+  margin-top: 10px; background: var(--accent); color: #0d1117; border: none;
+  border-radius: 6px; padding: 7px 18px; font-family: var(--mono); font-weight: 700; cursor: pointer;
+}
+.sweep-btn:hover { filter: brightness(1.1); }
+.sweep-msg { margin-left: 10px; font-size: 11px; }
+.sweep-msg.good { color: var(--green); }
+.sweep-msg.bad { color: var(--red); }
+.sweeps { margin-top: 10px; }
+.sweep-card {
+  border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-top: 8px;
+  background: rgba(88,166,255,.04);
+}
+.sweep-card.done { opacity: .7; }
+.sweep-card.queue { background: rgba(210,153,34,.05); }
+
+/* Batch queue form: a JSON textarea + the shared button/message styling. */
+.queue-form textarea {
+  width: 100%; background: var(--bg); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 6px; padding: 8px;
+  font-family: var(--mono); font-size: 12px; resize: vertical; margin-bottom: 8px;
+}
+.queue-form label { display: block; font-size: 10px; color: var(--muted); margin-bottom: 3px; text-transform: uppercase; letter-spacing: .05em; }
+.queue-btn {
+  margin-top: 10px; background: var(--accent); color: #0d1117; border: none;
+  border-radius: 6px; padding: 7px 18px; font-family: var(--mono); font-weight: 700; cursor: pointer;
+}
+.queue-btn:hover { filter: brightness(1.1); }
+.queue-msg { margin-left: 10px; font-size: 11px; }
+.queue-msg.good { color: var(--green); }
+.queue-msg.bad { color: var(--red); }
+.sweep-card .row1 { display: flex; align-items: baseline; gap: 8px; }
+.sweep-card .name { font-weight: 700; color: #fff; }
+.sweep-card .id { color: var(--muted); font-size: 11px; }
+.sweep-card .state { margin-left: auto; padding: 1px 8px; border-radius: 10px; font-size: 11px; background: rgba(88,166,255,.15); color: var(--accent); }
+.sweep-card.done .state { background: rgba(63,185,80,.15); color: var(--green); }
+.sweep-card .meta { color: var(--muted); font-size: 11px; margin-top: 4px; }
+.meter.sweep > span { background: var(--accent); }

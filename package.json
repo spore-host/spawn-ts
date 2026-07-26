@@ -1,6 +1,6 @@
 {
   "name": "@spore-host/spawn-ts",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "type": "module",
   "description": "Browser-native spawn: launch and self-terminate AWS EC2 instances, entirely from a web page.",
   "keywords": [
@@ -32,16 +32,17 @@
     "./quotas": { "types": "./dist/quotas.d.ts", "import": "./dist/quotas.js" },
     "./dns": { "types": "./dist/dns/index.d.ts", "import": "./dist/dns/index.js" },
     "./portal": { "types": "./dist/portal/portal-core.d.ts", "import": "./dist/portal/portal-core.js" },
-    "./ui": { "types": "./dist/ui/index.d.ts", "import": "./dist/ui/index.js" }
+    "./ui": { "types": "./dist/ui/index.d.ts", "import": "./dist/ui/index.js" },
+    "./ui/style.css": "./dist/ui/dashboard.css"
   },
   "files": ["dist"],
-  "sideEffects": false,
+  "sideEffects": ["**/*.css"],
   "scripts": {
     "dev": "vite",
     "dev:demo": "vite demo/direct",
     "dev:portal": "tsx demo/portal/server.ts",
     "build:portal-ui": "node demo/portal/build-ui.mjs",
-    "build:lib": "tsc -p tsconfig.build.json",
+    "build:lib": "tsc -p tsconfig.build.json && node scripts/copy-css.mjs",
     "prepare": "npm run build:lib",
     "build": "tsc && vite build && npm run docs",
     "docs": "typedoc",
