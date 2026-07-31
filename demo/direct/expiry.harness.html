@@ -1,0 +1,159 @@
+<!doctype html>
+<!--
+  Dev-only harness for Demo 1's credential-expiry handling (#20). Loads the REAL
+  demo/direct/main.ts and drives it through the Globus sign-in path, stubbing only
+  the network (STS/EC2/SSM over window.fetch) and the clock (Date.now), so the
+  actual armExpiry/onExpiryWarning/onExpiryExpired code runs — not a copy of it.
+
+  Open at /demo/direct/expiry.harness.html under `npm run dev`. Not referenced by
+  index.html, so it is never part of the demo itself.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>expiry harness</title>
+    <link rel="stylesheet" href="./demo.css" />
+  </head>
+  <body>
+    <div id="app"></div>
+    <pre id="verdict" style="padding: 12px; font: 12px ui-monospace, monospace; white-space: pre-wrap"></pre>
+    <script type="module">
+      // ── Clock control ────────────────────────────────────────────────────────
+      // main.ts reads Date.now() to decide expiry. Drive it from here so an
+      // "expired" state is reachable without waiting an hour.
+      const realNow = Date.now;
+      let offsetMs = 0;
+      Date.now = () => realNow.call(Date) + offsetMs;
+      const advance = (ms) => { offsetMs += ms; };
+
+      // Creds that expire 60 min out, as Globus→STS returns (DurationSeconds 3600).
+      const EXPIRES_AT = new Date(realNow.call(Date) + 60 * 60 * 1000);
+      const iso = (d) => d.toISOString();
+
+      // ── Network stub ─────────────────────────────────────────────────────────
+      const calls = [];
+      window.fetch = async (req) => {
+        const url = typeof req === "string" ? req : req.url;
+        const body = typeof req === "object" && req.body ? await new Response(req.body).text() : "";
+        const target = (typeof req === "object" && req.headers?.get?.("x-amz-target")) || "";
+        const action = /Action=([A-Za-z]+)/.exec(body)?.[1] ?? target ?? "?";
+        calls.push({ url, action });
+
+        // Globus token exchange → an id_token (JWT shape; only the payload is read).
+        if (url.includes("auth.globus.org")) {
+          const payload = btoa(JSON.stringify({ aud: "harness-client", sub: "harness-sub", email: "demo@harness.test" }))
+            .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+          return new Response(JSON.stringify({ id_token: `x.${payload}.y`, access_token: "at" }), {
+            status: 200, headers: { "content-type": "application/json" },
+          });
+        }
+        // STS AssumeRoleWithWebIdentity → creds carrying an Expiration.
+        if (action.includes("AssumeRoleWithWebIdentity")) {
+          return new Response(`<?xml version="1.0"?>
+<AssumeRoleWithWebIdentityResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
+ <AssumeRoleWithWebIdentityResult>
+  <Credentials>
+   <AccessKeyId>ASIAHARNESS</AccessKeyId><SecretAccessKey>s</SecretAccessKey>
+   <SessionToken>t</SessionToken><Expiration>${iso(EXPIRES_AT)}</Expiration>
+  </Credentials>
+ </AssumeRoleWithWebIdentityResult>
+</AssumeRoleWithWebIdentityResponse>`, { status: 200, headers: { "content-type": "text/xml" } });
+        }
+        if (action.includes("GetCallerIdentity")) {
+          return new Response(`<?xml version="1.0"?>
+<GetCallerIdentityResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
+ <GetCallerIdentityResult><Account>111122223333</Account>
+  <Arn>arn:aws:sts::111122223333:assumed-role/spore-portal-launch/harness</Arn>
+ </GetCallerIdentityResult></GetCallerIdentityResponse>`,
+            { status: 200, headers: { "content-type": "text/xml" } });
+        }
+        // Quotas + anything else: an empty-but-valid JSON body is enough.
+        return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+      };
+
+      // ── Pretend we came back from Globus with ?code= ─────────────────────────
+      sessionStorage.setItem("demo.globus.config", JSON.stringify({
+        clientId: "harness-client", roleArn: "arn:aws:iam::111122223333:role/spore-portal-launch", region: "us-east-1",
+      }));
+      history.replaceState({}, "", location.pathname + "?code=harness-code&state=s");
+      // completeLogin() verifies the PKCE state/verifier it stashed in
+      // sessionStorage (src/auth/globus.ts SS_STATE / SS_VERIFIER); seed both so
+      // the exchange proceeds instead of failing the CSRF check.
+      sessionStorage.setItem("globus.pkce.state", "s");
+      sessionStorage.setItem("globus.pkce.verifier", "harness-verifier");
+
+      const checks = [];
+      const assert = (name, cond, detail = "") =>
+        checks.push(`${cond ? "PASS" : "FAIL"} ${name}${detail ? " — " + detail : ""}`);
+
+      await import("./main.ts");
+      const app = document.getElementById("app");
+      const $ = (s) => app.querySelector(s);
+      const settle = (ms = 120) => new Promise((r) => setTimeout(r, ms));
+      await settle(400); // let handleGlobusRedirect() finish the exchange
+
+      const banner = $(".session-expiry");
+      const signedIn = $(".whoami")?.className.includes("ok");
+      assert("Globus sign-in completed", signedIn, $(".whoami")?.textContent?.slice(0, 90));
+
+      if (!signedIn) {
+        // Can't exercise expiry without a session; report and stop.
+        document.getElementById("verdict").textContent =
+          checks.join("\n") + "\n\nSETUP FAILED (see above)\ncalls: " + calls.map((c) => c.action).join(", ");
+        document.title = "HARNESS FAIL";
+      } else {
+        // 1. Fresh session → the clock is visible and reads "valid until".
+        assert("expiry banner shown for a federated session", banner.hidden === false);
+        assert("banner starts in the ok state", banner.classList.contains("ok"), banner.className);
+        assert("banner names the deadline", /valid until/.test(banner.textContent), banner.textContent);
+        assert("launch enabled while valid", $(".go").disabled === false);
+
+        // 2. Inside the 5-min warn window but NOT past the deadline: the guarded
+        // click must still let the launch through. Deliberately do NOT click .go
+        // here — a launch attempt against the stub fails and leaves .go disabled,
+        // which would make step 3's click a no-op and silently fake a pass.
+        advance(56 * 60 * 1000); // 56 min in → 4 min left
+        await settle(0);
+        assert("not expired 4 min before the deadline", banner.classList.contains("expired") === false, banner.className);
+        assert("launch still enabled inside the warn window", $(".go").disabled === false);
+
+        // 3. Past the hard deadline → the click guard must refuse and explain.
+        // (The 30s tick would also catch this, but a click is the path a user
+        // actually takes, and it's the one that used to throw "Request has expired".)
+        advance(10 * 60 * 1000); // 66 min in → expired
+        assert("precondition: launch button is still clickable", $(".go").disabled === false);
+        $(".go").click();
+        await settle();
+        assert("expired: banner switches to the expired state", banner.classList.contains("expired"), banner.className);
+        assert("expired: banner explains the 1-hour lifetime", /lapsed|expired/i.test(banner.textContent), banner.textContent);
+        assert("expired: offers a re-sign-in button", Boolean(banner.querySelector(".expiry-resignin")));
+        assert("expired: launch disabled", $(".go").disabled === true);
+        assert("expired: terminal button disabled", $(".connect-term").disabled === true);
+        const logText = $(".log").textContent;
+        assert("expired: logged a plain-language reason", /expired/i.test(logText), logText.slice(0, 120));
+        assert("expired: no cryptic 'Request has expired' surfaced", !/Request has expired/.test(logText));
+
+        // 4. Idempotent: a second expired click must not re-log or re-announce.
+        const linesBefore = $(".log").children.length;
+        $(".go").click();
+        await settle();
+        assert("expired: announced once, not per click", $(".log").children.length === linesBefore,
+          `${linesBefore} → ${$(".log").children.length}`);
+
+        // 5. The paste path has no expiration, so the clock must go away entirely
+        // (and re-connecting must re-arm the buttons a previous expiry disabled).
+        app.querySelector(".f-akid").value = "AKIAPASTEDLONGLIVED";
+        app.querySelector(".f-secret").value = "s";
+        $(".connect").click();
+        await settle(400);
+        assert("pasted long-lived keys: no expiry banner", banner.hidden === true, banner.className);
+        assert("re-connecting re-enables launch", $(".go").disabled === false);
+
+        const failed = checks.filter((c) => c.startsWith("FAIL"));
+        document.getElementById("verdict").textContent =
+          checks.join("\n") + "\n\n" + (failed.length ? `${failed.length} FAILED` : "ALL PASS");
+        document.title = failed.length ? "HARNESS FAIL" : "HARNESS PASS";
+      }
+    </script>
+  </body>
+</html>

@@ -60,6 +60,7 @@ app.innerHTML = `
     </details>
 
     <div class="whoami"></div>
+    <div class="session-expiry" hidden></div>
     <div class="quotas" hidden>
       <div class="quotas-title">Your account's EC2 vCPU quotas <span class="muted">(read-only — no backend, just your federated session)</span></div>
       <div class="quotas-body"></div>
@@ -104,6 +105,13 @@ let creds: { accessKeyId: string; secretAccessKey: string; sessionToken?: string
 let currentInstanceId = "";
 let terminal: AttachedTerminal | null = null;
 let sessionId = "";
+// When the federated creds lapse. Globus→STS sessions are capped at 1h
+// (DurationSeconds: 3600), and a demo left open past that failed at launch with
+// a cryptic "Request has expired" from the SDK. Track the expiration STS
+// returned so we can say what happened, and offer the one fix (sign in again).
+let credsExpireAt: number | null = null;
+let expiryTimer: ReturnType<typeof setTimeout> | null = null;
+let expiryTick: ReturnType<typeof setInterval> | null = null;
 
 function log(msg: string) {
   const line = document.createElement("div");
@@ -143,10 +151,15 @@ function connectWithCreds(
   acct: string,
   who: string,
   regionForClient: string,
+  expiration?: Date,
 ) {
   region = regionForClient;
   accountId = acct;
   creds = c;
+  armExpiry(expiration);
+  // Re-arm the actions a previous expiry disabled (this may be a re-sign-in).
+  ($<HTMLButtonElement>(".go")).disabled = false;
+  ($<HTMLButtonElement>(".connect-term")).disabled = false;
   client = new SpawnClient({
     provider: new EC2Provider({
       region,
@@ -165,6 +178,96 @@ function connectWithCreds(
   $(".launch").hidden = false;
   updateDnsPreview();
   void showQuotas(c, regionForClient);
+}
+
+// --- Credential expiry ------------------------------------------------------
+// Warn this long before the hard expiration, so a launch started now doesn't die
+// mid-request.
+const WARN_BEFORE_MS = 5 * 60 * 1000;
+
+/** True once the creds are past (or within a whisker of) their expiration. */
+function credsExpired(): boolean {
+  return credsExpireAt !== null && Date.now() >= credsExpireAt;
+}
+
+/**
+ * Show the credential clock and arm the warn/expire transitions. Pasted
+ * long-lived keys have no expiration, so the banner stays hidden for them —
+ * only a federated (Globus→STS) session has a deadline to announce.
+ */
+function armExpiry(expiration?: Date) {
+  if (expiryTimer) clearTimeout(expiryTimer);
+  if (expiryTick) clearInterval(expiryTick);
+  expiryTimer = null;
+  expiryTick = null;
+  credsExpireAt = expiration?.getTime() ?? null;
+  const banner = $(".session-expiry");
+  if (credsExpireAt === null) {
+    banner.hidden = true;
+    return;
+  }
+  banner.hidden = false;
+  showExpiry("ok");
+  // Keep the "~N min" honest between transitions; also the only thing that
+  // notices a deadline passed while the laptop was asleep and timers didn't fire.
+  expiryTick = setInterval(() => {
+    if (credsExpired()) {
+      clearInterval(expiryTick!);
+      expiryTick = null;
+      onExpiryExpired();
+      return;
+    }
+    showExpiry(credsExpireAt! - Date.now() <= WARN_BEFORE_MS ? "warn" : "ok");
+  }, 30_000);
+  const warnAt = credsExpireAt - WARN_BEFORE_MS - Date.now();
+  if (warnAt <= 0) {
+    onExpiryWarning();
+    return;
+  }
+  expiryTimer = setTimeout(onExpiryWarning, warnAt);
+}
+
+function onExpiryWarning() {
+  showExpiry("warn");
+  log("Your federated session expires in under 5 minutes — sign in again to keep launching.");
+  const hardAt = (credsExpireAt ?? 0) - Date.now();
+  expiryTimer = setTimeout(onExpiryExpired, Math.max(0, hardAt));
+}
+
+function onExpiryExpired() {
+  // Reachable from the timer, the 30s tick, and each guarded click — announce once.
+  if ($(".session-expiry").classList.contains("expired")) return;
+  if (expiryTimer) clearTimeout(expiryTimer);
+  if (expiryTick) clearInterval(expiryTick);
+  expiryTimer = null;
+  expiryTick = null;
+  showExpiry("expired");
+  log("Federated session expired. Sign in with Globus again — the launch button is disabled until you do.");
+  // Disable the actions that would otherwise fail with a cryptic SDK error.
+  ($<HTMLButtonElement>(".go")).disabled = true;
+  ($<HTMLButtonElement>(".connect-term")).disabled = true;
+  // Stop the monitor loop: every tick would now be a failing DescribeInstances.
+  client?.stopMonitor();
+  void cleanupTerminal();
+}
+
+function showExpiry(state: "ok" | "warn" | "expired") {
+  const banner = $(".session-expiry");
+  banner.className = `session-expiry ${state}`;
+  if (state === "expired") {
+    banner.innerHTML = `<b>Session expired.</b> Your Globus-federated AWS credentials have lapsed
+      (they last 1 hour). <button class="primary expiry-resignin">Sign in with Globus again</button>`;
+    banner.querySelector(".expiry-resignin")!.addEventListener("click", () => {
+      void beginLogin({ clientId: GLOBUS_CLIENT_ID, redirectUri: REDIRECT_URI, forcePrompt: true });
+    });
+    return;
+  }
+  const when = new Date(credsExpireAt!).toLocaleTimeString();
+  const mins = Math.max(0, Math.round((credsExpireAt! - Date.now()) / 60_000));
+  banner.textContent =
+    state === "warn"
+      ? `Session expires at ${when} (~${mins} min) — sign in again soon to keep launching.`
+      : `Federated session valid until ${when} (~${mins} min).`;
 }
 
 // Read-only account inspection (like Coiled's setup shows) — fully browser-native
@@ -209,7 +312,7 @@ async function handleGlobusRedirect() {
     // Resolve the account from the assumed identity.
     const sts = new STSClient({ region: CONFIG_REGION, credentials: c });
     const id = await sts.send(new GetCallerIdentityCommand({}));
-    connectWithCreds(c, id.Account ?? "", `via Globus (${escapeHtml(String(claims.email ?? claims.sub ?? ""))})`, CONFIG_REGION);
+    connectWithCreds(c, id.Account ?? "", `via Globus (${escapeHtml(String(claims.email ?? claims.sub ?? ""))})`, CONFIG_REGION, c.expiration);
     // Clean the ?code= from the URL so a refresh doesn't re-run the exchange.
     window.history.replaceState({}, "", REDIRECT_URI);
   } catch (err) {
@@ -255,6 +358,12 @@ $(".f-name").addEventListener("input", updateDnsPreview);
 // Step 2 — launch a real t4g.nano with a bounded TTL into the connected account.
 $(".go").addEventListener("click", async () => {
   if (!client) return;
+  // Check at the moment of the click, not just on the timer: a laptop asleep
+  // past the deadline doesn't fire timeouts on schedule.
+  if (credsExpired()) {
+    onExpiryExpired();
+    return;
+  }
   const name = val(".f-name") || "demo-direct";
   const ttl = ($<HTMLSelectElement>(".f-ttl")).value;
   ($<HTMLButtonElement>(".go")).disabled = true;
@@ -283,6 +392,10 @@ $(".go").addEventListener("click", async () => {
 // session-scoped StreamUrl + token, and opens a data-channel WebSocket. No SSH.
 $(".connect-term").addEventListener("click", async () => {
   if (!creds || !currentInstanceId) return;
+  if (credsExpired()) {
+    onExpiryExpired();
+    return;
+  }
   const btn = $<HTMLButtonElement>(".connect-term");
   btn.disabled = true;
   btn.textContent = "Starting session…";
@@ -363,6 +476,15 @@ function poll(instanceId: string, name: string) {
   let announced = false;
   const timer = setInterval(async () => {
     if (!client) return;
+    // Expired creds turn every tick into a failing DescribeInstances; stop and
+    // say so once instead of spraying errors.
+    if (credsExpired()) {
+      clearInterval(timer);
+      onExpiryExpired();
+      log(`Stopped watching ${instanceId} — session expired. It still self-terminates on its TTL.`);
+      showReset();
+      return;
+    }
     const inst = await client.get(instanceId);
     if (!inst) {
       log(`${name} no longer visible — terminated and reaped.`);

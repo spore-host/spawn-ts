@@ -57,6 +57,15 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .qrow span { color: var(--muted); }
 .whoami.ok { color: var(--ok); }
 .whoami.err { color: var(--err); }
+/* Federated-session clock. Hidden for pasted long-lived keys (no expiration). */
+.session-expiry {
+  margin-top: 10px; padding: 8px 10px; border-radius: 6px; font-size: 12px;
+  border: 1px solid var(--border); color: var(--muted);
+}
+.session-expiry.warn { color: var(--warn); border-color: var(--warn); }
+.session-expiry.expired { color: var(--err); border-color: var(--err); }
+.session-expiry b { color: inherit; }
+.session-expiry button { margin-top: 8px; display: block; }
 .dns-preview { margin-top: 12px; color: var(--muted); font-size: 13px; }
 .dns-preview b { color: var(--accent); }
 code { background: #0d0f14; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
