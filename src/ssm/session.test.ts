@@ -48,15 +48,44 @@ function agentFrame(over: Partial<AgentMessage>): Promise<Uint8Array> {
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
-// The session's inbound handler is async (it awaits WebCrypto digests before
-// sending ACKs/replies), so wait until the socket has captured `n` sent frames
-// rather than counting microtasks.
-async function waitForSends(ws: FakeWebSocket, n: number, timeoutMs = 1000): Promise<void> {
+/**
+ * Wait until `pred` holds, polling on a 1 ms tick with a generous ceiling.
+ *
+ * The session's inbound path is async — it awaits WebCrypto digests before
+ * sending ACKs and replies, and `markReady` awaits `flushPending` — so the
+ * observable effect of pushing a frame lands some indeterminate number of
+ * microtask+task turns later. A fixed sleep encodes a guess about that: 5 ms was
+ * enough on an idle machine and not enough with 26 other test files in parallel
+ * workers, which is how #61 flaked. Polling makes the test's *duration* track the
+ * machine while its *verdict* tracks only correctness.
+ *
+ * `describe` what you're waiting for: the timeout message is the only diagnostic
+ * a CI failure will show.
+ */
+async function waitFor(pred: () => boolean, describe: string, timeoutMs = 2000): Promise<void> {
   const start = Date.now();
-  while (ws.sent.length < n) {
-    if (Date.now() - start > timeoutMs) throw new Error(`only ${ws.sent.length}/${n} frames sent`);
+  while (!pred()) {
+    if (Date.now() - start > timeoutMs) throw new Error(`timed out after ${timeoutMs}ms waiting for ${describe}`);
     await new Promise((r) => setTimeout(r, 1));
   }
+}
+
+/** Wait until the socket has captured at least `n` sent frames. */
+function waitForSends(ws: FakeWebSocket, n: number): Promise<void> {
+  return waitFor(() => ws.sent.length >= n, `${n} sent frame(s), have ${ws.sent.length}`);
+}
+
+/**
+ * The client→agent stream frames the session has sent, deserialized. Skips the
+ * token JSON, which is the one send that is a string rather than a binary frame.
+ */
+function sentFrames(ws: FakeWebSocket): AgentMessage[] {
+  return ws.sent.filter((b) => typeof b !== "string").map((b) => deserialize(new Uint8Array(b as Uint8Array)));
+}
+
+/** Frames carrying an Output payload — i.e. keystrokes reaching the shell. */
+function inputFrames(ws: FakeWebSocket): AgentMessage[] {
+  return sentFrames(ws).filter((m) => m.payloadType === PayloadType.Output);
 }
 
 describe("SsmSession", () => {
@@ -110,21 +139,25 @@ describe("SsmSession", () => {
     expect(s.ready).toBe(false);
 
     ws.push(await agentFrame({ payloadType: PayloadType.HandshakeComplete, payload: enc.encode("{}") }));
-    await waitForSends(ws, 3).catch(() => {}); // complete triggers no send; just let the tick run
-    await new Promise((r) => setTimeout(r, 5));
+    // HandshakeComplete sends nothing back, so there is no frame to wait on —
+    // `ready` itself is the observable effect, and it's the assertion.
+    await waitFor(() => s.ready, "the session to report ready after HandshakeComplete");
     expect(s.ready).toBe(true);
   });
 
   // Bring the session to the ready (post-handshake) state so input/size flush.
-  async function makeReady(ws: FakeWebSocket) {
+  // Waits for `ready` before clearing: `markReady` is called with `void` inside the
+  // inbound handler, so nothing awaits its flush, and a premature clear would drop
+  // frames the caller's own assertions are about to read.
+  async function makeReady(s: SsmSession, ws: FakeWebSocket) {
     ws.push(await agentFrame({ payloadType: PayloadType.HandshakeComplete, payload: enc.encode("{}") }));
-    await new Promise((r) => setTimeout(r, 5));
+    await waitFor(() => s.ready, "the session to report ready before clearing sent frames");
     ws.sent.length = 0;
   }
 
   it("normalizes a lone LF to CR on input, with Flags=0 (no SYN)", async () => {
     const { s, ws } = await opened();
-    await makeReady(ws);
+    await makeReady(s, ws);
     await s.sendInput("\n");
     const m = deserialize(new Uint8Array(ws.sent[0] as ArrayBuffer));
     expect(m.messageType).toBe(MessageType.InputStreamData);
@@ -135,7 +168,7 @@ describe("SsmSession", () => {
 
   it("sends a Size payload on resize", async () => {
     const { s, ws } = await opened();
-    await makeReady(ws);
+    await makeReady(s, ws);
     await s.resize(100, 30);
     const m = deserialize(new Uint8Array(ws.sent[0] as ArrayBuffer));
     expect(m.payloadType).toBe(PayloadType.Size);
@@ -150,9 +183,11 @@ describe("SsmSession", () => {
     expect(ws.sent.length).toBe(0);
     // handshake completes → queued input flushes
     ws.push(await agentFrame({ payloadType: PayloadType.HandshakeComplete, payload: enc.encode("{}") }));
-    await new Promise((r) => setTimeout(r, 5));
-    const inputs = ws.sent.map((b) => deserialize(new Uint8Array(b as ArrayBuffer))).filter((m) => m.payloadType === PayloadType.Output);
-    expect(inputs.length).toBeGreaterThan(0);
+    // Wait for the queued input itself, not for a duration: this assertion is about
+    // input being *queued rather than dropped*, so it must fail only when the flush
+    // path is broken — never because a loaded machine was slower than a guess.
+    await waitFor(() => inputFrames(ws).length > 0, "the queued input to flush on ready");
+    const inputs = inputFrames(ws);
     expect(dec.decode(inputs[0].payload)).toBe("whoami\r");
   });
 
@@ -160,7 +195,7 @@ describe("SsmSession", () => {
     const onClose = vi.fn();
     const { ws } = await opened({ onClose });
     ws.push(await agentFrame({ messageType: MessageType.ChannelClosed, payloadType: PayloadType.Output }));
-    await new Promise((r) => setTimeout(r, 5));
+    await waitFor(() => onClose.mock.calls.length > 0 && ws.closed, "the close to be reported and the socket closed");
     expect(onClose).toHaveBeenCalled();
     expect(ws.closed).toBe(true);
   });

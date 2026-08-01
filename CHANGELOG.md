@@ -137,6 +137,22 @@ version strings agree.
   compute-plane split — a small-scale rehearsal of the bring-your-own-account
   model. See `docs/live-smoke.md`.
 
+### Fixed
+- **The SSM session tests no longer race a fixed sleep** (#61). Four assertions
+  waited `setTimeout(r, 5)` for an async chain — WebCrypto digests, then
+  `markReady`'s un-awaited `flushPending` — whose duration is a property of the
+  machine, not of the code. 5 ms was enough idle and not enough alongside 29 other
+  test files in parallel CI workers. Each now waits on the condition it is actually
+  about (`ready`, a flushed `Output` frame, `onClose` having fired) via a shared
+  `waitFor(pred, describe)` poll with a 2 s ceiling, so the test's *duration* tracks
+  the machine while its *verdict* tracks only correctness. This mattered more than
+  an ordinary flake because the flakiest assertion is the one covering **input
+  being queued rather than dropped** — the terminal's core correctness property, and
+  a test everyone learns to re-run is exactly how a real regression in the flush
+  path gets waved through. Verified by slowing the flush path to 25 ms: the old
+  sleeps fail, the waits pass; and by four mutations of `session.ts`, each still
+  caught.
+
 ## [0.5.0] — 2026-07-22
 
 ### Added
