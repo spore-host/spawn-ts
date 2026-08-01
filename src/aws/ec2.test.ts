@@ -437,6 +437,48 @@ describe("EC2Provider lifecycle operations", () => {
       { Key: tag("ttl-deadline"), Value: "2026-07-20T16:00:00.000Z" },
     ]);
   });
+
+  describe("reloadAgent — the browser's triggerReload (#54)", () => {
+    it("sends AWS-RunShellScript with the same command Go's SSH path runs", async () => {
+      const { SSMClient, SendCommandCommand } = await import("@aws-sdk/client-ssm");
+      let sentCmd: unknown;
+      vi.spyOn(SSMClient.prototype, "send").mockImplementation(async (cmd: unknown) => {
+        sentCmd = cmd;
+        return { Command: { CommandId: "cmd-1" } } as never;
+      });
+
+      const r = await provider().reloadAgent("i-1");
+      expect(r.ok).toBe(true);
+      expect(r.detail).toContain("cmd-1");
+      // Really a SendCommand, not something that merely has the right shape.
+      expect(sentCmd).toBeInstanceOf(SendCommandCommand);
+      expect((sentCmd as InstanceType<typeof SendCommandCommand>).input).toMatchObject({
+        InstanceIds: ["i-1"],
+        DocumentName: "AWS-RunShellScript",
+        Parameters: { commands: ["sudo /usr/local/bin/spored reload"] },
+      });
+    });
+
+    it("reports a failure instead of throwing — the extend already succeeded", async () => {
+      const { SSMClient } = await import("@aws-sdk/client-ssm");
+      vi.spyOn(SSMClient.prototype, "send").mockRejectedValue(
+        new Error("InvalidInstanceId: not a managed instance"),
+      );
+      const r = await provider().reloadAgent("i-1");
+      expect(r.ok).toBe(false);
+      expect(r.detail).toMatch(/InvalidInstanceId/); // the real reason, not a generic one
+    });
+
+    it("treats a 200 with no CommandId as a failure, not a success", async () => {
+      // Same shape as the STS empty-fields case: not an error, so a bare try/catch
+      // would report success for something we can neither confirm nor look up.
+      const { SSMClient } = await import("@aws-sdk/client-ssm");
+      vi.spyOn(SSMClient.prototype, "send").mockResolvedValue({} as never);
+      const r = await provider().reloadAgent("i-1");
+      expect(r.ok).toBe(false);
+      expect(r.detail).toMatch(/no CommandId/);
+    });
+  });
 });
 
 describe("EC2Provider state mapping", () => {

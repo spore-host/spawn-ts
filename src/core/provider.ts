@@ -44,4 +44,24 @@ export interface Provider {
    * spawn:ttl-deadline, and by the sim to update spawn:compute-seconds.
    */
   setTags(instanceId: string, tags: Record<string, string>): Promise<void>;
+
+  /**
+   * Optional: ask spored on the instance to re-read its config from tags now,
+   * rather than at its next periodic refresh.
+   *
+   * Why this exists at all, given the tag is authoritative: spored evaluates TTL
+   * against an **in-memory** config (`a.config.TTLDeadline`,
+   * pkg/agent/agent.go:419) that it refreshes from tags only every 5 monitor
+   * ticks (~5 min, agent.go:378). So between an `extend` and that refresh, spored
+   * still holds the OLD deadline — and if the old one falls inside that window it
+   * terminates the instance the user just rescued. Go's `extend` nudges it for
+   * exactly this reason (`triggerReload`, cmd/extend.go:303, over SSH).
+   *
+   * Optional because a provider may have no channel to the box (MockProvider has
+   * no box; a substrate endpoint has no SSM). Callers MUST treat absence and
+   * failure alike — as "the reload did not happen", stated to the user with the
+   * manual command — never as success. Returns a human-readable detail either
+   * way so the caller can report which it was.
+   */
+  reloadAgent?(instanceId: string): Promise<{ ok: boolean; detail: string }>;
 }

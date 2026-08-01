@@ -259,6 +259,66 @@ export class EC2Provider implements Provider {
   }
 
   /**
+   * Nudge spored to re-read its config from tags now, via SSM RunShellScript.
+   *
+   * This is the browser's stand-in for Go's SSH `triggerReload`
+   * (cmd/extend.go:303): SSH needs a private key the browser doesn't have, but
+   * `ssm:SendCommand` is a plain signed POST and the endpoint is CORS-open
+   * (`access-control-allow-origin: *`, verified against ssm.us-east-1), so the
+   * same nudge works with no local half.
+   *
+   * Fire-and-report: it does NOT poll the command to completion. What the caller
+   * needs to know is whether the request was accepted, and an accepted
+   * SendCommand still fails on the box if SSM Agent isn't running or the instance
+   * profile lacks the managed-instance policy. So a true `ok` means "the reload
+   * was requested", not "spored reloaded" — the detail string says so, because
+   * the difference is exactly the kind that must not be smoothed over.
+   *
+   * Never throws: a failed reload must not fail the extend it follows. The tag
+   * write already succeeded, and that is the authoritative, durable part — the
+   * reload only shortens the window in which spored acts on a stale deadline.
+   */
+  async reloadAgent(instanceId: string): Promise<{ ok: boolean; detail: string }> {
+    // Lazily imported for the same reason as STS: nothing offline should pay for
+    // an SSM client, and @aws-sdk/client-ssm is an optional peer here.
+    let SSMClient, SendCommandCommand;
+    try {
+      ({ SSMClient, SendCommandCommand } = await import("@aws-sdk/client-ssm"));
+    } catch (err) {
+      return { ok: false, detail: `@aws-sdk/client-ssm is unavailable: ${(err as Error).message}` };
+    }
+    const ssm = new SSMClient({
+      region: this.opts.region,
+      endpoint: this.opts.endpoint || undefined,
+      credentials: {
+        accessKeyId: this.opts.accessKeyId,
+        secretAccessKey: this.opts.secretAccessKey,
+        sessionToken: this.opts.sessionToken,
+      },
+    });
+    try {
+      const out = await ssm.send(
+        new SendCommandCommand({
+          InstanceIds: [instanceId],
+          DocumentName: "AWS-RunShellScript",
+          // The same command Go's triggerReload runs over SSH.
+          Parameters: { commands: ["sudo /usr/local/bin/spored reload"] },
+          Comment: "spawn-ts extend: reload spored config from tags",
+        }),
+      );
+      const id = out.Command?.CommandId;
+      if (!id) {
+        // A 200 with no CommandId means we cannot check on it later, so it is
+        // reported as a non-success rather than assumed fine.
+        return { ok: false, detail: "ssm:SendCommand returned no CommandId" };
+      }
+      return { ok: true, detail: `reload requested via SSM (command ${id})` };
+    } catch (err) {
+      return { ok: false, detail: `ssm:SendCommand failed: ${(err as Error).message}` };
+    }
+  }
+
+  /**
    * Resolve the newest Amazon Linux 2023 AMI for an instance type's architecture
    * via DescribeImages (owner: amazon), so a real launch needs no hardcoded AMI.
    * Graviton (g/most-recent arm families) → arm64, else x86_64.

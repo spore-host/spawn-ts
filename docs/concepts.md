@@ -64,7 +64,8 @@ Here's the subtle part. When does the TTL clock start, and can it be reset?
 
 When spawn launches an instance with `ttl: "4h"`, it writes **two** tags:
 
-- `spawn:ttl` — the duration, `"4h"` (informational).
+- `spawn:ttl` — the duration, `"4h"`. Not quite decoration: it's the fallback
+  when the deadline tag is missing, so the two are kept in step.
 - `spawn:ttl-deadline` — an **absolute timestamp**: `launch time + 4h`, in
   RFC3339 (e.g. `2026-07-20T18:00:00Z`).
 
@@ -95,10 +96,15 @@ trustworthy.
 ### Extending is explicit
 
 You _can_ push the deadline out — but only deliberately, via
-`client.extend(name, "2h")`. That rewrites `spawn:ttl-deadline` to a new
-absolute timestamp. It's an explicit act with a clear audit trail in the tags,
-not a side effect of the instance's normal running. The invariant is "the
-deadline never moves _on its own_," not "the deadline can never move."
+`client.extend(name, "2h")`. That rewrites `spawn:ttl-deadline` (and
+`spawn:ttl`) to a new absolute timestamp. It's an explicit act with a clear audit
+trail in the tags, not a side effect of the instance's normal running. The
+invariant is "the deadline never moves _on its own_," not "the deadline can never
+move."
+
+Extending an instance whose deadline has **already passed** adds the duration to
+_now_ rather than to the stale deadline, so the rescue actually rescues something
+— see [the extend floor](./lifecycle.md#the-extend-floor-the-one-exception).
 
 ## Where this lives in the code
 

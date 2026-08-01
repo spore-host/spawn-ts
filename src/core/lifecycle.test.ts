@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { evaluate, accumulatedCost } from "./lifecycle.js";
+import {
+  evaluate,
+  accumulatedCost,
+  computeExtension,
+  TTL_TAG,
+  TTL_DEADLINE_TAG,
+} from "./lifecycle.js";
 import { buildLaunchTags, decodeConfigTags } from "./tags.js";
 import type { LaunchSpec, ManagedInstance } from "./types.js";
 import { parseDuration, formatDuration } from "./duration.js";
@@ -137,6 +143,96 @@ describe("non-running instances are inert", () => {
     const i = inst({ state: "stopped", ttlDeadlineMs: T0 - 1 });
     const r = evaluate(i, { nowMs: T0, completionFilePresent: false, isIdle: true });
     expect(r.decision).toBeUndefined();
+  });
+});
+
+describe("computeExtension — the extend safety floor (#54)", () => {
+  const H = 3600_000;
+
+  it("adds to the current deadline, not to now, while the TTL is still live", () => {
+    // The anchoring rule: extending at T0+30m an instance due at T0+1h gives
+    // T0+3h, not T0+2h30m. Stop/start cycles can't buy extra life.
+    const i = inst({ ttlDeadlineMs: T0 + H });
+    const ext = computeExtension(i, 2 * H, T0 + 30 * 60_000);
+    expect(ext.deadlineMs).toBe(T0 + 3 * H);
+    expect(ext.clamped).toBe(false);
+  });
+
+  it("clamps an OVERDUE instance to now + by, instead of a deadline in the past", () => {
+    // The whole point of the issue. Deadline was T0+1h; it is now T0+3h (2h
+    // overdue, spored down). Extending by 1h must land at T0+4h — an hour from
+    // now — NOT at T0+2h, an hour ago.
+    const i = inst({ ttlDeadlineMs: T0 + H });
+    const now = T0 + 3 * H;
+    const ext = computeExtension(i, H, now);
+    expect(ext.deadlineMs).toBe(now + H);
+    expect(ext.deadlineMs).toBeGreaterThan(now); // the invariant, stated directly
+    expect(ext.clamped).toBe(true);
+  });
+
+  it("reports clamped=false when the floor made no difference", () => {
+    const i = inst({ ttlDeadlineMs: T0 + 10 * H });
+    expect(computeExtension(i, H, T0).clamped).toBe(false);
+  });
+
+  it("clamps at the exact boundary too — a deadline landing on now is not a rescue", () => {
+    // old + by === now exactly. Without >= in the floor comparison the result is
+    // a deadline equal to now, which the reaper treats as expired (remaining <= 0).
+    const i = inst({ ttlDeadlineMs: T0 });
+    const now = T0 + H;
+    const ext = computeExtension(i, H, now);
+    expect(ext.deadlineMs).toBe(now + H);
+  });
+
+  it("writes BOTH spawn:ttl and spawn:ttl-deadline", () => {
+    // Two enforcers read the deadline tag, but Go's own extend and spored's
+    // synthesis path read spawn:ttl. Leaving it stale means they disagree.
+    const i = inst({ launchTimeMs: T0, ttlDeadlineMs: T0 + H, ttlMs: H });
+    const ext = computeExtension(i, H, T0 + 30 * 60_000);
+    expect(ext.tags[TTL_DEADLINE_TAG]).toBe(new Date(T0 + 2 * H).toISOString());
+    // Recomputed from the launch anchor: T0 → T0+2h is 2h, not "1h + 1h" applied
+    // to some other origin.
+    expect(ext.tags[TTL_TAG]).toBe("2h");
+  });
+
+  it("keeps spawn:ttl Go-parseable, and consistent with the deadline it ships with", () => {
+    const i = inst({ launchTimeMs: T0, ttlDeadlineMs: T0 + H });
+    const ext = computeExtension(i, 90 * 60_000, T0);
+    const ttl = parseDuration(ext.tags[TTL_TAG]);
+    expect(ttl).not.toBeNull();
+    expect(i.launchTimeMs + ttl!).toBe(ext.deadlineMs);
+  });
+
+  it("omits spawn:ttl rather than guessing when there is no launch anchor", () => {
+    // An absent tag reads as unknown; a wrong one reads as fact. decodeConfigTags
+    // would turn a bogus duration into a confident ttlMs.
+    const i = inst({ launchTimeMs: 0, ttlDeadlineMs: T0 + H });
+    const ext = computeExtension(i, H, T0);
+    expect(ext.tags[TTL_DEADLINE_TAG]).toBeTruthy();
+    expect(ext.tags).not.toHaveProperty(TTL_TAG);
+  });
+
+  it("extends an instance tagged only spawn:ttl, via the launch+ttl fallback", () => {
+    // No absolute deadline tag — the deadline is launchTime+ttl. Both call sites
+    // gate on ttlDeadline() for this reason.
+    const i = inst({ launchTimeMs: T0, ttlDeadlineMs: 0, ttlMs: H });
+    const ext = computeExtension(i, H, T0);
+    expect(ext.deadlineMs).toBe(T0 + 2 * H);
+    expect(ext.tags[TTL_TAG]).toBe("2h");
+  });
+
+  it("agrees with the TTL rule: an extended instance is no longer terminated", () => {
+    // End to end against the enforcer this is meant to outrun. Feed the extension
+    // back through decode+evaluate and assert the reaper's rule now spares it.
+    const overdue = inst({ ttlDeadlineMs: T0 + H });
+    const now = T0 + 3 * H;
+    expect(evaluate(overdue, { nowMs: now, completionFilePresent: false, isIdle: false }).decision)
+      .toMatchObject({ action: "terminate", rule: "ttl" });
+
+    const ext = computeExtension(overdue, H, now);
+    const extended = inst({ ...overdue, ttlDeadlineMs: ext.deadlineMs });
+    const res = evaluate(extended, { nowMs: now, completionFilePresent: false, isIdle: false });
+    expect(res.decision).toBeUndefined();
   });
 });
 

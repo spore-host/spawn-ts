@@ -23,7 +23,7 @@ import type {
   JobArrayMembership,
   LifecycleHooks,
 } from "./types.js";
-import { evaluate } from "./lifecycle.js";
+import { evaluate, computeExtension, ttlDeadline } from "./lifecycle.js";
 import { findOrphans, type Orphan } from "./orphans.js";
 import { evaluateBounds } from "./bounds.js";
 import { parseDuration, formatDuration } from "./duration.js";
@@ -387,18 +387,55 @@ export class SpawnClient {
     await this.refresh();
   }
 
-  /** Extend an instance's TTL deadline by a duration. Returns the new deadline (ms). */
+  /**
+   * Extend an instance's TTL deadline by a duration. Returns the new deadline (ms).
+   *
+   * The arithmetic and the safety floor live in `computeExtension` (core/lifecycle.ts),
+   * shared with the CLI's `extend` — same reason as the launch guard: two copies of
+   * a cost-safety rule drift, and the lenient copy is the one nobody notices.
+   *
+   * Emits an "info" event when the floor engaged, because the deadline the caller
+   * asked for is not the one they got, and an extend that reports plain success
+   * after silently clamping is the same class of lie as the unclamped bug.
+   */
   async extend(nameOrId: string, by: string | number): Promise<number> {
     const i = await this.resolve(nameOrId);
-    if (!i.ttlDeadlineMs) throw new Error(`${i.name} has no TTL to extend`);
+    // Accept either TTL form: an instance tagged only spawn:ttl (no absolute
+    // deadline) still has a deadline under ttlDeadline()'s launch+ttl fallback,
+    // and refusing it here would have made `extend` unusable on exactly those.
+    if (!ttlDeadline(i)) throw new Error(`${i.name} has no TTL to extend`);
     const ms = typeof by === "number" ? by : parseDuration(by);
     if (ms === null || ms <= 0) throw new Error(`invalid duration: ${by}`);
-    const deadline = i.ttlDeadlineMs + ms;
-    await this.provider.setTags(i.instanceId, {
-      [tag("ttl-deadline")]: new Date(deadline).toISOString(),
-    });
+    const ext = computeExtension(i, ms, this.now());
+    await this.provider.setTags(i.instanceId, ext.tags);
+    if (ext.clamped) {
+      this.emit({
+        type: "info",
+        instance: i.name,
+        message:
+          `TTL had already expired, so the extension was applied from now rather than ` +
+          `from the old deadline — new deadline ${new Date(ext.deadlineMs).toISOString()}.`,
+      });
+    }
+    // Ask spored to pick the new deadline up now. Only on a real provider (a mock
+    // has no box), and only reported — never awaited for success, never fatal.
+    if (this.provider.isReal && this.provider.reloadAgent) {
+      const r = await this.provider.reloadAgent(i.instanceId);
+      this.emit({
+        type: "info",
+        instance: i.name,
+        message: r.ok
+          ? `${r.detail} — spored will apply the new deadline shortly.`
+          : `could not reload spored (${r.detail}). The new deadline IS saved to the ` +
+            `spawn:ttl-deadline tag, but spored re-reads tags only every ~5 minutes, so ` +
+            `it may still act on the old one until then. To apply it now: ` +
+            `ssh ${i.tags[tag("local-username")] || "ec2-user"}@${
+              i.publicIp || "<instance>"
+            } 'sudo spored reload'`,
+      });
+    }
     await this.refresh();
-    return deadline;
+    return ext.deadlineMs;
   }
 
   /** Fire a completion signal (drops the watched file) to demo on-complete. */

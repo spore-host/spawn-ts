@@ -47,6 +47,7 @@ await client.stop(nameOrId, reason?);
 await client.start(nameOrId);
 await client.hibernate(nameOrId);
 await client.extend(nameOrId, by): Promise<number>;   // returns new deadline (ms)
+                                                      // floored at now+by; nudges spored
 await client.signalComplete(nameOrId);          // fire the completion action
 ```
 
@@ -55,9 +56,20 @@ await client.signalComplete(nameOrId);          // fire the completion action
 `pricePerHour`, `onComplete`, `completionFile`, `completionDelay`, and
 `allowUnbounded`. Durations are Go-form strings or ms.
 
-> **Cost safety:** on a **real** backend, `launch` throws if neither `ttl` nor
-> `costLimit` is set, unless `allowUnbounded: true`. The mock backend never
-> throws.
+> **Cost safety:** on a **real** backend, `launch` throws if _none_ of `ttl`,
+> `idleTimeout` or `costLimit` is set, unless `allowUnbounded: true`. If the only
+> bounds are `idleTimeout`/`costLimit` it launches but emits a `"warning"` event:
+> those are enforced by spored **on** the instance, so they don't survive a failed
+> bootstrap, and an instance with no TTL deadline is also skipped by orphan
+> detection. Only `ttl` is enforced from outside the box. See
+> [`evaluateBounds`](../src/core/bounds.ts). The mock backend never throws.
+
+> **`extend`** adds the duration to the current deadline (so stop/start buys
+> nothing), but never returns a deadline earlier than `now + by` — extending an
+> already-expired instance would otherwise leave it still expired. It writes both
+> `spawn:ttl-deadline` and `spawn:ttl`, and asks spored to reload via
+> `ssm:SendCommand` (best-effort; a failure is reported, never thrown). See
+> [lifecycle.md](./lifecycle.md#the-extend-floor-the-one-exception).
 
 ## Backend + clock
 

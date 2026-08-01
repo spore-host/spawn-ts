@@ -52,6 +52,116 @@ describe("SpawnClient end-to-end", () => {
     expect(after).toBe(before + 2 * 3600_000);
   });
 
+  describe("extend safety floor (#54)", () => {
+    it("clamps an overdue instance forward of now, and says it did", async () => {
+      // Two clients over one provider: the launcher at T0, the extender 2h after
+      // the deadline — the #19 orphan situation extend is most used in.
+      const provider = new MockProvider();
+      const launcher = new SpawnClient({ provider, startMs: T0, clock: 1 });
+      await launcher.launch({ name: "late", ttl: "1h" });
+
+      const now = T0 + 3 * 3600_000;
+      const rescuer = new SpawnClient({ provider, startMs: now, clock: 1 });
+      const events: SpawnEvent[] = [];
+      rescuer.on((e) => events.push(e));
+
+      const deadline = await rescuer.extend("late", "1h");
+      expect(deadline).toBe(now + 3600_000);
+      // Not merely "later than before" — later than NOW, which is the property
+      // that decides whether the reaper spares it.
+      expect(deadline).toBeGreaterThan(rescuer.now());
+      const info = events.find((e) => e.type === "info" && /already expired/.test(e.message));
+      expect(info).toBeTruthy();
+    });
+
+    it("emits no clamp notice for a live instance", async () => {
+      const c = client();
+      await c.launch({ name: "job", ttl: "4h" });
+      const events: SpawnEvent[] = [];
+      c.on((e) => events.push(e));
+      await c.extend("job", "1h");
+      expect(events.some((e) => e.type === "info" && /already expired/.test(e.message))).toBe(false);
+    });
+
+    it("writes both TTL tags", async () => {
+      const c = client();
+      await c.launch({ name: "job", ttl: "1h" });
+      await c.extend("job", "2h");
+      const i = (await c.get("job"))!;
+      expect(i.tags["spawn:ttl"]).toBe("3h");
+      expect(i.tags["spawn:ttl-deadline"]).toBe(new Date(T0 + 3 * 3600_000).toISOString());
+    });
+
+    it("rejects a non-positive or unparseable duration", async () => {
+      const c = client();
+      await c.launch({ name: "job", ttl: "1h" });
+      await expect(c.extend("job", "nonsense")).rejects.toThrow(/invalid duration/);
+      await expect(c.extend("job", 0)).rejects.toThrow(/invalid duration/);
+    });
+
+    it("throws for an instance with no TTL at all", async () => {
+      const c = client();
+      await c.launch({ name: "job", idleTimeout: "30m" });
+      await expect(c.extend("job", "1h")).rejects.toThrow(/no TTL to extend/);
+    });
+
+    describe("the spored reload nudge", () => {
+      function reloadClient(
+        reloadAgent?: (id: string) => Promise<{ ok: boolean; detail: string }>,
+      ) {
+        const p = new MockProvider() as MockProvider & {
+          isReal: boolean;
+          reloadAgent?: typeof reloadAgent;
+        };
+        Object.defineProperty(p, "isReal", { value: true });
+        if (reloadAgent) p.reloadAgent = reloadAgent;
+        return new SpawnClient({ provider: p, startMs: T0, clock: 1 });
+      }
+
+      it("requests a reload and reports the outcome", async () => {
+        const c = reloadClient(async () => ({ ok: true, detail: "reload requested via SSM" }));
+        await c.launch({ name: "job", ttl: "1h" });
+        const events: SpawnEvent[] = [];
+        c.on((e) => events.push(e));
+        await c.extend("job", "2h");
+        expect(events.some((e) => e.type === "info" && /reload requested/.test(e.message))).toBe(
+          true,
+        );
+      });
+
+      it("returns the new deadline even when the reload fails", async () => {
+        // The extend succeeded — the tag is written. A failed nudge downgrades the
+        // promptness, not the result, and must be surfaced as a gap.
+        const c = reloadClient(async () => ({ ok: false, detail: "ssm:SendCommand failed: denied" }));
+        await c.launch({ name: "job", ttl: "1h" });
+        // A real provider pins the clock to wall time, so compare against the
+        // deadline the launch actually produced rather than the sim epoch.
+        const before = (await c.get("job"))!.ttlDeadlineMs;
+        const events: SpawnEvent[] = [];
+        c.on((e) => events.push(e));
+        const deadline = await c.extend("job", "2h");
+        expect(deadline).toBe(before + 2 * 3600_000);
+        const info = events.find((e) => e.type === "info" && /could not reload/.test(e.message));
+        expect(info).toBeTruthy();
+        expect((info as { message: string }).message).toMatch(/IS saved/);
+        expect((info as { message: string }).message).toMatch(/spored reload/);
+      });
+
+      it("does not call reloadAgent on a mock provider", async () => {
+        let called = false;
+        const p = new MockProvider() as MockProvider & { reloadAgent: () => Promise<never> };
+        p.reloadAgent = async () => {
+          called = true;
+          throw new Error("must not be called");
+        };
+        const c = new SpawnClient({ provider: p, startMs: T0, clock: 1 });
+        await c.launch({ name: "job", ttl: "1h" });
+        await c.extend("job", "2h");
+        expect(called).toBe(false);
+      });
+    });
+  });
+
   it("refuses unbounded launch only on a real backend", async () => {
     const c = client(); // mock is not real → allowed
     await expect(c.launch({ name: "unbounded" })).resolves.toBeTruthy();
