@@ -8,6 +8,7 @@ import type { LifecycleAction, ManagedInstance } from "../core/types.js";
 import type { FanOutSummary } from "../core/fanout.js";
 import { accumulatedCost } from "../core/lifecycle.js";
 import { dnsNotice, sporedUpgrade, type Notice } from "../core/notices.js";
+import { instancePlugins, LAUNCH_DECLARABLE_PLUGINS } from "../core/plugins.js";
 import { humanRemaining, formatDuration, parseDuration } from "../core/duration.js";
 import { parseGridShorthand } from "../core/params.js";
 import { parseQueueConfig } from "../core/queue.js";
@@ -106,6 +107,23 @@ export class Dashboard {
           <div class="checks">
             <label class="inline"><input type="checkbox" name="spot" /> spot</label>
             <label class="inline"><input type="checkbox" name="hibernateOnIdle" /> hibernate on idle</label>
+          </div>
+        </div>
+        <div class="plugin-picker">
+          <label>plugins <span class="picker-hint">(declared in user-data; spored installs them at boot)</span></label>
+          <div class="plugin-checks">${LAUNCH_DECLARABLE_PLUGINS.map(
+            (name) =>
+              `<label class="inline"><input type="checkbox" name="plugin" value="${name}" /> ${name}</label>`,
+          ).join("")}</div>
+          <!-- A checkbox per declarable plugin rather than a free-text field, so the
+               offered set IS the supported set and a rejection can't be reached from
+               here. But an absence with no explanation reads as an arbitrary
+               omission, so the five that aren't offered are named with the reason. -->
+          <div class="plugin-note">
+            spore-sync, rclone, tailscale, globus-personal-endpoint and
+            github-actions-runner aren't here: each needs a local half that mints and
+            pushes a secret, which no launch-time path has. Install those with the
+            spawn CLI. All twelve are still <em>detected</em> on the cards below.
           </div>
         </div>
         <button type="submit" class="launch-btn">Launch</button>
@@ -251,6 +269,10 @@ export class Dashboard {
                   ...(s("notifyUrl") ? { notifyUrl: s("notifyUrl") } : {}),
                 }
               : undefined,
+          // getAll — the plugin checkboxes share one name, and fd.get() would
+          // return only the first, quietly launching with one of three ticked
+          // boxes honoured. Same defect the CLI's flagList exists to avoid.
+          plugins: fd.getAll("plugin").map((v) => ({ ref: String(v) })),
         });
         msg.textContent = `launched ${inst.name}`;
         msg.className = "launch-msg good";
@@ -508,6 +530,28 @@ export class Dashboard {
       )
       .join("");
 
+    // Detected plugins, from the spore:plugin:* tags the instance already carries.
+    // Rendered only when at least one is present: an empty list is NOT "no
+    // plugins installed" (the tag is best-effort, and never written for the
+    // launch-time path), so silence is the honest rendering of it. A card that
+    // said "no plugins" would assert what the data can't support — the CLI's
+    // --plugins spells out that caveat for a user who wants to ask.
+    const detected = instancePlugins(i);
+    const pluginLine = detected.length
+      ? `<div class="meta plugins">plugins — ${detected
+          .map((pl) => {
+            const label = `${pl.name}${pl.version ? ` ${pl.version}` : ""}`;
+            // verify=none means verification ran and reached neither a signature
+            // nor a manifest — a supply-chain finding. "unknown" means we can't
+            // tell. Distinct classes, so they can't be styled or read alike.
+            const cls = pl.verify === "none" ? "vnone" : pl.verify === "unknown" ? "vunknown" : "vok";
+            return `<span class="plugin ${cls}" title="verify=${escapeHtml(pl.verify)}">${escapeHtml(
+              label,
+            )}</span>`;
+          })
+          .join(" ")}</div>`
+      : "";
+
     card.innerHTML = `
       <div class="row1">
         <span class="name">${escapeHtml(i.name)}</span>
@@ -515,7 +559,7 @@ export class Dashboard {
         <span class="state ${i.state}">${i.state}</span>
       </div>
       <div class="meta">${meta.map(escapeHtml).join(" · ")}</div>
-      ${ttlMeter}${costMeter}${idleLine}${notices}
+      ${ttlMeter}${costMeter}${idleLine}${pluginLine}${notices}
       <div class="actions"></div>`;
 
     const actions = card.querySelector(".actions")!;

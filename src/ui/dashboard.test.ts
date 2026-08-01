@@ -588,3 +588,149 @@ describe("Dashboard status notices (#56)", () => {
     expect(dash.el.querySelector(".inst .notice.warn")!.textContent).toContain("<img");
   });
 });
+
+describe("Dashboard plugins (#53)", () => {
+  beforeEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  /** Set tags on the launched instance and re-render the cards. */
+  async function tagAndRefresh(client: SpawnClient, name: string, tags: Record<string, string>) {
+    const i = (await client.get(name))!;
+    await client.activeProvider.setTags(i.instanceId, tags);
+    await client.refresh();
+    await new Promise((r) => setTimeout(r, 0));
+  }
+
+  function tick(dash: Dashboard, plugin: string) {
+    const box = [...form(dash).querySelectorAll<HTMLInputElement>('input[name="plugin"]')].find(
+      (b) => b.value === plugin,
+    );
+    expect(box, `no checkbox for ${plugin}`).toBeTruthy();
+    box!.checked = true;
+  }
+
+  it("offers exactly the seven declarable plugins, and no others", async () => {
+    // The offered set IS the supported set — so a rejection can't be reached from
+    // this form at all, rather than being reported after the click.
+    const { dash } = setup();
+    const values = [...form(dash).querySelectorAll<HTMLInputElement>('input[name="plugin"]')].map(
+      (b) => b.value,
+    );
+    expect(values).toEqual([
+      "cloudwatch-agent",
+      "code-server",
+      "docker",
+      "jupyterlab",
+      "mountpoint-s3",
+      "rstudio-server",
+      "vscode-tunnel",
+    ]);
+    expect(values).not.toContain("tailscale");
+    expect(values).not.toContain("spore-sync");
+  });
+
+  it("explains why the other five aren't offered", async () => {
+    // An absence with no explanation reads as an arbitrary omission — and would
+    // also read as "the browser has no plugin support", which is wrong in the
+    // detect direction.
+    const { dash } = setup();
+    const note = dash.el.querySelector(".plugin-note")!.textContent!;
+    expect(note).toContain("spore-sync");
+    expect(note).toContain("tailscale");
+    expect(note).toContain("pushes a secret");
+    expect(note).toContain("detected");
+  });
+
+  it("declares EVERY ticked box, not just the first", async () => {
+    // fd.get() would return only the first of several same-named checkboxes,
+    // launching with one of three ticks honoured. Same defect flagList exists for.
+    const { client, dash } = setup();
+    const seen: string[][] = [];
+    const orig = client.activeProvider.launch.bind(client.activeProvider);
+    client.activeProvider.launch = async (spec, now) => {
+      seen.push((spec.plugins ?? []).map((d) => d.ref));
+      return orig(spec, now);
+    };
+    setField(dash, "name", "web");
+    setField(dash, "ttl", "4h");
+    tick(dash, "docker");
+    tick(dash, "jupyterlab");
+    tick(dash, "mountpoint-s3");
+    await submit(dash);
+    expect(seen).toEqual([["docker", "jupyterlab", "mountpoint-s3"]]);
+  });
+
+  it("declares nothing when no box is ticked", async () => {
+    const { client, dash } = setup();
+    const seen: unknown[] = [];
+    const orig = client.activeProvider.launch.bind(client.activeProvider);
+    client.activeProvider.launch = async (spec, now) => {
+      seen.push(spec.plugins);
+      return orig(spec, now);
+    };
+    setField(dash, "name", "web");
+    setField(dash, "ttl", "4h");
+    await submit(dash);
+    expect(seen).toEqual([[]]);
+  });
+
+  it("renders detected plugins on the card, including ones it could never install", async () => {
+    // Detection is universal; install is not. A card built on the install column
+    // alone would show nothing here.
+    const { client, dash } = setup();
+    setField(dash, "name", "web");
+    setField(dash, "ttl", "4h");
+    await submit(dash);
+    await tagAndRefresh(client, "web", {
+      "spore:plugin:spore-sync": "version=v0.9;verify=signature",
+    });
+    const line = dash.el.querySelector(".inst .plugins")!;
+    expect(line.textContent).toContain("spore-sync v0.9");
+    expect(line.querySelector(".plugin.vok")).toBeTruthy();
+  });
+
+  it("styles verify=none differently from verify=signature and from unknown", async () => {
+    // verify=none is a supply-chain finding; unknown is an absence of data. Three
+    // classes, so they can't be read alike.
+    const { client, dash } = setup();
+    setField(dash, "name", "web");
+    setField(dash, "ttl", "4h");
+    await submit(dash);
+    await tagAndRefresh(client, "web", {
+      "spore:plugin:docker": "version=v2;verify=none",
+      "spore:plugin:jupyterlab": "version=v1;verify=signature",
+      "spore:plugin:rclone": "version=v3",
+    });
+    const line = dash.el.querySelector(".inst .plugins")!;
+    expect(line.querySelector(".plugin.vnone")!.textContent).toContain("docker");
+    expect(line.querySelector(".plugin.vok")!.textContent).toContain("jupyterlab");
+    expect(line.querySelector(".plugin.vunknown")!.textContent).toContain("rclone");
+  });
+
+  it("renders NO plugin line when no tag is present — silence makes no claim", async () => {
+    // The tag is best-effort and is never written for launch-time declarations, so
+    // "no plugins installed" would assert more than the data supports.
+    const { dash } = setup();
+    setField(dash, "name", "web");
+    setField(dash, "ttl", "4h");
+    await submit(dash);
+    expect(dash.el.querySelector(".inst .plugins")).toBeNull();
+    expect(dash.el.querySelector(".inst")!.textContent).not.toContain("no plugins");
+  });
+
+  it("escapes the tag-supplied plugin name and version", async () => {
+    // Tag values land in innerHTML, and a tag key is only as trustworthy as
+    // whoever could write it.
+    const { client, dash } = setup();
+    setField(dash, "name", "web");
+    setField(dash, "ttl", "4h");
+    await submit(dash);
+    await tagAndRefresh(client, "web", {
+      "spore:plugin:<img src=x onerror=alert(1)>": "version=v1;verify=signature",
+    });
+    const line = dash.el.querySelector(".inst .plugins")!;
+    expect(line.querySelector("img")).toBeNull();
+    expect(line.textContent).toContain("<img");
+  });
+});
