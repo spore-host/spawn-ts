@@ -60,6 +60,12 @@
 .state.pending { background: rgba(88,166,255,.15); color: var(--accent); }
 .inst .meta { color: var(--muted); font-size: 11px; margin-top: 4px; }
 
+/* Tag-derived status notices (#56). A warn notice must be legible at a glance —
+   a failed DNS registration is the one condition nothing else on the card shows. */
+.inst .notice { font-size: 11px; margin-top: 6px; padding: 4px 6px; border-radius: 4px; line-height: 1.4; }
+.inst .notice.warn { background: rgba(248,81,73,.12); color: var(--red); border: 1px solid rgba(248,81,73,.3); }
+.inst .notice.info { background: rgba(88,166,255,.1); color: var(--accent); }
+
 .meter { height: 6px; background: #21262d; border-radius: 3px; margin-top: 6px; overflow: hidden; }
 .meter > span { display: block; height: 100%; background: var(--accent); }
 .meter.ttl > span { background: var(--green); }

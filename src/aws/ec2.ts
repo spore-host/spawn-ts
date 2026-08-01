@@ -28,6 +28,8 @@ import type {
 import { validateDeclarations } from "../core/plugins.js";
 import { buildLaunchTags, decodeConfigTags, decodeSweepTags, decodeJobArrayTags, decodeHookTags, isManaged, tag, type LaunchIdentity } from "../core/tags.js";
 import { buildLinuxBootstrap, encodeUserData } from "./userdata.js";
+import { lookupElasticIp } from "./eip.js";
+import type { ElasticIpLookup } from "../core/notices.js";
 
 export interface EC2ProviderOptions {
   region: string;
@@ -256,6 +258,26 @@ export class EC2Provider implements Provider {
         Tags: Object.entries(tags).map(([Key, Value]) => ({ Key, Value })),
       }),
     );
+  }
+
+  /**
+   * Find the Elastic IP associated with an instance, for `status`'s billing
+   * notice (#56). Requires `ec2:DescribeAddresses`.
+   *
+   * Delegates to `lookupElasticIp` (src/aws/eip.ts) so the SDK call has exactly
+   * one implementation; this method exists to hand it the credentials the
+   * provider already holds. Never throws — a failure comes back as
+   * `{ eip: null, error }` so the caller reports a gap rather than losing the
+   * whole status view to one optional lookup.
+   */
+  async lookupElasticIp(instanceId: string): Promise<ElasticIpLookup> {
+    return lookupElasticIp(instanceId, {
+      region: this.opts.region,
+      accessKeyId: this.opts.accessKeyId,
+      secretAccessKey: this.opts.secretAccessKey,
+      sessionToken: this.opts.sessionToken,
+      endpoint: this.opts.endpoint,
+    });
   }
 
   /**
