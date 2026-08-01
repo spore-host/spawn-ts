@@ -1,6 +1,6 @@
 {
   "name": "@spore-host/spawn-ts",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "type": "module",
   "description": "Browser-native spawn: launch and self-terminate AWS EC2 instances, entirely from a web page.",
   "keywords": [
@@ -51,7 +51,9 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p demo/tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:cov": "vitest run --coverage"
+    "test:cov": "vitest run --coverage",
+    "check:exports": "node scripts/check-exports.mjs",
+    "release:check": "node scripts/release-check.mjs && npm run typecheck && npm test && npm run build:lib && npm run check:exports"
   },
   "dependencies": {
     "@aws-sdk/client-ec2": "^3.700.0",
