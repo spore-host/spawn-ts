@@ -38,6 +38,8 @@ export { evaluate, accumulatedCost, ttlDeadline } from "./core/lifecycle.js";
 export type { TickInput } from "./core/lifecycle.js";
 export { findOrphans, ORPHAN_GRACE_MS } from "./core/orphans.js";
 export type { Orphan } from "./core/orphans.js";
+export { evaluateBounds, ENFORCEMENT } from "./core/bounds.js";
+export type { Bound, Enforcement, BoundsVerdict } from "./core/bounds.js";
 export {
   buildLaunchTags,
   buildSweepTags,

@@ -35,6 +35,96 @@ describe("CLI commands", () => {
     expect(l.lines.join("\n")).toContain("running");
   });
 
+  describe("launch cost-safety guard on a REAL backend (#55)", () => {
+    // The CLI's `launch` calls provider.launch directly rather than going through
+    // SpawnClient, so it needs its own coverage — that separate path is exactly
+    // how the guard came to be stated twice and inconsistently.
+    function realCtx(confirm: (m: string) => Promise<boolean> = async () => true): ShellCtx {
+      const provider = new MockProvider();
+      Object.defineProperty(provider, "isReal", { value: true });
+      return { provider, now: () => T0, confirm };
+    }
+
+    it("refuses a launch with no bound at all, and suggests both real bounds", async () => {
+      const r = await runCommand("launch naked", realCtx());
+      expect(r.error).toBe(true);
+      const out = r.lines.join("\n");
+      expect(out).toMatch(/bill indefinitely/);
+      expect(out).toMatch(/--ttl 4h/);
+      expect(out).toMatch(/--idle-timeout/); // was absent: the refused-but-valid bound
+    });
+
+    it("accepts --idle-timeout alone", async () => {
+      const r = await runCommand("launch idle --idle-timeout 1h", realCtx());
+      expect(r.error).toBeFalsy();
+      expect(r.lines.join("\n")).toContain("launched idle");
+    });
+
+    it("accepts --cost-limit alone but prints the warning", async () => {
+      const r = await runCommand("launch soft --cost-limit 10", realCtx());
+      expect(r.error).toBeFalsy();
+      const out = r.lines.join("\n");
+      expect(out).toContain("launched soft");
+      expect(out).toMatch(/warning:/);
+      expect(out).toMatch(/spored/);
+    });
+
+    it("prints no warning when --ttl is given", async () => {
+      const r = await runCommand("launch fine --ttl 4h --cost-limit 10", realCtx());
+      expect(r.lines.join("\n")).not.toMatch(/warning:/);
+    });
+
+    it("--no-timeout requires an acknowledgement, and aborts when declined", async () => {
+      // Matching Go, where --no-timeout means "disabling the cost guardrails is an
+      // explicit, acknowledged choice" (cmd/zombie_guard.go:58). A flag on its own
+      // can be a typo or a copy-pasted command line.
+      const r = await runCommand("launch forced --no-timeout", realCtx(async () => false));
+      expect(r.error).toBe(true);
+      expect(r.lines.join("\n")).toMatch(/aborted/);
+    });
+
+    it("--no-timeout proceeds when acknowledged", async () => {
+      const r = await runCommand("launch forced --no-timeout", realCtx(async () => true));
+      expect(r.error).toBeFalsy();
+      expect(r.lines.join("\n")).toContain("launched forced");
+    });
+
+    it("--no-timeout --yes skips the prompt", async () => {
+      let asked = false;
+      const c = realCtx(async () => {
+        asked = true;
+        return true;
+      });
+      const r = await runCommand("launch forced --no-timeout --yes", c);
+      expect(r.error).toBeFalsy();
+      expect(asked).toBe(false);
+    });
+
+    it("--no-timeout works BEFORE the instance name too", async () => {
+      // Regression: --no-timeout wasn't in BOOLEAN_FLAGS, so in this word order
+      // parseArgs consumed "forced" as the flag's value — the instance name was
+      // lost and the flag read false. It failed safe (refused), but was inert.
+      const r = await runCommand("launch --no-timeout forced --yes", realCtx());
+      expect(r.error).toBeFalsy();
+      expect(r.lines.join("\n")).toContain("launched forced");
+    });
+
+    it("an unbounded MOCK launch neither refuses nor prompts", async () => {
+      let asked = false;
+      const c: ShellCtx = {
+        ...ctx(),
+        confirm: async () => {
+          asked = true;
+          return true;
+        },
+      };
+      const r = await runCommand("launch sim", c);
+      expect(r.error).toBeFalsy();
+      expect(asked).toBe(false);
+      expect(r.lines.join("\n")).not.toMatch(/warning:/);
+    });
+  });
+
   it("rejects invalid duration", async () => {
     const r = await runCommand("launch job --ttl notaduration", ctx());
     expect(r.error).toBe(true);

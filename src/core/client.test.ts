@@ -57,6 +57,61 @@ describe("SpawnClient end-to-end", () => {
     await expect(c.launch({ name: "unbounded" })).resolves.toBeTruthy();
   });
 
+  describe("the unbounded-launch guard on a REAL backend (#55)", () => {
+    // A MockProvider that lies about being real, so the guard engages without any
+    // AWS call. Only `isReal` differs — everything else is the mock's behaviour.
+    function realish() {
+      const p = new MockProvider() as MockProvider & { isReal: boolean };
+      Object.defineProperty(p, "isReal", { value: true });
+      return new SpawnClient({ provider: p, startMs: T0, clock: 1 });
+    }
+
+    it("refuses a launch with no bound whatsoever", async () => {
+      await expect(realish().launch({ name: "naked" })).rejects.toThrow(/bill indefinitely/);
+    });
+
+    it("ACCEPTS an idleTimeout-only launch", async () => {
+      // Previously refused, although Go auto-applies exactly this as its default.
+      await expect(realish().launch({ name: "idle", idleTimeout: "1h" })).resolves.toBeTruthy();
+    });
+
+    it("permits a costLimit-only launch but emits a warning naming the risk", async () => {
+      // The dangerous half: this used to pass the guard in total silence, so a
+      // caller reasonably concluded the launch was bounded. It isn't — spored
+      // enforces the cost limit, and an instance with no TTL is also skipped by
+      // findOrphans (orphans.ts:46), so nothing catches it if spored never starts.
+      const c = realish();
+      const events: SpawnEvent[] = [];
+      c.on((e) => events.push(e));
+      await expect(c.launch({ name: "soft", costLimit: 10 })).resolves.toBeTruthy();
+      const warn = events.find((e) => e.type === "warning" && e.rule === "unbounded");
+      expect(warn).toBeTruthy();
+      expect((warn as { message: string }).message).toMatch(/spored/);
+    });
+
+    it("emits no warning when a ttl is present", async () => {
+      const c = realish();
+      const events: SpawnEvent[] = [];
+      c.on((e) => events.push(e));
+      await c.launch({ name: "bounded", ttl: "4h", costLimit: 10 });
+      expect(events.some((e) => e.type === "warning" && e.rule === "unbounded")).toBe(false);
+    });
+
+    it("allowUnbounded clears the refusal", async () => {
+      await expect(
+        realish().launch({ name: "forced", allowUnbounded: true }),
+      ).resolves.toBeTruthy();
+    });
+
+    it("emits no unbounded warning on a MOCK launch — it bills nothing", async () => {
+      const c = client();
+      const events: SpawnEvent[] = [];
+      c.on((e) => events.push(e));
+      await c.launch({ name: "sim", costLimit: 10 });
+      expect(events.some((e) => e.type === "warning" && e.rule === "unbounded")).toBe(false);
+    });
+  });
+
   it("signalComplete applies the on-complete action", async () => {
     const c = client();
     await c.launch({ name: "job", ttl: "4h", onComplete: "stop", completionFile: "/tmp/done" });
