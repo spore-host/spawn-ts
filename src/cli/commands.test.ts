@@ -168,6 +168,161 @@ describe("CLI commands", () => {
     expect(r.lines.join("\n")).toContain("extended job by 3h");
   });
 
+  describe("extend safety floor + tag pair (#54)", () => {
+    /** A shell whose clock the test can move forward, to make an instance overdue. */
+    function movableCtx(): { c: ShellCtx; setNow: (ms: number) => void } {
+      let now = T0;
+      const provider = new MockProvider();
+      return {
+        c: { provider, now: () => now, confirm: async () => true },
+        setNow: (ms) => {
+          now = ms;
+        },
+      };
+    }
+
+    it("rescues an OVERDUE instance instead of leaving its deadline in the past", async () => {
+      const { c, setNow } = movableCtx();
+      await runCommand("launch job --ttl 1h", c); // due T0+1h
+      setNow(T0 + 3 * 3600_000); // 2h overdue — spored never reaped it
+      const r = await runCommand("extend job 1h", c);
+      expect(r.error).toBeFalsy();
+
+      const i = (await c.provider.get("job"))!;
+      // Unclamped this was T0+2h — an hour BEFORE now, so the reaper would kill it
+      // on its next pass despite the CLI reporting success.
+      expect(i.ttlDeadlineMs).toBe(T0 + 4 * 3600_000);
+      expect(i.ttlDeadlineMs).toBeGreaterThan(c.now());
+    });
+
+    it("says the extension was applied from now, rather than reporting bare success", async () => {
+      const { c, setNow } = movableCtx();
+      await runCommand("launch job --ttl 1h", c);
+      setNow(T0 + 3 * 3600_000);
+      const out = (await runCommand("extend job 1h", c)).lines.join("\n");
+      expect(out).toMatch(/already expired/);
+      expect(out).toMatch(/from now/);
+    });
+
+    it("adds no note when the instance was still live", async () => {
+      const c = ctx();
+      await runCommand("launch job --ttl 4h", c);
+      const out = (await runCommand("extend job 1h", c)).lines.join("\n");
+      expect(out).not.toMatch(/already expired/);
+    });
+
+    it("updates spawn:ttl too, so the two TTL tags don't disagree", async () => {
+      const c = ctx();
+      await runCommand("launch job --ttl 1h", c);
+      await runCommand("extend job 2h", c);
+      const i = (await c.provider.get("job"))!;
+      expect(i.tags["spawn:ttl"]).toBe("3h");
+      // And the pair is self-consistent: launch + ttl === deadline.
+      expect(i.launchTimeMs + i.ttlMs).toBe(i.ttlDeadlineMs);
+    });
+
+    it("extends an instance carrying only spawn:ttl (no absolute deadline tag)", async () => {
+      const c = ctx();
+      await runCommand("launch job --ttl 1h", c);
+      // Drop the deadline tag, as an instance launched by an older/other writer
+      // might be. The old `!i.ttlDeadlineMs` gate rejected these outright.
+      const i0 = (await c.provider.get("job"))!;
+      i0.tags = { ...i0.tags, "spawn:ttl-deadline": "" };
+      i0.ttlDeadlineMs = 0;
+      const r = await runCommand("extend job 2h", c);
+      expect(r.error).toBeFalsy();
+      expect((await c.provider.get("job"))!.ttlDeadlineMs).toBe(T0 + 3 * 3600_000);
+    });
+
+    /** A real-looking ctx whose reloadAgent the test controls (or omits entirely). */
+    function reloadCtx(
+      reloadAgent?: (id: string) => Promise<{ ok: boolean; detail: string }>,
+    ): ShellCtx {
+      const provider = new MockProvider() as MockProvider & {
+        isReal: boolean;
+        reloadAgent?: typeof reloadAgent;
+      };
+      Object.defineProperty(provider, "isReal", { value: true });
+      if (reloadAgent) provider.reloadAgent = reloadAgent;
+      return { provider, now: () => T0, confirm: async () => true };
+    }
+
+    it("reloads spored after a successful extend, and reports it", async () => {
+      const seen: string[] = [];
+      const c = reloadCtx(async (id) => {
+        seen.push(id);
+        return { ok: true, detail: "reload requested via SSM (command abc)" };
+      });
+      await runCommand("launch job --ttl 1h --idle-timeout 30m", c);
+      const i = (await c.provider.get("job"))!;
+      const out = (await runCommand("extend job 2h", c)).lines.join("\n");
+      expect(seen).toEqual([i.instanceId]);
+      expect(out).toContain("reload requested via SSM");
+    });
+
+    it("still SUCCEEDS when the reload fails, and names the manual command", async () => {
+      // The tag write is the durable part and it already landed; a failed nudge
+      // must not turn a completed extend into an error. But it must be stated —
+      // silence here reads as "spored has the new deadline", which it may not.
+      const c = reloadCtx(async () => ({ ok: false, detail: "ssm:SendCommand failed: not found" }));
+      await runCommand("launch job --ttl 1h --idle-timeout 30m", c);
+      const r = await runCommand("extend job 2h", c);
+      expect(r.error).toBeFalsy();
+      const out = r.lines.join("\n");
+      expect(out).toContain("extended job by 2h");
+      expect(out).toMatch(/could not reload spored/);
+      expect(out).toMatch(/5 minutes/); // says how long the stale window is
+      expect(out).toMatch(/spored reload/); // names the manual fix
+      // The hint has to be copy-pasteable: it names a login user, not a bare host.
+      expect(out).toMatch(/ssh \S+@\S+ 'sudo spored reload'/);
+      // And the tag still went out.
+      expect((await c.provider.get("job"))!.ttlDeadlineMs).toBe(T0 + 3 * 3600_000);
+    });
+
+    it("uses spawn:local-username in the manual hint, not a hardcoded ec2-user", async () => {
+      // Go's connect prefers this tag (cmd/connect.go:135); a hint naming a user
+      // that doesn't exist on the box is a hint that fails when it's followed.
+      const c = reloadCtx(async () => ({ ok: false, detail: "denied" }));
+      await runCommand("launch job --ttl 1h --idle-timeout 30m", c);
+      const i = (await c.provider.get("job"))!;
+      await c.provider.setTags(i.instanceId, { "spawn:local-username": "rocky" });
+      const out = (await runCommand("extend job 2h", c)).lines.join("\n");
+      expect(out).toMatch(/ssh rocky@/);
+    });
+
+    it("says the backend cannot reload, rather than implying it did", async () => {
+      // Absence of the capability is not success. A provider with no channel to
+      // the box (substrate, a future provider) must produce a stated gap.
+      const c = reloadCtx(undefined);
+      await runCommand("launch job --ttl 1h --idle-timeout 30m", c);
+      const out = (await runCommand("extend job 2h", c)).lines.join("\n");
+      expect(out).toMatch(/can't reload spored/);
+      expect(out).toMatch(/~5 minutes/);
+    });
+
+    it("attempts no reload on a mock backend — there is no box to reload", async () => {
+      let called = false;
+      const provider = new MockProvider() as MockProvider & { reloadAgent: () => Promise<never> };
+      provider.reloadAgent = async () => {
+        called = true;
+        throw new Error("must not be called");
+      };
+      const c: ShellCtx = { provider, now: () => T0, confirm: async () => true };
+      await runCommand("launch job --ttl 1h", c);
+      const r = await runCommand("extend job 2h", c);
+      expect(r.error).toBeFalsy();
+      expect(called).toBe(false);
+    });
+
+    it("still refuses an instance with no TTL in any form", async () => {
+      const c = ctx();
+      await runCommand("launch job --idle-timeout 30m", c);
+      const r = await runCommand("extend job 1h", c);
+      expect(r.error).toBe(true);
+      expect(r.lines.join("\n")).toContain("no TTL to extend");
+    });
+  });
+
   it("terminate honors confirm=false", async () => {
     const c: ShellCtx = { ...ctx(), confirm: async () => false };
     await runCommand("launch job --ttl 1h", c);

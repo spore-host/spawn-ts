@@ -37,6 +37,49 @@ likewise uses total compute-seconds across the instance's life
 (`spawn:compute-seconds`), so a repeatedly-resumed instance can't reset its cost
 clock. Both mirror the Go tool's behavior.
 
+### The extend floor: the one exception
+
+Anchoring has a failure mode, and `extend` handles it explicitly. If an
+instance's deadline has already passed — spored never started, or crashed, the
+[orphan](../src/core/orphans.ts) case — then `old deadline + by` is a timestamp
+**in the past**. Extending would report success and change nothing, and the
+reaper would terminate the instance on its next pass. So `computeExtension`
+applies a floor: the result is never earlier than `now + by` (matching Go's
+`cmd/extend.go:126`).
+
+The two rules compose — the floor is a lower bound on the anchored sum, not a
+replacement for it. A live instance still gets `old + by`, so stop/start still
+buys nothing. Only an already-overdue one is pulled forward, and both the library
+(an `info` event) and the CLI (a `note:` line) say when that happened: the user
+asked for one deadline and got another.
+
+`extend` writes **both** `spawn:ttl-deadline` and `spawn:ttl`, recomputing the
+latter from the launch anchor. The deadline tag is what the reaper and spored
+read, but Go's `extend` and spored's deadline-synthesis path both read
+`spawn:ttl`, and two TTL tags that disagree are a trap for whichever reads the
+stale one.
+
+### Why extend nudges the instance
+
+spored evaluates TTL against an **in-memory** config that it re-reads from tags
+only every ~5 monitor ticks (`pkg/agent/agent.go:378`). Between an `extend` and
+that refresh it still holds the old deadline — so extending an instance that is
+nearly (or already) due can lose the race and be terminated anyway.
+
+So after writing the tags, `extend` asks spored to reload now. Go does this over
+SSH (`triggerReload`); a browser has no private key, so spawn-ts uses
+`ssm:SendCommand` with `AWS-RunShellScript` to run the same
+`sudo spored reload` — the SSM endpoint is CORS-open, so no proxy is involved.
+This needs **`ssm:SendCommand`** in addition to the EC2 permissions, and the
+instance must be SSM-managed (SSM Agent running, `AmazonSSMManagedInstanceCore`
+on its instance profile).
+
+It's best-effort by design, and never fatal: the tag write is the durable,
+authoritative part and has already succeeded. When the reload fails — or the
+provider has no channel to the box at all — the result is a **stated gap** naming
+the ~5-minute window and the manual `sudo spored reload`, never silence. A `Provider`
+without `reloadAgent` is treated exactly like one whose reload failed.
+
 ## Why it's pure
 
 Keeping the engine free of a clock and I/O means:

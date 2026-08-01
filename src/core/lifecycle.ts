@@ -18,8 +18,14 @@ import type {
   ManagedInstance,
   TickResult,
 } from "./types.js";
+import { tag } from "./tags.js";
+import { formatDuration } from "./duration.js";
 
 const FIVE_MIN_MS = 5 * 60_000;
+
+/** The TTL tag pair. Named here because `computeExtension` writes both. */
+export const TTL_TAG = tag("ttl");
+export const TTL_DEADLINE_TAG = tag("ttl-deadline");
 
 /** Inputs the engine can't derive from tags: live activity signals + clock. */
 export interface TickInput {
@@ -46,6 +52,67 @@ export function ttlDeadline(inst: ManagedInstance): number {
   if (inst.ttlDeadlineMs > 0) return inst.ttlDeadlineMs;
   if (inst.ttlMs > 0 && inst.launchTimeMs > 0) return inst.launchTimeMs + inst.ttlMs;
   return 0;
+}
+
+/** The tag pair an extend writes, plus the deadline it lands on. */
+export interface ExtendResult {
+  /** New absolute deadline (ms epoch). */
+  deadlineMs: number;
+  /** True when the safety floor moved the deadline forward of `old + by`. */
+  clamped: boolean;
+  /** spawn:ttl / spawn:ttl-deadline, ready for setTags. */
+  tags: Record<string, string>;
+}
+
+/**
+ * Compute the new deadline for `extend`, including the safety floor.
+ *
+ * Two rules, and they compose — the second is a lower bound on the first, not a
+ * replacement for it:
+ *
+ * 1. **Add to the current deadline, not to now.** Keeps TTL anchored to the
+ *    original launch across stop/wake cycles, so stopping and restarting can't
+ *    quietly buy extra life.
+ * 2. **Never return a deadline earlier than `now + by`.** Ported from Go
+ *    (`cmd/extend.go:126`). Without it, extending an already-overdue instance
+ *    produces a deadline *still in the past*: an instance 2h overdue (spored
+ *    down — the #19 orphan scenario `src/core/orphans.ts` exists for) extended by
+ *    1h lands 1h ago. `extend` reports success and the ttl-reaper terminates it
+ *    on the next pass, so the user's rescue is silently a no-op. This is most
+ *    likely to bite exactly when it matters most: the instance you're trying to
+ *    save is by definition one that's overdue.
+ *
+ * Also writes **both** tags. `spawn:ttl-deadline` is authoritative for both
+ * enforcers (reaper `lambda/ttl-reaper/main.go:688`; spored
+ * `pkg/provider/ec2.go:478`), so `spawn:ttl` is close to cosmetic — but not
+ * entirely: Go's own `extend` reads `instance.TTL` for its no-deadline-tag
+ * fallback (`cmd/extend.go:119`), and spored synthesizes a deadline from
+ * `anchor + config.TTL` when the deadline tag is zero (`pkg/agent/agent.go:140`).
+ * Two tags that disagree are a trap for anything that trusts the wrong one.
+ *
+ * `ttlMs` is recomputed from the launch anchor rather than incremented, so
+ * `spawn:ttl` keeps meaning "duration from launch" — the meaning spored assumes
+ * when it synthesizes. When there's no usable anchor the tag is omitted rather
+ * than guessed: an absent tag reads as unknown, a wrong one reads as fact.
+ */
+export function computeExtension(
+  inst: ManagedInstance,
+  byMs: number,
+  nowMs: number,
+): ExtendResult {
+  const current = ttlDeadline(inst);
+  const floor = nowMs + byMs;
+  const proposed = current + byMs;
+  const deadlineMs = Math.max(proposed, floor);
+
+  const tags: Record<string, string> = {
+    [TTL_DEADLINE_TAG]: new Date(deadlineMs).toISOString(),
+  };
+  const anchor = inst.launchTimeMs;
+  if (anchor > 0 && deadlineMs > anchor) {
+    tags[TTL_TAG] = formatDuration(deadlineMs - anchor);
+  }
+  return { deadlineMs, clamped: deadlineMs > proposed, tags };
 }
 
 /**

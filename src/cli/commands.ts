@@ -10,8 +10,7 @@ import type { ParamSpec, ParamSet } from "../core/params.js";
 import { parseGridShorthand } from "../core/params.js";
 import { parseQueueConfig } from "../core/queue.js";
 import { parseDuration, formatDuration, humanRemaining } from "../core/duration.js";
-import { accumulatedCost } from "../core/lifecycle.js";
-import { tag } from "../core/tags.js";
+import { accumulatedCost, computeExtension, ttlDeadline } from "../core/lifecycle.js";
 import { evaluateBounds } from "../core/bounds.js";
 import { parseArgs, flagStr, flagBool, type ParsedArgs } from "./args.js";
 
@@ -345,15 +344,60 @@ async function extend(p: ParsedArgs, ctx: ShellCtx): Promise<CmdResult> {
 
   const i = await ctx.provider.get(name);
   if (!i) return err(`extend: no instance named "${name}"`);
-  if (!i.ttlDeadlineMs) return err(`extend: ${name} has no TTL to extend`);
+  // ttlDeadline() rather than the raw tag, so an instance carrying only spawn:ttl
+  // is extendable too (its deadline is launch+ttl).
+  if (!ttlDeadline(i)) return err(`extend: ${name} has no TTL to extend`);
 
-  const newDeadline = i.ttlDeadlineMs + ms;
-  await ctx.provider.setTags(i.instanceId, {
-    [tag("ttl-deadline")]: new Date(newDeadline).toISOString(),
-  });
+  // Shared with SpawnClient.extend — the safety floor and the tag pair are defined
+  // once, in core/lifecycle.ts.
+  const ext = computeExtension(i, ms, ctx.now());
+  await ctx.provider.setTags(i.instanceId, ext.tags);
+
+  // Nudge spored, and say plainly which of the two happened. spored holds the TTL
+  // in memory and re-reads tags only every ~5min (pkg/agent/agent.go:378), so
+  // without this an extend of a nearly-due instance can lose the race.
+  const reload: string[] = [];
+  if (ctx.provider.isReal) {
+    if (!ctx.provider.reloadAgent) {
+      reload.push(
+        `  note: this backend can't reload spored; it will pick up the new deadline`,
+        `        within ~5 minutes on its own.`,
+      );
+    } else {
+      const r = await ctx.provider.reloadAgent(i.instanceId);
+      reload.push(
+        r.ok
+          ? `  ${r.detail}`
+          : `  warning: could not reload spored (${r.detail}).`,
+        ...(r.ok
+          ? []
+          : [
+              `           the new deadline is saved to the tag, but spored may act on the`,
+              `           old one for up to ~5 minutes. to apply it now:`,
+              // Prefer spawn:local-username over ec2-user, as Go's `connect` does
+              // (cmd/connect.go:135) — a copy-pasteable hint has to name the account
+              // that actually exists on the box.
+              `             ssh ${i.tags["spawn:local-username"] || "ec2-user"}@${
+                i.publicIp || "<instance>"
+              } 'sudo spored reload'`,
+            ]),
+      );
+    }
+  }
+
   return ok(
     `extended ${name} by ${formatDuration(ms)}`,
-    `  new deadline: ${humanRemaining(newDeadline - ctx.now())} from now`,
+    // Say so when the floor engaged. The user asked for old+by and got now+by;
+    // reporting only the happy sentence hides that their instance was already
+    // overdue — which is precisely what they need to know.
+    ...(ext.clamped
+      ? [
+          `  note: ${name}'s TTL had already expired, so the ${formatDuration(ms)} was`,
+          `        applied from now instead of from the old deadline.`,
+        ]
+      : []),
+    `  new deadline: ${humanRemaining(ext.deadlineMs - ctx.now())} from now`,
+    ...reload,
   );
 }
 

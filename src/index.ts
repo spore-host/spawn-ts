@@ -34,8 +34,15 @@ export type {
   LifecycleHooks,
 } from "./core/types.js";
 
-export { evaluate, accumulatedCost, ttlDeadline } from "./core/lifecycle.js";
-export type { TickInput } from "./core/lifecycle.js";
+export {
+  evaluate,
+  accumulatedCost,
+  ttlDeadline,
+  computeExtension,
+  TTL_TAG,
+  TTL_DEADLINE_TAG,
+} from "./core/lifecycle.js";
+export type { TickInput, ExtendResult } from "./core/lifecycle.js";
 export { findOrphans, ORPHAN_GRACE_MS } from "./core/orphans.js";
 export type { Orphan } from "./core/orphans.js";
 export { evaluateBounds, ENFORCEMENT } from "./core/bounds.js";
