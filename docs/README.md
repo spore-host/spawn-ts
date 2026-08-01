@@ -11,6 +11,8 @@
 - **[Batch job queues](queues.md)** — launch a DAG of jobs as dependencies
   complete and capacity allows; the config format, dependency gating, retries,
   and the on-failure policy.
+- **[Execution shapes](execution-shapes.md)** — single node, job array, MPI. Job
+  arrays with `--min-viable` and sparse-index accounting; why MPI is tags only.
 - **[API reference](api.md)** — the `SpawnClient` public API. The generated
   [TypeDoc reference](https://spore-host.github.io/spawn-ts/api/) is published
   alongside the demo.

@@ -8,6 +8,7 @@ import type {
   ManagedInstance,
   SweepMembership,
   JobArrayMembership,
+  MpiMembership,
   LifecycleHooks,
 } from "./types.js";
 import { formatDuration, parseDuration } from "./duration.js";
@@ -208,6 +209,9 @@ export function buildLaunchTags(
   }
   if (spec.hooks) Object.assign(tags, buildHookTags(spec.hooks));
   if (spec.jobArray) Object.assign(tags, buildJobArrayTags(spec.jobArray));
+  // Before the sweep block, so these count against the parameter cap's budget
+  // rather than pushing the total past AWS_TAG_LIMIT after it was computed.
+  if (spec.mpi) Object.assign(tags, buildMpiTags(spec.mpi));
   // Sweep last, so its parameter tags can be capped against what the rest of the
   // launch actually consumed. The caller adds spawn:local-username too, so leave
   // one slot for it.
@@ -343,6 +347,47 @@ export function buildJobArrayTags(m: JobArrayMembership): Record<string, string>
     [tag("job-array-size")]: String(m.size),
     [tag("job-array-index")]: String(m.index),
   };
+}
+
+/**
+ * Build the spawn:mpi-* tags for an MPI launch (#52). Wire-identical to Go
+ * (`cmd/launch_single.go:704-706`): `spawn:mpi-enabled=true`, plus
+ * `spawn:mpi-processes-per-node` only when > 0.
+ *
+ * Emits nothing when `enabled` is false. Go reaches this block only inside
+ * `if mpiEnabled`, so it has no notion of writing `spawn:mpi-enabled=false` —
+ * and an explicit "false" would be worse than absence here, because
+ * `decodeMpiTags` reads a missing tag as "not an MPI launch" either way while a
+ * literal "false" invites a reader to treat MPI-ness as a field that is always
+ * recorded. It isn't: the tag is best-effort like every other spawn:* tag.
+ */
+export function buildMpiTags(m: MpiMembership): Record<string, string> {
+  if (!m.enabled) return {};
+  const tags: Record<string, string> = { [tag("mpi-enabled")]: "true" };
+  const ppn = m.processesPerNode;
+  // `> 0` mirrors Go's guard exactly. Also excludes NaN, which a CLI's
+  // Number(flag) can produce and which would otherwise stringify to "NaN".
+  if (ppn !== undefined && Number.isFinite(ppn) && ppn > 0) {
+    tags[tag("mpi-processes-per-node")] = String(Math.floor(ppn));
+  }
+  return tags;
+}
+
+/**
+ * Decode an MPI declaration from an instance's tags, or undefined when
+ * spawn:mpi-enabled is absent or not "true".
+ *
+ * Returns undefined rather than `{enabled: false}` so "not an MPI launch" and
+ * "an MPI launch we know nothing else about" stay distinguishable — the same
+ * absence-is-not-a-negative rule the plugin tags follow (core/plugins.ts).
+ */
+export function decodeMpiTags(tags: Record<string, string>): MpiMembership | undefined {
+  if (tags[tag("mpi-enabled")] !== "true") return undefined;
+  const raw = Number(tags[tag("mpi-processes-per-node")]);
+  // An unparseable or non-positive value yields undefined, not 0: the instance
+  // is still an MPI member, we just can't read its rank density.
+  const ppn = Number.isFinite(raw) && raw > 0 ? raw : undefined;
+  return { enabled: true, ...(ppn !== undefined ? { processesPerNode: ppn } : {}) };
 }
 
 /**

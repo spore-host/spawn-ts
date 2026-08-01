@@ -94,6 +94,31 @@ export interface FanOutOptions {
    * Dependents of a failed member are always skipped regardless.
    */
   onFailure?: OnFailure;
+  /**
+   * Minimum members that must come up for the fan-out to be worth running at all
+   * (#52) — the port of Go's `--min-viable` (`cmd/launch_jobarray.go:572` →
+   * `cohort.NewPartialCohort`). Clamped to `[1, members.length]` exactly as Go
+   * clamps it, so an out-of-range value is corrected rather than rejected.
+   *
+   * This is a threshold on the **whole set**, which is what makes it different
+   * from `onFailure` in the way that matters. `onFailure` is a *per-member*
+   * policy: it decides whether to keep launching, and "stop" leaves already-
+   * launched members running. So an array that comes up 2-of-100 is, under
+   * `onFailure` alone, a mostly-failed array with two billable instances alive.
+   * `minViable` asks the different question — "is this set still worth having?"
+   * — and when the answer is no, `nonViable` goes true and the survivors are
+   * identified for wind-down (`survivorIds`). Cost-safety, not a nicety.
+   *
+   * Undefined (default) = 1, i.e. any single member makes the set viable, which
+   * is Go's `NewIndependentCohort` behaviour and the pre-#52 status quo.
+   *
+   * The engine reports non-viability; it does NOT terminate anything itself.
+   * FanOut owns no lifecycle authority — every other state change here is a
+   * launch, and a fan-out that silently terminated instances would be a surprise
+   * to the sweep and queue callers that share it. `JobArray.enforceViability()`
+   * is where the wind-down is performed.
+   */
+  minViable?: number;
   /** Called after every pump that changes state, with a fresh status snapshot. */
   onProgress?: (statuses: FanOutMemberStatus[]) => void;
 }
@@ -110,6 +135,41 @@ export interface FanOutSummary {
   failed: number;
   /** Never launched (a dependency failed, or the queue was stopped). */
   skipped: number;
+  /** The effective `--min-viable` threshold, clamped to [1, total] (#52). */
+  minViable: number;
+  /**
+   * Members that could still contribute to viability: running, plus everything
+   * not yet terminally failed/skipped. Compared against `minViable` to decide
+   * `nonViable` — see the comment on `nonViable` for why it counts hopefuls
+   * rather than only what is up right now.
+   */
+  viableCandidates: number;
+  /**
+   * True when the set can no longer reach `minViable` — too many members have
+   * terminally failed or been skipped for the threshold to be met even if every
+   * remaining one succeeds (#52).
+   *
+   * This is deliberately a statement about the *unreachable*, not about the
+   * *not-yet-reached*. Counting only currently-running members would report a
+   * healthy 100-member array as non-viable during its first pump, when 0 are up
+   * and 100 are still pending — and the caller's response to non-viability is to
+   * terminate, so a premature true is not a cosmetic error. `false` here means
+   * "not yet ruled out", never "confirmed viable".
+   */
+  nonViable: boolean;
+  /**
+   * Indexes in `[0, total)` with no live member — the sparse-index gap a
+   * `--min-viable` partial launch leaves behind (Go: `missingIndexes`,
+   * `cmd/arraygroup.go:99`). Ports Go's rule that a *terminated* member's index
+   * counts as missing too, not just one that never launched
+   * (`retryIndexes`, `:224`): both are indexes with no live worker, and a
+   * consumer relaunching or collecting results has to treat them alike.
+   *
+   * Reporting the threshold without this would trade one wrong answer for
+   * another — "97 of 100 running" hides *which* three slices of the workload
+   * have no worker, and for indexed work that's the only part that matters.
+   */
+  missingIndexes: number[];
   members: FanOutMemberStatus[];
 }
 
@@ -126,6 +186,8 @@ export class FanOut {
   private readonly launchDelayMs: number;
   private readonly retryDelayMs: number;
   private readonly onFailure: OnFailure;
+  /** Effective --min-viable, clamped to [1, members.length] as Go clamps it. */
+  readonly minViable: number;
   private readonly onProgress?: (statuses: FanOutMemberStatus[]) => void;
 
   constructor(
@@ -137,6 +199,14 @@ export class FanOut {
     this.launchDelayMs = Math.max(0, opts.launchDelayMs ?? 0);
     this.retryDelayMs = Math.max(0, opts.retryDelayMs ?? 0);
     this.onFailure = opts.onFailure ?? "continue";
+    // Clamp exactly as Go does (cmd/launch_jobarray.go:576-582): below 1 → 1,
+    // above the member count → the member count. Go clamps rather than erroring
+    // because `--min-viable 200` on a 100-member array is an obvious "all of
+    // them", and cohort.NewPartialCohort would otherwise reject the whole launch
+    // over an off-by-one. A non-finite/NaN value (`Number("x")`) also lands on 1,
+    // which is the no-op default rather than a silently disabled threshold.
+    const mv = Math.floor(opts.minViable ?? 1);
+    this.minViable = Number.isFinite(mv) ? Math.min(Math.max(mv, 1), members.length || 1) : 1;
     this.onProgress = opts.onProgress;
     this.statuses = members.map((m, index) => ({
       key: m.key,
@@ -156,6 +226,12 @@ export class FanOut {
   get summary(): FanOutSummary {
     const s = this.statuses;
     const count = (st: FanOutMemberState) => s.filter((m) => m.state === st).length;
+    // A member still counts toward viability unless it has terminally failed or
+    // been skipped. "completed" counts: it came up and did its work, so it
+    // contributed — treating a finished member as a lost one would make a
+    // successful array turn non-viable as it drains, and the caller's response to
+    // non-viability is to terminate the survivors.
+    const viableCandidates = this.viableCandidates;
     return {
       total: s.length,
       pending: count("pending") + count("blocked") + count("launching"),
@@ -164,8 +240,88 @@ export class FanOut {
       completed: count("completed"),
       failed: count("failed"),
       skipped: count("skipped"),
+      minViable: this.minViable,
+      viableCandidates,
+      nonViable: viableCandidates < this.minViable,
+      missingIndexes: this.missingIndexes,
       members: this.status,
     };
+  }
+
+  /**
+   * Members that can still contribute to viability: everything not terminally
+   * failed or skipped.
+   *
+   * "completed" counts. It came up and did its work, so it contributed —
+   * treating a finished member as a lost one would make a *successful* array
+   * turn non-viable as it drains, and the caller's response to non-viability is
+   * to terminate the survivors. A draining array must not read as a failing one.
+   */
+  private get viableCandidates(): number {
+    let lost = 0;
+    for (const s of this.statuses) {
+      if (s.state === "failed" || s.state === "skipped") lost++;
+    }
+    return this.statuses.length - lost;
+  }
+
+  /**
+   * The `nonViable` predicate, shared by `summary` and `applyGating` so the
+   * gate and the report can never disagree about whether the set is doomed.
+   *
+   * Note the deliberate feedback loop with gating: once this goes true, gating
+   * skips the unstarted members, which raises the lost count, which keeps it
+   * true. That is monotone — a set cannot become viable again once ruled out —
+   * so `applyGating`'s fixpoint loop still terminates, and "doomed" is
+   * correctly a latch rather than something that can flicker back off.
+   */
+  private isNonViable(): boolean {
+    return this.viableCandidates < this.minViable;
+  }
+
+  /**
+   * Instance ids still running, for a caller winding down a non-viable set
+   * (`JobArray.enforceViability()`). Kept here because FanOut owns the member
+   * records, but deliberately NOT acted on here: FanOut owns no lifecycle
+   * authority — every other state change it makes is a launch, and a shared
+   * engine that silently terminated instances would surprise the sweep and
+   * queue callers.
+   */
+  get survivorIds(): string[] {
+    return this.statuses
+      .filter((s) => s.state === "running" && s.instanceId)
+      .map((s) => s.instanceId as string);
+  }
+
+  /**
+   * Indexes with no live member. Ports Go's `missingIndexes` + `retryIndexes`
+   * (`cmd/arraygroup.go:99`, `:224`), whose shared rule is that an index is
+   * missing when it has no member in an *active* state — Go's `active` map is
+   * built from exactly `"running"` and `"pending"` EC2 states.
+   *
+   * So: `running`/`launching` are present; failed, skipped, completed and
+   * not-yet-launched are all missing. Two of those need a decision rather than a
+   * straight port, because Go reads live AWS state while FanOut keeps a record:
+   *
+   * - **completed** is missing. `retryIndexes` relaunches an index whose members
+   *   are "all in a non-active terminal state (terminated/stopped)", which is
+   *   what completed means here.
+   * - **pending** is missing, because the question this answers is "which slices
+   *   of the workload have no worker", and a pending slice has none *yet*. That
+   *   makes every index missing on the first pump, which is truthful rather than
+   *   alarming — read it next to `pending`/`running`, not alone. The alternative
+   *   (calling a pending index present) would report full coverage for an array
+   *   that hasn't launched anything, and this field exists to stop exactly that
+   *   kind of optimistic reading.
+   */
+  private get missingIndexes(): number[] {
+    const active = new Set<number>();
+    for (const s of this.statuses) {
+      if (s.state === "running" || s.state === "launching") active.add(s.index);
+    }
+    const out: number[] = [];
+    for (let i = 0; i < this.statuses.length; i++) if (!active.has(i)) out.push(i);
+    return out;
   }
 
   /** True once every member has reached a terminal state (completed/failed/skipped). */
@@ -262,7 +418,20 @@ export class FanOut {
   private applyGating(): boolean {
     let changed = false;
     for (;;) {
-      const stopAll = this.onFailure === "stop" && this.statuses.some((s) => s.state === "failed");
+      // Two independent reasons to skip everything not yet started:
+      //
+      //   onFailure: "stop" — the caller's per-member policy.
+      //   nonViable        — the set can no longer reach minViable (#52).
+      //
+      // The second ports cohort's fastFailCancel (cohort/reconcile.go:243),
+      // which cancels the remaining entities the instant the gate becomes
+      // unsatisfiable rather than letting them run to completion. Without it, a
+      // 100-member array with --min-viable 50 that loses 51 members would go on
+      // launching the other 49 — billing for instances the caller is about to
+      // terminate, in a set already known to be unusable.
+      const stopAll =
+        (this.onFailure === "stop" && this.statuses.some((s) => s.state === "failed")) ||
+        this.isNonViable();
       let dirty = false;
       for (let i = 0; i < this.statuses.length; i++) {
         const s = this.statuses[i];

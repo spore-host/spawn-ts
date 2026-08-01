@@ -1,0 +1,55 @@
+<!doctype html>
+<!--
+  Dev-only harness for the --min-viable wind-down (#52). Builds the REAL Dashboard
+  over a REAL SpawnClient, and stubs only one thing: MockProvider.launch rejects
+  members 1 and 2 with an InsufficientInstanceCapacity error. So the actual
+  fast-fail → non-viable → drain path runs and the actual card renders it — not a
+  hand-fed summary.
+
+  The non-viable card is the hardest state to reach by hand (it needs capacity
+  failures, which no control in the UI can produce) and therefore the most likely
+  to be left broken. Open at /minviable.harness.html under `npm run dev`. Not
+  referenced by index.html, so it is never part of the app.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>min-viable harness</title>
+    <link rel="stylesheet" href="/src/ui/style.css" />
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module">
+      import { SpawnClient } from "/src/core/client.js";
+      import { MockProvider } from "/src/core/mock.js";
+      import { Dashboard } from "/src/ui/dashboard.js";
+      import { Terminal } from "/src/ui/terminal.js";
+      import { confirmDialog } from "/src/ui/modals.js";
+
+      const provider = new MockProvider();
+      const real = provider.launch.bind(provider);
+      provider.launch = (spec, launchTimeMs) =>
+        /-(1|2)$/.test(spec.name)
+          ? Promise.reject(new Error(`InsufficientInstanceCapacity for ${spec.name}`))
+          : real(spec, launchTimeMs);
+
+      // clock: 1 keeps the sim at realtime so the array doesn't hit its TTL while
+      // you're reading the card.
+      const client = new SpawnClient({ provider, clock: 1 });
+      const app = document.getElementById("app");
+      const terminal = new Terminal(client, confirmDialog);
+      const dashboard = new Dashboard(client, confirmDialog);
+      app.appendChild(terminal.el);
+      app.appendChild(dashboard.el);
+      client.startMonitor();
+      await client.refresh();
+
+      // 4 members, 3 required, 2 unlaunchable → at most 2 can come up.
+      client.startJobArray({ name: "doomed", instanceType: "c6a.xlarge", ttl: "4h" }, 4, {
+        id: "doomed-harness",
+        minViable: 3,
+      });
+      window.__client = client;
+    </script>
+  </body>
+</html>

@@ -21,6 +21,7 @@ import type {
   ManagedInstance,
   SweepMembership,
   JobArrayMembership,
+  MpiMembership,
   LifecycleHooks,
 } from "./types.js";
 import { evaluate, computeExtension, ttlDeadline } from "./lifecycle.js";
@@ -94,6 +95,14 @@ export interface LaunchInput {
   sweep?: SweepMembership;
   /** Job-array membership; stamps spawn:job-array-* tags. */
   jobArray?: JobArrayMembership;
+  /**
+   * MPI declaration; stamps spawn:mpi-enabled + spawn:mpi-processes-per-node
+   * (#52). Tag-emit only: it makes the launch *recognisable* as MPI to the Go CLI
+   * and the portal, and does not orchestrate a collective launch — EFA validation
+   * and placement groups are out of a browser's reach. See
+   * docs/execution-shapes.md.
+   */
+  mpi?: MpiMembership;
   /** Daemon-enforced lifecycle hooks; stamps the pre-stop/webhook/notify tags. */
   hooks?: LifecycleHooks;
   /**
@@ -114,10 +123,21 @@ export class SpawnClient {
   private timer: ReturnType<typeof setInterval> | null = null;
   private warned = new Set<string>();
   private lastInstances: ManagedInstance[] = [];
-  /** Active fan-outs (sweeps/queues) pumped on each monitor tick. */
+  /** Active fan-outs (sweeps/queues/job arrays) pumped on each monitor tick. */
   private fanOuts = new Map<
     string,
-    { kind: "sweep" | "queue" | "jobarray"; name: string; fanOut: FanOut }
+    {
+      kind: "sweep" | "queue" | "jobarray";
+      name: string;
+      fanOut: FanOut;
+      /**
+       * Set for job arrays only, so `pumpFanOuts` can wind down a non-viable
+       * one (#52). The FanOut alone isn't enough: it reports non-viability but
+       * deliberately holds no lifecycle authority, and `--min-viable` is a
+       * job-array concept — a sweep or queue has no viability threshold.
+       */
+      array?: JobArray;
+    }
   >();
 
   constructor(opts: ClientOptions = {}) {
@@ -226,20 +246,62 @@ export class SpawnClient {
   }
 
   /**
-   * Advance every registered fan-out (sweep/queue) one step, emit its progress,
-   * and drop it once complete. Called after each monitor tick so members launch
-   * as slots free and statuses reconcile against the freshly-refreshed list.
+   * Advance every registered fan-out (sweep/queue/job array) one step, wind down
+   * any array that can no longer meet `--min-viable`, emit its progress, and drop
+   * it once complete. Called after each monitor tick so members launch as slots
+   * free and statuses reconcile against the freshly-refreshed list.
    */
   private async pumpFanOuts(): Promise<void> {
     if (this.fanOuts.size === 0) return;
-    for (const [id, { kind, name, fanOut }] of [...this.fanOuts]) {
+    for (const [id, { kind, name, fanOut, array }] of [...this.fanOuts]) {
       await fanOut.pump(this.now());
+      // A non-viable array is drained here rather than left for the caller to
+      // notice, because the cost of forgetting is instances that bill for a job
+      // that cannot be done — Go drains for that stated reason ("Drain surviving
+      // instances so nothing idles and bills", cohort/reconcile.go:298). Runs
+      // before the event so the summary a consumer receives already reflects the
+      // wind-down having been attempted. Each survivor is reported once even
+      // across overlapping pumps, so one instance yields one terminate event.
+      if (array) await this.enforceArrayViability(array);
       const done = fanOut.isComplete;
       this.emit({ type: kind, id, name, summary: fanOut.summary, done });
       if (done) this.fanOuts.delete(id);
     }
     // Launches during the pump changed the world; reflect it.
     await this.refresh();
+  }
+
+  /**
+   * Drain a non-viable job array and report what happened, as events rather than
+   * silently (#52).
+   *
+   * Terminations are emitted as `action` events with rule `min-viable` — the same
+   * event shape a TTL or cost-limit terminate uses, because this is the same kind
+   * of thing: an automatic, cost-driven termination the user did not ask for and
+   * must be told about. An instance that could NOT be terminated emits a warning:
+   * a failed drain is the case where money keeps being spent, so it is the last
+   * thing that should be quiet.
+   */
+  private async enforceArrayViability(array: JobArray): Promise<void> {
+    const { terminated, failed } = await array.enforceViability();
+    const shortfall = `only ${array.summary.viableCandidates} of ${array.size} members can come up, below --min-viable ${array.summary.minViable}`;
+    for (const instanceId of terminated) {
+      this.emit({
+        type: "action",
+        instance: instanceId,
+        action: "terminate",
+        rule: "min-viable",
+        reason: `job array ${array.id} is non-viable: ${shortfall}`,
+      });
+    }
+    for (const instanceId of failed) {
+      this.emit({
+        type: "warning",
+        instance: instanceId,
+        rule: "min-viable",
+        message: `could not terminate this member of non-viable job array ${array.id} — it may still be billing`,
+      });
+    }
   }
 
   // ---- sweeps / fan-out ----
@@ -294,10 +356,16 @@ export class SpawnClient {
     const fanOut = new FanOut(this, built.members, {
       maxConcurrent: opts.maxConcurrent,
       launchDelayMs: opts.launchDelayMs,
+      minViable: opts.minViable,
     });
-    this.fanOuts.set(built.id, { kind: "jobarray", name: built.name, fanOut });
+    // `this` is passed so the array can enforceViability(): a --min-viable array
+    // that can't reach its threshold winds itself down. The array is registered
+    // alongside its fan-out so pumpFanOuts() performs that automatically each
+    // tick, rather than leaving it to a caller who has to remember.
+    const array = new JobArray(built, fanOut, this);
+    this.fanOuts.set(built.id, { kind: "jobarray", name: built.name, fanOut, array });
     void this.pumpFanOuts();
-    return new JobArray(built, fanOut);
+    return array;
   }
 
   /** Snapshot of a registered fan-out's per-member status, or null if unknown. */
@@ -530,6 +598,7 @@ export class SpawnClient {
       sessionTimeoutMs: dur(input.sessionTimeout),
       sweep: input.sweep,
       jobArray: input.jobArray,
+      mpi: input.mpi,
       hooks: input.hooks,
       plugins: input.plugins,
     };

@@ -487,6 +487,59 @@ describe("Dashboard job-array card", () => {
     expect(card.textContent).toContain("3 members");
     expect((await client.refresh()).every((i) => i.jobArray?.name === "compute")).toBe(true);
   });
+
+  it("states the min-viable threshold on the card, and nothing at the default", async () => {
+    const { client, dash } = setup();
+    client.startJobArray({ name: "guarded", ttl: "30m" }, 3, { id: "arr-mv", minViable: 2 });
+    await client.step(1000);
+    expect(dash.el.querySelector(".sweep-card.jobarray")!.textContent).toContain("min-viable 2 of 3");
+
+    // 1 is the no-op default, so saying it would be noise on every ordinary array.
+    const b = setup();
+    b.client.startJobArray({ name: "plain", ttl: "30m" }, 2, { id: "arr-plain" });
+    await b.client.step(1000);
+    expect(b.dash.el.querySelector(".sweep-card.jobarray")!.textContent).not.toContain("min-viable");
+  });
+
+  it("shows a non-viable array as non-viable, not as done", async () => {
+    const { client, dash } = setup();
+    const real = client.launch.bind(client);
+    (client as unknown as { launch: SpawnClient["launch"] }).launch = ((input: {
+      name: string;
+    }) =>
+      /-(1|2)$/.test(input.name)
+        ? Promise.reject(new Error("InsufficientInstanceCapacity"))
+        : real(input as never)) as SpawnClient["launch"];
+    client.startJobArray({ name: "doomed", ttl: "30m" }, 4, { id: "arr-nv", minViable: 3 });
+    await client.step(1000);
+    await client.step(1000);
+
+    const card = dash.el.querySelector(".sweep-card.jobarray")!;
+    // The state chip is the one-glance summary, and `done` renders green. An array
+    // whose survivors were just terminated reached its end but did not succeed.
+    expect(card.className).toContain("nonviable");
+    expect(card.querySelector(".state")!.textContent).toBe("non-viable");
+    expect(card.textContent).toContain("below min-viable 3");
+    // The reason has to be on the card: otherwise a user watching it sees running
+    // members disappear with no explanation of why.
+    expect(card.textContent).toContain("survivors are being terminated");
+  });
+
+  it("names the indexes with no worker rather than only a count", async () => {
+    const { client, dash } = setup();
+    const real = client.launch.bind(client);
+    (client as unknown as { launch: SpawnClient["launch"] }).launch = ((input: {
+      name: string;
+    }) =>
+      input.name === "sparse-1"
+        ? Promise.reject(new Error("InsufficientInstanceCapacity"))
+        : real(input as never)) as SpawnClient["launch"];
+    client.startJobArray({ name: "sparse", ttl: "30m" }, 3, { id: "arr-sp" });
+    await client.step(1000);
+    // "2 of 3 running" doesn't say *which* slice has no worker, and for an indexed
+    // array that is the actionable part.
+    expect(dash.el.querySelector(".sweep-card.jobarray")!.textContent).toContain("missing index: 1");
+  });
 });
 
 describe("Dashboard lifecycle-hook inputs", () => {

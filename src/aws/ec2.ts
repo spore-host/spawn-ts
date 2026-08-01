@@ -26,7 +26,7 @@ import type {
   ManagedInstance,
 } from "../core/types.js";
 import { validateDeclarations } from "../core/plugins.js";
-import { buildLaunchTags, decodeConfigTags, decodeSweepTags, decodeJobArrayTags, decodeHookTags, isManaged, tag, type LaunchIdentity } from "../core/tags.js";
+import { buildLaunchTags, decodeConfigTags, decodeSweepTags, decodeJobArrayTags, decodeMpiTags, decodeHookTags, isManaged, tag, type LaunchIdentity } from "../core/tags.js";
 import { buildLinuxBootstrap, encodeUserData } from "./userdata.js";
 import { lookupElasticIp } from "./eip.js";
 import type { ElasticIpLookup } from "../core/notices.js";
@@ -397,6 +397,7 @@ export class EC2Provider implements Provider {
       cpuPercent: 0,
       sweep: decodeSweepTags(tags),
       jobArray: decodeJobArrayTags(tags),
+      mpi: decodeMpiTags(tags),
       hooks: decodeHookTags(tags),
       ...cfg,
     };
