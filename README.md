@@ -136,3 +136,26 @@ type a natural-language query ("h100 efa", "cheapest graviton 32gb") and pick fr
 matched EC2 instance types, which auto-fills the type and its estimated $/hr. This
 is powered by [`@spore-host/truffle-ts`](https://github.com/spore-host/truffle-ts)
 (a library dependency); spawn-ts owns the picker UI.
+
+### Versioning and what "parity" means
+
+spawn-ts stays on `0.x.y` **indefinitely** — there is no planned 1.0.0 — so a MINOR
+bump is the breaking-change signal for the life of the project, not a pre-release
+convention.
+
+Its version line is **its own**, deliberately not Go `spawn`'s: 0.6.x here against
+v0.97.x there. Matching those numbers would assert a feature correspondence that
+doesn't exist, and it would be the wrong thing to fix, because most of the gap isn't
+a gap. Roughly 22,700 lines of Go `pkg/` plus all of `lambda/` are the
+daemon/server/provisioning half of the architecture — the half spawn-ts writes
+`spawn:*` **tags for** rather than reimplements in a browser tab.
+
+So parity is a **behavioural** claim carrying **documented divergences**, audited
+per-command across five tiers (at parity / portable-but-missing / tag-emit-only /
+not portable / deliberately excluded) in
+[#57](https://github.com/spore-host/spawn-ts/issues/57). Where spawn-ts diverges on
+purpose it says so at the point of divergence — see
+[docs/api.md](docs/api.md#status-notices) on the Elastic IP lookup, and
+[docs/data-movement.md](docs/data-movement.md#plugins-two-columns-not-one) on
+refusing an unhonourable plugin before launch instead of parking it on the box. A
+divergence that isn't written down is a bug; one that is, is a design decision.
