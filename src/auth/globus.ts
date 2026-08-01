@@ -16,6 +16,22 @@ const TOKEN_URL = "https://auth.globus.org/v2/oauth2/token";
 const GLOBUS_RESOURCE_SERVER = "auth.globus.org";
 const DEFAULT_SCOPE = "openid profile email";
 
+/** Resource server that issues Transfer API access tokens. */
+export const TRANSFER_RESOURCE_SERVER = "transfer.api.globus.org";
+/**
+ * Scope for the Globus Transfer API. Requesting it yields a SECOND access token,
+ * in the `transfer.api.globus.org` slot of `other_tokens` — the same per-resource-
+ * server mechanism that already carries the OIDC id_token, so no second sign-in
+ * flow is needed.
+ *
+ * Deliberately NOT part of `DEFAULT_SCOPE`. Adding it there would make every
+ * sign-in — including one by a user who only wants to look at their instances —
+ * show a consent screen asking to manage their transfers and read/write their
+ * files. Consent should be requested when data movement is actually on offer, so
+ * this is opt-in via `GlobusConfig.requestTransfer`.
+ */
+export const TRANSFER_SCOPE = "urn:globus:auth:scope:transfer.api.globus.org:all";
+
 const SS_VERIFIER = "globus.pkce.verifier";
 const SS_STATE = "globus.pkce.state";
 
@@ -33,6 +49,19 @@ export interface GlobusConfig {
    * show the CILogon/InCommon university picker.
    */
   forcePrompt?: boolean;
+  /**
+   * Also request the Globus Transfer scope, so the same sign-in returns a
+   * Transfer access token in `GlobusTokens.transferToken` (see `TRANSFER_SCOPE`
+   * for why this is opt-in). Ignored when `scope` is set explicitly — an explicit
+   * scope string is taken at face value.
+   */
+  requestTransfer?: boolean;
+}
+
+/** The scope string a config resolves to, honouring `requestTransfer`. */
+export function resolveScope(cfg: GlobusConfig): string {
+  if (cfg.scope) return cfg.scope;
+  return cfg.requestTransfer ? `${DEFAULT_SCOPE} ${TRANSFER_SCOPE}` : DEFAULT_SCOPE;
 }
 
 const enc = new TextEncoder();
@@ -70,7 +99,7 @@ export async function beginLogin(cfg: GlobusConfig, redirect = true): Promise<st
     client_id: cfg.clientId,
     response_type: "code",
     redirect_uri: cfg.redirectUri,
-    scope: cfg.scope ?? DEFAULT_SCOPE,
+    scope: resolveScope(cfg),
     state,
     code_challenge: await codeChallengeS256(verifier),
     code_challenge_method: "S256",
@@ -92,6 +121,14 @@ export function hasAuthCode(search = window.location.search): boolean {
 export interface GlobusTokens {
   idToken: string;
   accessToken?: string;
+  /**
+   * Access token for the Globus Transfer API, present only when `TRANSFER_SCOPE`
+   * was requested AND the user consented. Undefined is a normal outcome, not an
+   * error — a user can decline the Transfer consent while still signing in, and a
+   * caller must treat this as "data movement unavailable" rather than "something
+   * broke". Pass it to `transferClient()` in `src/transfer/globus.ts`.
+   */
+  transferToken?: string;
   /** Decoded id_token claims (unverified — for display + the aud wire-up check). */
   claims: Record<string, unknown>;
 }
@@ -139,7 +176,12 @@ export async function completeLogin(
 
   const idToken = extractIdToken(data);
   if (!idToken) throw new Error("no id_token in Globus token response (need scope=openid)");
-  return { idToken, accessToken: data.access_token, claims: decodeJwtPayload(idToken) };
+  return {
+    idToken,
+    accessToken: data.access_token,
+    transferToken: extractTransferToken(data),
+    claims: decodeJwtPayload(idToken),
+  };
 }
 
 // Globus returns per-resource-server tokens; the OIDC id_token accompanies the
@@ -158,6 +200,25 @@ function extractIdToken(data: GlobusTokenResponse): string | undefined {
   if (data.id_token) return data.id_token;
   const nested = data.other_tokens?.find((t) => t.resource_server === GLOBUS_RESOURCE_SERVER && t.id_token);
   return nested?.id_token;
+}
+
+/**
+ * Pull the Transfer API access token out of the per-resource-server response.
+ *
+ * Globus puts the token for whichever resource server "won" the top level there,
+ * and the rest in `other_tokens` — so Transfer can legitimately arrive in either
+ * position depending on scope ordering, and both must be checked. Returns
+ * undefined when the Transfer scope wasn't granted; that is an observation, not a
+ * failure, and the caller decides what to say about it.
+ */
+function extractTransferToken(data: GlobusTokenResponse): string | undefined {
+  if (data.resource_server === TRANSFER_RESOURCE_SERVER && data.access_token) {
+    return data.access_token;
+  }
+  const nested = data.other_tokens?.find(
+    (t) => t.resource_server === TRANSFER_RESOURCE_SERVER && t.access_token,
+  );
+  return nested?.access_token;
 }
 
 /** Decode (not verify) a JWT payload. Signature verification is STS's job. */

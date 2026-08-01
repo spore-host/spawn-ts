@@ -1,6 +1,14 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { beginLogin, completeLogin, hasAuthCode, codeChallengeS256, decodeJwtPayload } from "./globus.js";
+import {
+  beginLogin,
+  completeLogin,
+  hasAuthCode,
+  codeChallengeS256,
+  decodeJwtPayload,
+  resolveScope,
+  TRANSFER_SCOPE,
+} from "./globus.js";
 
 const CFG = { clientId: "client-uuid-123", redirectUri: "https://demo.example/direct/" };
 
@@ -104,6 +112,79 @@ describe("completeLogin", () => {
     armState();
     const f = fakeFetch({ access_token: "at", resource_server: "auth.globus.org" });
     await expect(completeLogin(CFG, "?code=c&state=the-state", f)).rejects.toThrow(/no id_token/);
+  });
+
+  it("picks up a Transfer token from other_tokens", async () => {
+    // Globus issues one access token per resource server. The Transfer token
+    // arrives on the same sign-in that produces the OIDC id_token, so data
+    // movement needs no second flow — that is what makes browser-native Globus
+    // Transfer possible at all.
+    armState();
+    const idToken = makeJwt({ aud: "client-uuid-123" });
+    const f = fakeFetch({
+      access_token: "auth-at",
+      id_token: idToken,
+      resource_server: "auth.globus.org",
+      other_tokens: [{ resource_server: "transfer.api.globus.org", access_token: "transfer-at" }],
+    });
+    const tokens = await completeLogin(CFG, "?code=c&state=the-state", f);
+    expect(tokens.transferToken).toBe("transfer-at");
+    expect(tokens.accessToken).toBe("auth-at");
+  });
+
+  it("picks up a Transfer token from the top level too", async () => {
+    // Which resource server lands at the top level depends on scope ordering, so
+    // both positions must be checked or the token is intermittently missed.
+    armState();
+    const idToken = makeJwt({ aud: "client-uuid-123" });
+    const f = fakeFetch({
+      access_token: "transfer-at",
+      resource_server: "transfer.api.globus.org",
+      other_tokens: [{ resource_server: "auth.globus.org", id_token: idToken }],
+    });
+    expect((await completeLogin(CFG, "?code=c&state=the-state", f)).transferToken).toBe("transfer-at");
+  });
+
+  it("leaves transferToken undefined when the scope was not granted", async () => {
+    // A normal outcome, not an error: a user can decline the Transfer consent and
+    // still sign in. The caller reads this as "data movement unavailable".
+    armState();
+    const f = fakeFetch({
+      access_token: "at",
+      id_token: makeJwt({ aud: "client-uuid-123" }),
+      resource_server: "auth.globus.org",
+    });
+    expect((await completeLogin(CFG, "?code=c&state=the-state", f)).transferToken).toBeUndefined();
+  });
+});
+
+describe("resolveScope", () => {
+  it("does not request Transfer by default", async () => {
+    // Deliberate: putting TRANSFER_SCOPE in the default would show every
+    // signing-in user a consent screen about managing their transfers and
+    // reading their files, including users who only want to see their instances.
+    expect(resolveScope(CFG)).toBe("openid profile email");
+    expect(resolveScope(CFG)).not.toContain("transfer");
+  });
+
+  it("appends the Transfer scope on request", () => {
+    const s = resolveScope({ ...CFG, requestTransfer: true });
+    expect(s).toBe(`openid profile email ${TRANSFER_SCOPE}`);
+    expect(TRANSFER_SCOPE).toBe("urn:globus:auth:scope:transfer.api.globus.org:all");
+  });
+
+  it("takes an explicit scope at face value", () => {
+    // An explicit scope string is the caller's decision; silently appending to it
+    // would make the requested consent differ from what they asked for.
+    expect(resolveScope({ ...CFG, scope: "openid", requestTransfer: true })).toBe("openid");
+  });
+
+  it("is what beginLogin actually sends", async () => {
+    // Guards against resolveScope being right while beginLogin still inlines the
+    // default — the kind of drift that only shows up as a missing token later.
+    sessionStorage.clear();
+    const url = await beginLogin({ ...CFG, requestTransfer: true }, false);
+    expect(new URL(url).searchParams.get("scope")).toContain(TRANSFER_SCOPE);
   });
 });
 

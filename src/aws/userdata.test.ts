@@ -108,6 +108,45 @@ describe("buildLinuxBootstrap", () => {
   });
 });
 
+describe("buildLinuxBootstrap plugin declarations", () => {
+  it("emits nothing when no plugins are declared", () => {
+    // An instance without plugins must get a byte-identical script to before
+    // this feature existed.
+    const s = buildLinuxBootstrap({ username: "ec2-user" });
+    expect(s).not.toContain("plugins.json");
+    expect(buildLinuxBootstrap({ username: "ec2-user", plugins: [] })).not.toContain("plugins.json");
+  });
+
+  it("writes /etc/spawn/plugins.json in the format spored reads", () => {
+    const s = buildLinuxBootstrap({
+      username: "ec2-user",
+      plugins: [{ ref: "jupyterlab@v1.0.0" }, { ref: "mountpoint-s3", config: { bucket: "b" } }],
+    });
+    expect(s).toContain("cat > /etc/spawn/plugins.json <<'EOFPLUGINS'");
+    expect(s).toContain('[{"ref":"jupyterlab@v1.0.0"},{"ref":"mountpoint-s3","config":{"bucket":"b"}}]');
+    expect(s).toContain("chmod 644 /etc/spawn/plugins.json");
+    expect(s).toContain("Plugin declarations written: 2 plugin(s)");
+  });
+
+  it("writes the declarations BEFORE spored starts", () => {
+    // The Go bootstrap appends this block after `systemctl start spored`
+    // (pkg/launcher/bootstrap.go:146). spored's loadPluginDeclarations runs once
+    // at startup and silently returns nil when the file is absent, so that
+    // ordering is a race that would look like "the plugin just didn't install".
+    const s = buildLinuxBootstrap({ username: "ec2-user", plugins: [{ ref: "docker" }] });
+    expect(s.indexOf("/etc/spawn/plugins.json")).toBeLessThan(s.indexOf("systemctl start spored"));
+  });
+
+  it("uses a quoted here-doc so a '$' in a config value is not expanded", () => {
+    const s = buildLinuxBootstrap({
+      username: "ec2-user",
+      plugins: [{ ref: "code-server", config: { password: "$SECRET" } }],
+    });
+    expect(s).toContain("<<'EOFPLUGINS'");
+    expect(s).toContain('"password":"$SECRET"');
+  });
+});
+
 describe("encodeUserData", () => {
   it("round-trips through base64 (UTF-8 safe)", () => {
     const script = "#!/bin/bash\necho 'héllo → wörld'";

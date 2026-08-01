@@ -54,6 +54,28 @@ export {
 } from "./core/tags.js";
 export { parseDuration, formatDuration, humanRemaining } from "./core/duration.js";
 
+// Plugins: detection is universal (every installed plugin leaves a
+// spore:plugin:<name> tag that DescribeInstances already returns), while
+// installation from a browser covers only the seven remote-only plugins. Both
+// halves live here; see core/plugins.ts for why the sets differ.
+export {
+  parsePluginTag,
+  detectPlugins,
+  instancePlugins,
+  describePluginState,
+  canDeclareAtLaunch,
+  validateDeclarations,
+  serializeDeclarations,
+  pluginRefName,
+  LAUNCH_DECLARABLE_PLUGINS,
+  PLUGIN_TAG_PREFIX,
+} from "./core/plugins.js";
+export type {
+  PluginProvenance,
+  PluginVerification,
+  PluginDeclaration,
+} from "./core/plugins.js";
+
 // Parameter sweeps (issue #4) + the shared fan-out engine (reused by #5).
 export { resolveMembers, expandGrid } from "./core/params.js";
 export type { ParamSpec, ParamSet, ParamValue, ResolvedMember } from "./core/params.js";
