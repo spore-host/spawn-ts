@@ -40,14 +40,13 @@ jobs:
       - name: Build library
         run: npm run build:lib
 
-      # Guard: every subpath declared in package.json "exports" must have emitted
-      # its .d.ts (a missing one means a broken import for consumers).
-      - name: Assert declarations emitted for every subpath
-        run: |
-          for f in index auth/index ssm/index terminal quotas dns/index portal/portal-core ui/index; do
-            test -f "dist/$f.d.ts" || { echo "missing dist/$f.d.ts" >&2; exit 1; }
-          done
-          echo "all subpath declarations present"
+      # Guard: every target in package.json "exports" must exist in dist/ (a missing
+      # one means a broken import for consumers). Derived from "exports" itself, not
+      # a list duplicated here — the hardcoded list this replaces never gained
+      # "./transfer" when that subpath was added, so it had silently stopped
+      # covering a real entry point.
+      - name: Assert every declared export exists
+        run: npm run check:exports
 
       # Guard: the pushed tag must match the package.json version, so a v0.6.0 tag
       # can't accidentally publish 0.5.0.

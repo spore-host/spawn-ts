@@ -23,7 +23,7 @@ import { encodeAccountId } from "../dns/dns-name.js";
  * — the same guard the three sibling -ts repos carry on their VERSION constants,
  * two of which caught a real miss.
  */
-export const LIB_VERSION = "0.6.1";
+export const LIB_VERSION = "0.7.0";
 
 /** Tag prefix. The real tool makes this configurable via SPORED_TAG_PREFIX. */
 export const TAG_PREFIX = "spawn";

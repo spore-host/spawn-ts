@@ -18,10 +18,16 @@ version strings agree.
 
 ## [Unreleased]
 
-### Changed
-- **`@spore-host/truffle-ts` is now an npm dependency** (`^0.4.0`) instead of a
-  git URL (#28). The three CI/Pages `git@github`→HTTPS rewrite steps are removed —
-  `npm ci` resolves it from the registry like any other package.
+Nothing yet.
+
+## [0.7.0] — 2026-08-01
+
+The Go-parity audit ([#57](https://github.com/spore-host/spawn-ts/issues/57)),
+plus browser-native data movement. Six per-command gaps were filed and closed;
+**two of the six were cost-safety bugs rather than missing features** (#54, #55),
+which is what a per-command judgement surfaces and a line-count comparison never
+would. MINOR, not PATCH: `launch` now *refuses* a spec it previously accepted
+(#51), and the unbounded-launch guard changed which options satisfy it (#55).
 
 ### Added
 - **`--min-viable` for job arrays** (#52) — a threshold on the *set*, which is a
@@ -128,16 +134,110 @@ version strings agree.
     Rejections are returned, not thrown, so a caller can launch with what works
     and still say what was dropped.
   - See `docs/data-movement.md`.
-- **Cross-account launch for the live smoke test** (#38) — the real-aws tier can
-  now role-chain from the OIDC identity-anchor account into a separate compute
-  account, so the ephemeral instance launches there rather than in the anchor
-  account. Set `LIVE_SMOKE_LAUNCH_ROLE_ARN` to a launch role in the compute
-  account (trusting the anchor role) and the workflow hops into it after OIDC;
-  leave it unset for a single-account launch. This is the control-plane/
-  compute-plane split — a small-scale rehearsal of the bring-your-own-account
-  model. See `docs/live-smoke.md`.
+- **The four tag-derived `status` notices** (#56), as pure `src/core/notices.ts`
+  returning structured `{ kind, level, text, detail }` so the CLI, dashboard and
+  portal render one source three ways. `spawn status` previously answered "what did
+  you configure" and nothing else. The headline gap: spored writes
+  `spawn:dns-status` + `spawn:dns-error` when registration fails, specifically so
+  the failure isn't buried in the instance's journal (spawn#435) — and nothing read
+  them, so a portal user got an FQDN that never resolved and no explanation, while
+  the diagnostic sat in a tag `DescribeInstances` had already returned.
+  - `lifecycleProtection()` — who enforces the deadline, when it falls, and the
+    worst-case *compute* cost to it. The counterpart to `accumulatedCost()`, which
+    reports only what's been spent; the ceiling is the number that says whether to
+    worry.
+  - `dnsNotice()` — the failure, with spored's own recorded reason.
+  - `sporedUpgrade()` + `compareSemver()` — a port of `libs/update`'s comparison,
+    so the two tools never disagree about whether an upgrade exists.
+  - `elasticIpNotice()` — an EIP on a *stopped* instance keeps billing (~$3.60/mo)
+    precisely because nothing is using it, which is exactly when the user believes
+    they've stopped paying.
+  - Absence is never smoothed into reassurance: no `dns-status` tag does not mean
+    "registered", and no supplied latest version does not mean "up to date".
+
+### Changed
+- **`launch` now refuses a spec whose identity can't be resolved** (#51) —
+  `buildLaunchTags` takes an optional `LaunchIdentity` and stamps the base-identity
+  block Go writes (root, created-by, version, account-id, account-base36,
+  **iam-user**, account-name, plus `os` and `local-username`). This was the audit's
+  load-bearing find: a spawn-ts launch was visible in `spawn list` yet invisible
+  **and unterminatable** in the portal, which filters its list, lookup and terminate
+  on `spawn:iam-user` (the last 403s on a mismatch) while `spawn list` filters on
+  `spawn:managed` alone. The divergence therefore surfaced only when someone tried
+  to clean up — by which time the instance had been billing the whole time.
+  - Identity arrives as **data**, so the tag builder stays pure; `EC2Provider`
+    resolves it once via `GetCallerIdentity` and caches it, or takes it from the
+    caller (the federated BYOA path already has the ARN and account id back from
+    `AssumeRoleWithWebIdentity`).
+  - Refusing to launch is deliberate, including for the 200-with-empty-fields case
+    a bare try/catch would sail past: omitting the tag and launching anyway produces
+    an orphaned billable instance nobody can terminate from the portal — strictly
+    worse than a failed launch.
+  - `local-username` is resolved once and used for **both** the tag and user-data.
+    They must agree or `spawn connect` SSHes to a user that doesn't exist, so a
+    custom username with no tag silently sent it to `ec2-user`.
+  - Also stamps `spawn:active-ports`.
 
 ### Fixed
+- **The unbounded-launch guard was inverted** (#55) — it accepted the weakest of
+  the three bounds and refused a stronger one:
+
+  | bound | Go accepts | spawn-ts accepted |
+  |---|---|---|
+  | `--ttl` | yes | yes |
+  | `--idle-timeout` | **yes** | **no** |
+  | `--cost-limit` | no | **yes** |
+
+  `costLimit` is a **soft** limit — spored polls accumulated compute-seconds
+  against `spawn:cost-limit`, so if spored never starts (failed bootstrap, wrong
+  instance profile, crash-loop) nothing enforces it. Only the TTL is enforced from
+  *outside* the box, by the ttl-reaper Lambda reading `spawn:ttl-deadline` without
+  the instance's cooperation. Worse, `findOrphans` skips any instance whose deadline
+  is 0, so a cost-limit-only instance was invisible to orphan detection too: the
+  guard was waving through exactly the launches nothing downstream can catch, and
+  saying nothing while it did. New pure `src/core/bounds.ts` holds one predicate
+  carrying the enforcement distinction (external vs on-instance) that was the
+  missing type. `idleTimeout` now counts; `costLimit` alone still permits the launch
+  — refusing it would be a new, harsher divergence from Go — but warns, naming the
+  consequence and the orphan-detection blind spot. Both launch paths share it.
+- **`extend` could hand back a deadline in the past** (#54). It added the duration
+  to the existing deadline with no floor, so extending an instance already overdue
+  produced a deadline still behind `now` — reported as success, then reaped on the
+  ttl-reaper's next pass. It failed precisely when it mattered most: the instance
+  you are trying to rescue is by definition the overdue one. As with #55 the bug
+  existed **twice** — `SpawnClient.extend` and the CLI's `extend` each had their own
+  copy of the arithmetic and the same three defects — so the fix is one shared pure
+  `computeExtension`, placed next to `ttlDeadline`, the rule it has to agree with.
+  - **The floor**: `max(old + by, now + by)`. The two rules compose — a live
+    instance still gets `old + by`, so stop/start still buys nothing; only an
+    overdue one is pulled forward. Both paths say when the floor engaged, because
+    the user asked for one deadline and got another.
+  - **Both TTL tags**: `spawn:ttl` is recomputed from the launch anchor alongside
+    `spawn:ttl-deadline`. Two TTL tags that disagree are a trap for whichever
+    enforcer reads the stale one. With no usable anchor the tag is omitted rather
+    than guessed.
+  - Nudges spored to reload rather than waiting for its next poll.
+- **Expired federated credentials in the direct demo** (#50) — Globus→STS sessions
+  are capped at 1 hour, and a tab left open past that failed at the next action with
+  a raw `Request has expired`, which says nothing about what to do. The expiration
+  was already on `AwsCreds`; nothing read it. The demo now mirrors the portal's
+  `SessionController` shape (two surfaces shouldn't invent two models): a session
+  clock, an amber warning 5 minutes out so an in-flight launch isn't started against
+  lapsing creds, and at expiry a red banner offering re-sign-in with launch/terminal
+  disabled, the monitor loop stopped and any SSM terminal torn down. Checked at the
+  moment of each click, not only on the timer — a laptop asleep past the deadline
+  doesn't fire timeouts on schedule. The loop stops with a note that the instance
+  still self-terminates on its TTL, which is the reassuring part: spored owns the
+  deadline, not the tab.
+- **Two stale claims in `docs/integration.md`** (#58) that changed which features
+  read as portable. The "live AWS data needs credentials a browser can't safely hold
+  and hits CORS" paragraph was false on both counts — `ec2` / `api.pricing` /
+  `servicequotas` each return `access-control-allow-origin: *` when preflighted from
+  `Origin: https://spore.host`, and `credsFromIdToken` already puts short-lived STS
+  credentials in the tab. `BundledFinder` stays the default for cost and latency,
+  which is the real reason. And "wire-compatible" read as complete when Go stamps 55
+  launch tags to spawn-ts's 33; the gap is now named in the same tier language as
+  the rest of the section.
 - **The SSM session tests no longer race a fixed sleep** (#61). Four assertions
   waited `setTimeout(r, 5)` for an async chain — WebCrypto digests, then
   `markReady`'s un-awaited `flushPending` — whose duration is a property of the
@@ -152,6 +252,56 @@ version strings agree.
   path gets waved through. Verified by slowing the flush path to 25 ms: the old
   sleeps fail, the waits pass; and by four mutations of `session.ts`, each still
   caught.
+
+## [0.6.1] — 2026-07-25
+
+Documented retroactively: 0.6.0 and 0.6.1 were published to npm without CHANGELOG
+sections, and 0.6.0 was never tagged. `docs/releasing.md` now makes that
+impossible to repeat.
+
+### Fixed
+- **The Dashboard CSS is shipped in the package** (#49). `dashboard.css` was not
+  emitted into `dist/`, so `@spore-host/spawn-ts/ui/style.css` 404'd for every
+  consumer and the portal rendered an unstyled dashboard. Added
+  `scripts/copy-css.mjs` to the library build.
+
+## [0.6.0] — 2026-07-25
+
+First release as a **published library**. Documented retroactively (see 0.6.1).
+
+### Changed
+- **BREAKING: library-ized as `@spore-host/spawn-ts`** (#48) — scoped package name,
+  `private` dropped, and subpath `exports` for `.` `./auth` `./ssm` `./terminal`
+  `./quotas` `./dns` `./portal` `./ui`. `demo/lib/*` was promoted to `src/` (via
+  `git mv`, so history follows), making the library the primary artifact and the demo
+  a consumer of it. Mirrors truffle-ts's layout deliberately.
+- **`@spore-host/truffle-ts` is now an npm dependency** (`^0.4.0`) instead of a git
+  URL (#28). The three CI/Pages `git@github`→HTTPS rewrite steps are removed —
+  `npm ci` resolves it from the registry like any other package.
+
+### Added
+- **npm Trusted Publishing** — `publish.yml` publishes on a `v*` tag, authorized by
+  GitHub OIDC scoped to this repo + workflow. No `NPM_TOKEN` exists, so there is
+  nothing to rotate or leak; provenance is attached automatically. The workflow
+  asserts the tag matches `package.json` and that every declared subpath emitted its
+  `.d.ts`.
+- **Cross-account launch for the live smoke test** (#38) — the real-aws tier can
+  now role-chain from the OIDC identity-anchor account into a separate compute
+  account, so the ephemeral instance launches there rather than in the anchor
+  account. Set `LIVE_SMOKE_LAUNCH_ROLE_ARN` to a launch role in the compute
+  account (trusting the anchor role) and the workflow hops into it after OIDC;
+  leave it unset for a single-account launch. This is the control-plane/
+  compute-plane split — a small-scale rehearsal of the bring-your-own-account
+  model. See `docs/live-smoke.md`.
+- **No-paste BYOA sign-in via Globus Auth** (#46, #47) — authorization-code + PKCE
+  to an OIDC→STS exchange, so a user reaches their own account without pasting an
+  access key. Plus a web SSM terminal for both demos (#44) — no SSH, no proxy — and
+  a quotas panel and Globus IdP picker.
+- **Both BYOA demos** (#42) — `demo/direct` (credentials in the tab) and the portal
+  demo (federated session).
+
+### Fixed
+- **`spawn:dns-name` is emitted so spored registers DNS** (#45, spawn#435).
 
 ## [0.5.0] — 2026-07-22
 
@@ -324,7 +474,10 @@ version strings agree.
 - **Tests** — lifecycle, client end-to-end, CLI, and live integration tests
   against a substrate emulator (auto-skip when unreachable).
 
-[Unreleased]: https://github.com/spore-host/spawn-ts/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/spore-host/spawn-ts/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/spore-host/spawn-ts/compare/v0.6.1...v0.7.0
+[0.6.1]: https://github.com/spore-host/spawn-ts/compare/v0.6.0...v0.6.1
+[0.6.0]: https://github.com/spore-host/spawn-ts/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/spore-host/spawn-ts/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/spore-host/spawn-ts/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/spore-host/spawn-ts/compare/v0.2.0...v0.3.0
