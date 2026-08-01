@@ -43,6 +43,26 @@ export {
   TTL_DEADLINE_TAG,
 } from "./core/lifecycle.js";
 export type { TickInput, ExtendResult } from "./core/lifecycle.js";
+// Status notices — the tag-derived blocks Go's `spawn status` appends. Pure, so
+// the CLI, the dashboard and the portal can render one source three ways. The
+// Elastic IP lookup itself needs the SDK and lives in ./aws/eip.js.
+export {
+  dnsNotice,
+  lifecycleProtection,
+  sporedUpgrade,
+  elasticIpNotice,
+  statusNotices,
+  compareSemver,
+} from "./core/notices.js";
+export type {
+  Notice,
+  NoticeLevel,
+  AttachedEip,
+  ElasticIpLookup,
+} from "./core/notices.js";
+export { lookupElasticIp, firstAssociatedEip } from "./aws/eip.js";
+export type { EipLookupOptions } from "./aws/eip.js";
+
 export { findOrphans, ORPHAN_GRACE_MS } from "./core/orphans.js";
 export type { Orphan } from "./core/orphans.js";
 export { evaluateBounds, ENFORCEMENT } from "./core/bounds.js";

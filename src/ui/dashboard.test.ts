@@ -507,3 +507,84 @@ describe("Dashboard lifecycle-hook inputs", () => {
     expect(inst!.tags["spawn:pre-stop"]).toBe("sync.sh");
   });
 });
+
+describe("Dashboard status notices (#56)", () => {
+  beforeEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  /** Set tags on the launched instance and re-render the cards. */
+  async function tagAndRefresh(client: SpawnClient, name: string, tags: Record<string, string>) {
+    const i = (await client.get(name))!;
+    await client.activeProvider.setTags(i.instanceId, tags);
+    await client.refresh();
+    await new Promise((r) => setTimeout(r, 0));
+  }
+
+  it("shows a failed DNS registration on the card, with spored's reason", async () => {
+    // The card meters TTL and cost, so nothing else on it would ever hint that
+    // the instance's hostname doesn't resolve.
+    const { client, dash } = setup();
+    setField(dash, "name", "web");
+    setField(dash, "ttl", "4h");
+    await submit(dash);
+    await tagAndRefresh(client, "web", {
+      "spawn:dns-status": "failed",
+      "spawn:dns-error": "403 from function URL",
+    });
+    const notice = dash.el.querySelector(".inst .notice.warn")!;
+    expect(notice.textContent).toContain("DNS registration failed");
+    expect(notice.textContent).toContain("403 from function URL");
+  });
+
+  it("shows no notice when registration succeeded", async () => {
+    const { client, dash } = setup();
+    setField(dash, "name", "web");
+    setField(dash, "ttl", "4h");
+    await submit(dash);
+    await tagAndRefresh(client, "web", { "spawn:dns-status": "registered" });
+    expect(dash.el.querySelector(".inst .notice")).toBeNull();
+  });
+
+  it("makes no upgrade claim when the embedder didn't supply a latest version", async () => {
+    // Absent must render as nothing, not as "spored is up to date".
+    const client = new SpawnClient({ provider: new MockProvider(), startMs: T0, clock: 1 });
+    const dash = new Dashboard(client, async () => true); // no latestSporedVersion
+    document.body.innerHTML = "";
+    document.body.appendChild(dash.el);
+    setField(dash, "name", "web");
+    setField(dash, "ttl", "4h");
+    await submit(dash);
+    await tagAndRefresh(client, "web", { "spawn:spored-version": "1.0.0" });
+    expect(dash.el.textContent).not.toContain("upgrade available");
+  });
+
+  it("shows a spored upgrade when the embedder knows the latest version", async () => {
+    const client = new SpawnClient({ provider: new MockProvider(), startMs: T0, clock: 1 });
+    const dash = new Dashboard(client, async () => true, "1.5.0");
+    document.body.innerHTML = "";
+    document.body.appendChild(dash.el);
+    setField(dash, "name", "web");
+    setField(dash, "ttl", "4h");
+    await submit(dash);
+    await tagAndRefresh(client, "web", { "spawn:spored-version": "1.2.0" });
+    expect(dash.el.querySelector(".inst .notice.info")!.textContent).toContain(
+      "v1.2.0 → v1.5.0",
+    );
+  });
+
+  it("escapes the tag-supplied error text", async () => {
+    // spawn:dns-error is attacker-influenceable in principle (it's whatever the
+    // DNS endpoint returned), and it lands in innerHTML.
+    const { client, dash } = setup();
+    setField(dash, "name", "web");
+    setField(dash, "ttl", "4h");
+    await submit(dash);
+    await tagAndRefresh(client, "web", {
+      "spawn:dns-status": "failed",
+      "spawn:dns-error": "<img src=x onerror=alert(1)>",
+    });
+    expect(dash.el.querySelector(".inst .notice.warn")!.querySelector("img")).toBeNull();
+    expect(dash.el.querySelector(".inst .notice.warn")!.textContent).toContain("<img");
+  });
+});

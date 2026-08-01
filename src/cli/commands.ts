@@ -12,6 +12,7 @@ import { parseQueueConfig } from "../core/queue.js";
 import { parseDuration, formatDuration, humanRemaining } from "../core/duration.js";
 import { accumulatedCost, computeExtension, ttlDeadline } from "../core/lifecycle.js";
 import { evaluateBounds } from "../core/bounds.js";
+import { statusNotices, type ElasticIpLookup } from "../core/notices.js";
 import { parseArgs, flagStr, flagBool, type ParsedArgs } from "./args.js";
 
 /** Ambient context a command runs in. */
@@ -27,6 +28,22 @@ export interface ShellCtx {
    * only touch the provider don't need it.
    */
   client?: SpawnClient;
+  /**
+   * Optional override for `status`'s Elastic IP lookup. Defaults to the
+   * provider's own `lookupElasticIp` when it has one, so the real app needs no
+   * wiring; this exists so tests and embedders can supply their own without the
+   * CLI importing the SDK.
+   *
+   * Absent on both means the notice is skipped entirely — distinct from a lookup
+   * that runs and fails, which `status` reports as a gap.
+   */
+  lookupEip?: (instanceId: string) => Promise<ElasticIpLookup>;
+  /**
+   * Optional: the newest published spored version, for `status`'s upgrade
+   * notice. A value, not a fetcher — the release lookup is the caller's call to
+   * make (Go hits the GitHub API; a browser may not want to).
+   */
+  latestSporedVersion?: string;
 }
 
 /** Result of running a command: text output + whether it errored. */
@@ -271,10 +288,13 @@ async function status(p: ParsedArgs, ctx: ShellCtx): Promise<CmdResult> {
     i.publicIp ? `  public ip:    ${i.publicIp}` : `  public ip:    —`,
   ];
   if (i.ttlDeadlineMs) {
+    // humanRemaining() returns "expired" for a past deadline, so " left" can't be
+    // appended unconditionally — it read "expired left".
+    const left = i.ttlDeadlineMs - now;
     lines.push(
-      `  ttl:          ${i.ttlMs ? formatDuration(i.ttlMs) : "?"} — ${humanRemaining(
-        i.ttlDeadlineMs - now,
-      )} left (terminates)`,
+      `  ttl:          ${i.ttlMs ? formatDuration(i.ttlMs) : "?"} — ${
+        left > 0 ? `${humanRemaining(left)} left` : "expired"
+      } (terminates)`,
     );
   }
   if (i.idleTimeoutMs) {
@@ -309,6 +329,21 @@ async function status(p: ParsedArgs, ctx: ShellCtx): Promise<CmdResult> {
     if (h.spotWebhookUrl) lines.push(`  spot webhook: ${h.spotWebhookUrl}`);
     if (h.notifyUrl) lines.push(`  notify:       ${h.notifyPlatform ? h.notifyPlatform + " → " : ""}${h.notifyUrl}`);
     if (h.activeProcesses) lines.push(`  active-procs: ${h.activeProcesses}`);
+  }
+
+  // The tag-derived notices Go's `spawn status` appends (cmd/status.go:130-134).
+  // Everything above answers "what did you configure"; these answer "what should
+  // you know" — a failed DNS registration, the worst-case bill, an EIP still
+  // charging on a stopped box.
+  // ctx.lookupEip is the test/embedder override; otherwise use the provider's own
+  // (EC2Provider has it, MockProvider has no addresses to describe). Absent
+  // either way means the notice is skipped, never answered as "none attached".
+  const lookup = ctx.lookupEip || ctx.provider.lookupElasticIp?.bind(ctx.provider);
+  const eip = lookup ? await lookup(i.instanceId) : undefined;
+  const notices = statusNotices(i, now, { eip, latestSporedVersion: ctx.latestSporedVersion });
+  for (const n of notices) {
+    lines.push("", `  ${n.level === "warn" ? "⚠️  " : ""}${n.text}`);
+    for (const d of n.detail || []) lines.push(`      ${d}`);
   }
   return ok(...lines);
 }

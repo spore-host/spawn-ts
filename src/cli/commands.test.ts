@@ -584,4 +584,113 @@ describe("CLI on-idle + lifecycle hooks", () => {
     expect(out).toContain("pre-stop:");
     expect(out).toContain("notify:");
   });
+
+  describe("status notices (#56)", () => {
+    it("surfaces a failed DNS registration with spored's diagnostic", async () => {
+      // The headline case: before this, spored recorded WHY registration failed
+      // into a tag the browser already fetched, and nothing ever read it — so a
+      // user got a hostname that never resolves and no explanation.
+      const c = ctx();
+      await runCommand("launch job --ttl 4h", c);
+      const i = (await c.provider.get("job"))!;
+      await c.provider.setTags(i.instanceId, {
+        "spawn:dns-status": "failed",
+        "spawn:dns-error": "403 from function URL",
+      });
+      const out = (await runCommand("status job", c)).lines.join("\n");
+      expect(out).toContain("DNS registration failed");
+      expect(out).toContain("403 from function URL");
+    });
+
+    it("prints the worst-case bill, not only the cost so far", async () => {
+      // `status` already showed accumulated cost; the ceiling is the number that
+      // tells a user whether to worry.
+      const c = ctx();
+      await runCommand("launch job --ttl 4h --price-per-hour 2", c);
+      const out = (await runCommand("status job", c)).lines.join("\n");
+      expect(out).toContain("lifecycle protection:");
+      expect(out).toContain("max compute cost:");
+      expect(out).toContain("$8.00");
+      expect(out).toContain("compute only");
+    });
+
+    it("warns about an Elastic IP billing on a stopped instance", async () => {
+      const c: ShellCtx = {
+        ...ctx(),
+        lookupEip: async () => ({
+          eip: { publicIp: "52.1.2.3", allocationId: "eipalloc-abc" },
+        }),
+      };
+      await runCommand("launch job --ttl 4h", c);
+      await runCommand("stop job -y", c);
+      const out = (await runCommand("status job", c)).lines.join("\n");
+      expect(out).toContain("keeps billing");
+      expect(out).toContain("release-address --allocation-id eipalloc-abc");
+    });
+
+    it("reports a failed EIP lookup as a gap, not as 'none attached'", async () => {
+      const c: ShellCtx = {
+        ...ctx(),
+        lookupEip: async () => ({ eip: null, error: "UnauthorizedOperation" }),
+      };
+      await runCommand("launch job --ttl 4h", c);
+      await runCommand("stop job -y", c);
+      const out = (await runCommand("status job", c)).lines.join("\n");
+      expect(out).toContain("could not check for an attached Elastic IP");
+      expect(out).toContain("UnauthorizedOperation");
+    });
+
+    it("uses the PROVIDER's lookup when the shell supplies no override", async () => {
+      // Without this fallback the notice would exist but never fire in the real
+      // app: terminal.ts builds a bare ShellCtx, so nothing would set lookupEip.
+      const provider = new MockProvider() as MockProvider & {
+        lookupElasticIp: (id: string) => Promise<{ eip: { publicIp: string; allocationId: string } }>;
+      };
+      provider.lookupElasticIp = async () => ({
+        eip: { publicIp: "52.9.9.9", allocationId: "eipalloc-prov" },
+      });
+      const c: ShellCtx = { provider, now: () => T0, confirm: async () => true };
+      await runCommand("launch job --ttl 4h", c);
+      await runCommand("stop job -y", c);
+      const out = (await runCommand("status job", c)).lines.join("\n");
+      expect(out).toContain("eipalloc-prov");
+    });
+
+    it("reports an available spored upgrade when the caller knows the latest", async () => {
+      const c: ShellCtx = { ...ctx(), latestSporedVersion: "1.5.0" };
+      await runCommand("launch job --ttl 4h", c);
+      const i = (await c.provider.get("job"))!;
+      await c.provider.setTags(i.instanceId, { "spawn:spored-version": "1.2.0" });
+      const out = (await runCommand("status job", c)).lines.join("\n");
+      expect(out).toContain("spored upgrade available: v1.2.0 → v1.5.0");
+    });
+
+    it("makes no EIP or upgrade claim when the caller supplied neither input", async () => {
+      // No lookupEip and no latestSporedVersion: both notices are absent, rather
+      // than asserting "no EIP attached" / "up to date" on no evidence.
+      const c = ctx();
+      await runCommand("launch job --ttl 4h", c);
+      const out = (await runCommand("status job", c)).lines.join("\n");
+      expect(out).not.toContain("Elastic IP");
+      expect(out).not.toContain("upgrade available");
+      expect(out).toContain("lifecycle protection:");
+    });
+
+    it("marks the deadline past due rather than showing negative time left", async () => {
+      let now = T0;
+      const c: ShellCtx = {
+        provider: new MockProvider(),
+        now: () => now,
+        confirm: async () => true,
+      };
+      await runCommand("launch job --ttl 1h", c);
+      now = T0 + 5 * 3600_000;
+      const out = (await runCommand("status job", c)).lines.join("\n");
+      expect(out).toContain("past due — terminates on next check");
+      // Caught by driving the CLI, not by the suite: humanRemaining() already
+      // returns "expired", so the older ttl line read "expired left".
+      expect(out).toContain("1h — expired (terminates)");
+      expect(out).not.toContain("expired left");
+    });
+  });
 });

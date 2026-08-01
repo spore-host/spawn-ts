@@ -80,6 +80,27 @@ provider has no channel to the box at all — the result is a **stated gap** nam
 the ~5-minute window and the manual `sudo spored reload`, never silence. A `Provider`
 without `reloadAgent` is treated exactly like one whose reload failed.
 
+## Telling the user what the engine is about to do
+
+`evaluate` decides; **`src/core/notices.ts`** explains. `lifecycleProtection()`
+renders the same tags the engine reads into a block naming who enforces the
+deadline, when it falls, and the **worst-case compute cost** up to it — the
+counterpart to `accumulatedCost()`, which reports only what has been spent so
+far. A user deciding whether to worry needs the ceiling, not the running total.
+
+Two honesty constraints, both inherited from Go's `lifecycleProtectionBlock`
+(`cmd/status.go:149`) and both asserted in tests:
+
+- The out-of-band reaper runs in the **infra** account and isn't authoritatively
+  visible from the launch account, so it's described as a backstop *"if
+  deployed"*. spawn-ts must not claim an enforcement it cannot confirm.
+- A past-due deadline reads **"past due — terminates on next check"**, not a
+  negative duration. The overdue instance is precisely the one whose state must
+  be legible; see [the extend floor](#the-extend-floor-the-one-exception) for the
+  other half of that case.
+
+See [api.md](./api.md#status-notices) for the full set.
+
 ## Why it's pure
 
 Keeping the engine free of a clock and I/O means:

@@ -7,6 +7,7 @@ import type { SpawnClient, SpawnEvent } from "../core/client.js";
 import type { LifecycleAction, ManagedInstance } from "../core/types.js";
 import type { FanOutSummary } from "../core/fanout.js";
 import { accumulatedCost } from "../core/lifecycle.js";
+import { dnsNotice, sporedUpgrade, type Notice } from "../core/notices.js";
 import { humanRemaining, formatDuration, parseDuration } from "../core/duration.js";
 import { parseGridShorthand } from "../core/params.js";
 import { parseQueueConfig } from "../core/queue.js";
@@ -27,6 +28,12 @@ export class Dashboard {
   constructor(
     private client: SpawnClient,
     private confirmFn: (msg: string) => Promise<boolean>,
+    /**
+     * Newest published spored version, for the upgrade notice (#56). A value, not
+     * a fetcher: the GitHub release lookup is the embedder's call to make. Omitted
+     * means no upgrade notice at all — never "you're up to date".
+     */
+    private latestSporedVersion?: string,
   ) {
     this.el = document.createElement("div");
     this.el.className = "dashboard";
@@ -488,6 +495,19 @@ export class Dashboard {
       idleLine = `<div class="meta">idle ${formatDuration(i.idleTimeoutMs)} → ${i.hibernateOnIdle ? "hibernate" : "stop"}</div>`;
     }
 
+    // Tag-derived notices (#56). Only the two the card can't already show: the
+    // meters above cover what `lifecycleProtection` says, and `elasticIpNotice`
+    // needs a DescribeAddresses call the dashboard doesn't make. A failed DNS
+    // registration, though, is invisible everywhere else — the user just gets a
+    // hostname that never resolves.
+    const notices = [dnsNotice(i), sporedUpgrade(i, this.latestSporedVersion || "")]
+      .filter((n): n is Notice => n !== null)
+      .map(
+        (n) =>
+          `<div class="notice ${n.level}">${n.level === "warn" ? "⚠️ " : ""}${escapeHtml(n.text)}</div>`,
+      )
+      .join("");
+
     card.innerHTML = `
       <div class="row1">
         <span class="name">${escapeHtml(i.name)}</span>
@@ -495,7 +515,7 @@ export class Dashboard {
         <span class="state ${i.state}">${i.state}</span>
       </div>
       <div class="meta">${meta.map(escapeHtml).join(" · ")}</div>
-      ${ttlMeter}${costMeter}${idleLine}
+      ${ttlMeter}${costMeter}${idleLine}${notices}
       <div class="actions"></div>`;
 
     const actions = card.querySelector(".actions")!;

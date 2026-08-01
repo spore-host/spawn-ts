@@ -10,6 +10,7 @@
 // provider only performs observable operations (launch/describe/terminate/…).
 
 import type { LaunchSpec, ManagedInstance } from "./types.js";
+import type { ElasticIpLookup } from "./notices.js";
 
 export interface Provider {
   /** Human label for the active backend, shown in the UI ("mock", "aws:us-east-1", "substrate"). */
@@ -64,4 +65,20 @@ export interface Provider {
    * way so the caller can report which it was.
    */
   reloadAgent?(instanceId: string): Promise<{ ok: boolean; detail: string }>;
+
+  /**
+   * Optional: find the Elastic IP associated with an instance, for `status`'s
+   * billing notice (#56).
+   *
+   * Here rather than on the caller because the lookup needs the same credentials
+   * the provider already holds — and the notice's whole point is that an EIP on a
+   * **stopped** instance keeps billing (~$3.60/mo) precisely because nothing is
+   * using it, which is exactly when a user believes they've stopped paying.
+   *
+   * Optional because a MockProvider has no addresses to describe. Must never
+   * throw: a failure comes back as `{ eip: null, error }`, which callers report
+   * as a gap. `{ eip: null }` with no error means "checked, none attached" — the
+   * two must stay distinguishable (see ElasticIpLookup).
+   */
+  lookupElasticIp?(instanceId: string): Promise<ElasticIpLookup>;
 }

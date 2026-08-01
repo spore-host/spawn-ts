@@ -71,6 +71,59 @@ await client.signalComplete(nameOrId);          // fire the completion action
 > `ssm:SendCommand` (best-effort; a failure is reported, never thrown). See
 > [lifecycle.md](./lifecycle.md#the-extend-floor-the-one-exception).
 
+## Status notices
+
+The four tag-derived blocks Go's `spawn status` appends
+(`cmd/status.go:130-134`). Everything else on a status view reports what you
+*configured*; these report what you should *know*.
+
+```ts
+import { statusNotices, dnsNotice, lifecycleProtection, sporedUpgrade,
+         elasticIpNotice, compareSemver } from "@spore-host/spawn-ts";
+
+statusNotices(inst, nowMs, { eip?, latestSporedVersion? }): Notice[];
+// Notice = { kind, level: "info" | "warn", text, detail?: string[] }
+```
+
+Pure and SDK-free, so the CLI, the dashboard and the portal render one source
+three ways. The Elastic IP *lookup* needs `ec2:DescribeAddresses` and is
+therefore separate — `lookupElasticIp(instanceId, opts)` from
+[`src/aws/eip.ts`](../src/aws/eip.ts) — while `elasticIpNotice` itself is pure
+and takes the result.
+
+| notice | says | source |
+|---|---|---|
+| `lifecycle-protection` | who enforces the deadline, the deadline, and the **worst-case compute cost** to it | tags |
+| `dns` | registration **failed**, with spored's own reason | `spawn:dns-status` + `spawn:dns-error` |
+| `elastic-ip` | an EIP is still billing on a **stopped** instance (~$3.60/mo), and the release command | `DescribeAddresses` |
+| `spored-upgrade` | the running spored is older than the newest release | `spawn:spored-version` |
+
+> **Absence is never smoothed into reassurance.** Each notice has an input it
+> can't do without, and when that input is missing the notice is *omitted*, not
+> answered optimistically:
+>
+> - no `spawn:dns-status` → no notice. It does **not** mean registration
+>   succeeded; an older spored simply never wrote the tag.
+> - no `latestSporedVersion` → no notice. It does **not** mean spored is current.
+>   The value is passed in rather than fetched, because Go's release check hits
+>   the GitHub API and that's the embedder's call to make.
+> - no `eip` lookup → no notice; a lookup that **fails** is its own `warn`
+>   notice naming the error. This is a deliberate divergence from Go's
+>   `GetInstanceElasticIP` (`pkg/aws/cleanup.go:219`), which returns `nil, nil`
+>   on any API error — making a missing `ec2:DescribeAddresses` permission
+>   indistinguishable from a clean bill of health, in the one check whose whole
+>   job is catching an unnoticed charge.
+>
+> The cost ceiling keeps its **"compute only"** label: it excludes EBS and
+> network, so presenting it as a total would understate the bill. It's skipped
+> entirely when the instance has no recorded price, rather than shown as `$0.00`.
+
+Not ported: the remote `spored status` output these notices are appended *to*
+(needs a shell on the box), and Go's fallback of parsing the spored version out
+of that output. `compareSemver` is exported and matches `libs/update`'s
+comparison exactly, so the two tools never disagree about whether an upgrade
+exists.
+
 ## Backend + clock
 
 ```ts
