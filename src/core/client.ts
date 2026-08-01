@@ -25,6 +25,7 @@ import type {
 } from "./types.js";
 import { evaluate } from "./lifecycle.js";
 import { findOrphans, type Orphan } from "./orphans.js";
+import { evaluateBounds } from "./bounds.js";
 import { parseDuration, formatDuration } from "./duration.js";
 import { tag } from "./tags.js";
 import { MockProvider } from "./mock.js";
@@ -81,7 +82,12 @@ export interface LaunchInput {
   completionDelay?: string | number;
   /** Idle-SSH-shell auto-logout (Go-form duration or ms). 0/absent = disabled. */
   sessionTimeout?: string | number;
-  /** Bypass the "real launch needs a bound" safety check. */
+  /**
+   * Bypass the "real launch needs a bound" refusal (see `evaluateBounds`). Only
+   * clears the refusal — a launch whose only bounds are spored-dependent still
+   * emits its warning, because that one isn't the caller opting into a known
+   * risk, it's a limit that may quietly not be enforced at all.
+   */
   allowUnbounded?: boolean;
   /** Parameter-sweep membership; stamps spawn:sweep-* / spawn:param:* tags. */
   sweep?: SweepMembership;
@@ -343,12 +349,18 @@ export class SpawnClient {
 
   async launch(input: LaunchInput): Promise<ManagedInstance> {
     const spec = this.toSpec(input);
-    if (this.provider.isReal && spec.ttlMs === 0 && spec.costLimit === 0 && !input.allowUnbounded) {
-      throw new Error(
-        "refusing to launch a REAL instance with no ttl and no costLimit (would bill indefinitely); set ttl or pass allowUnbounded",
-      );
-    }
+    // Shared with the CLI's `launch` (src/cli/commands.ts), which reaches the
+    // provider directly — one definition so the two can't drift apart.
+    const verdict = evaluateBounds(spec, this.provider.isReal);
+    if (verdict.refuse && !input.allowUnbounded) throw new Error(verdict.refuse);
     const inst = await this.provider.launch(spec, this.now());
+    // Emitted AFTER the launch so it names a real instance, and only for a real
+    // provider — a mock launch bills nothing, so the caveat would be noise. A
+    // spored-dependent bound is not the same promise as a TTL, and a caller who
+    // isn't told assumes it is.
+    if (verdict.warn && this.provider.isReal) {
+      this.emit({ type: "warning", instance: inst.name, rule: "unbounded", message: verdict.warn });
+    }
     this.emit({ type: "launched", instance: inst });
     await this.refresh();
     return inst;

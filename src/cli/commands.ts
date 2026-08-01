@@ -12,6 +12,7 @@ import { parseQueueConfig } from "../core/queue.js";
 import { parseDuration, formatDuration, humanRemaining } from "../core/duration.js";
 import { accumulatedCost } from "../core/lifecycle.js";
 import { tag } from "../core/tags.js";
+import { evaluateBounds } from "../core/bounds.js";
 import { parseArgs, flagStr, flagBool, type ParsedArgs } from "./args.js";
 
 /** Ambient context a command runs in. */
@@ -46,6 +47,12 @@ const BOOLEAN_FLAGS = new Set([
   "all",
   "json",
   "reap",
+  // Unregistered, `--no-timeout job` consumed "job" as the flag's VALUE (see
+  // parseArgs: an unknown flag followed by a non-dash token takes it), so the
+  // instance name vanished and flagBool() read false. It failed safe — the guard
+  // refused the launch rather than allowing an unbounded one — but the flag was
+  // silently inert in that word order.
+  "no-timeout",
 ]);
 
 /** Entry point: parse a raw line and dispatch. */
@@ -198,14 +205,28 @@ async function launch(p: ParsedArgs, ctx: ShellCtx): Promise<CmdResult> {
     hooks: hasHooks ? hooks : undefined,
   };
 
-  if (ctx.provider.isReal && spec.ttlMs === 0 && spec.costLimit === 0) {
-    // Cost-safety guard: refuse an unbounded real launch unless explicitly forced.
-    if (!flagBool(p.flags, "no-timeout")) {
-      return err(
-        "launch: refusing to launch a REAL instance with no --ttl and no --cost-limit.",
-        "This would bill indefinitely. Add --ttl 4h (recommended) or pass --no-timeout to override.",
-      );
-    }
+  // Cost-safety guard. This path reaches the provider directly rather than going
+  // through SpawnClient.launch, so it needs its own call — but it shares the one
+  // predicate (src/core/bounds.ts) instead of restating the condition, which is
+  // how the two drifted apart in the first place.
+  const verdict = evaluateBounds(spec, ctx.provider.isReal);
+  if (verdict.refuse && !flagBool(p.flags, "no-timeout")) {
+    return err(
+      "launch: " + verdict.refuse,
+      "Add --ttl 4h (recommended), --idle-timeout 1h, or pass --no-timeout to override.",
+    );
+  }
+  // Go requires an acknowledgement for its equivalent override — --no-timeout
+  // "disabling the cost guardrails is an explicit, acknowledged choice"
+  // (cmd/zombie_guard.go:58): pass --yes or abort. A flag alone can be a typo or
+  // a copied command line; a confirmation cannot.
+  if (verdict.refuse && !flagBool(p.flags, "yes") && !flagBool(p.flags, "y")) {
+    const okToProceed = await ctx.confirm(
+      "--no-timeout disables every cost guardrail: this REAL instance will bill until you " +
+        "terminate it by hand, and nothing (not spored, not the reaper, not orphan detection) " +
+        "will stop it. Launch anyway?",
+    );
+    if (!okToProceed) return err("launch: aborted — no instance was launched.");
   }
 
   const inst = await ctx.provider.launch(spec, ctx.now());
@@ -217,6 +238,10 @@ async function launch(p: ParsedArgs, ctx: ShellCtx): Promise<CmdResult> {
       `${spec.idleTimeoutMs ? `, idle ${formatDuration(spec.idleTimeoutMs)}` : ""}` +
       `${spec.costLimit ? `, cost-limit $${spec.costLimit}` : ""}`,
     ctx.provider.isReal ? "  backend: REAL AWS — this is billable" : "  backend: mock — not billable",
+    // Printed on a real launch whose only bounds live on the box. "no TTL" above
+    // states the fact; this states the consequence, which is the part a user
+    // reading a success message won't otherwise infer.
+    ...(verdict.warn && ctx.provider.isReal ? [`  warning: ${verdict.warn}`] : []),
   );
 }
 
