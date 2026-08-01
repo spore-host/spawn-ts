@@ -20,6 +20,12 @@ export interface LaunchSpec {
   ami?: string;
   keyPair?: string;
   spot: boolean;
+  /**
+   * Login user created on the box, recorded as spawn:local-username so
+   * `spawn connect` targets the right account (cmd/connect.go:135 prefers this
+   * tag and falls back to ec2-user). Undefined = the userdata default, ec2-user.
+   */
+  localUsername?: string;
 
   /**
    * DNS label for the instance's spore.host name. spored registers
@@ -122,6 +128,17 @@ export interface LifecycleHooks {
   notifyCommand?: string;
   /** Comma-separated process names that keep the box non-idle while running. spawn:active-processes. */
   activeProcesses?: string;
+  /**
+   * Comma-separated TCP ports whose live connections keep the box non-idle.
+   * spawn:active-ports.
+   *
+   * spored consumes this as the sibling of activeProcesses in one expression —
+   * `countActiveSessions() + countActivePortConnections(config.ActivePorts)`
+   * (pkg/agent/agent.go:402) — so omitting it made a port-based activity signal
+   * silently unenforceable: an instance serving a live RStudio connection on 8787
+   * with no matching process name would idle out underneath the user.
+   */
+  activePorts?: string;
 }
 
 /**

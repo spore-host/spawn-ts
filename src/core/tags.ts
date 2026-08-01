@@ -11,6 +11,18 @@ import type {
   LifecycleHooks,
 } from "./types.js";
 import { formatDuration, parseDuration } from "./duration.js";
+import { encodeAccountId } from "../dns/dns-name.js";
+
+/**
+ * Value written to spawn:version. Read by Go's pkg/aws/ami_mgmt.go:170.
+ *
+ * Hand-maintained: a browser library can't read package.json at runtime, and
+ * importing src/index.ts here would be circular (index re-exports this module).
+ * tags.test.ts asserts it matches package.json so a release can't leave it stale
+ * — the same guard the three sibling -ts repos carry on their VERSION constants,
+ * two of which caught a real miss.
+ */
+export const LIB_VERSION = "0.6.1";
 
 /** Tag prefix. The real tool makes this configurable via SPORED_TAG_PREFIX. */
 export const TAG_PREFIX = "spawn";
@@ -43,14 +55,31 @@ export function slugifyDnsLabel(name: string): string {
 }
 
 /**
- * Prefix for per-member parameter tags: spawn:param:<key>=<value>. Mirrors the
- * Go tool (pkg/aws/tags.go), which caps parameter tags to stay under the AWS
- * 50-tag limit; buildSweepTags applies the same cap.
+ * Prefix for per-member parameter tags: spawn:param:<key>=<value>.
  */
 export const PARAM_TAG_PREFIX = tag("param:");
 
-/** Max spawn:param:* tags written per instance — matches the Go tool's guard. */
-const MAX_PARAM_TAGS = 35;
+/** AWS's hard per-resource tag limit. Exceeding it fails RunInstances outright. */
+export const AWS_TAG_LIMIT = 50;
+
+/**
+ * Max spawn:param:* tags on a sweep member, as a *budget* rather than a constant.
+ *
+ * Go uses a fixed 35 "to stay under AWS 50-tag limit" (pkg/aws/tags.go:247), and
+ * that arithmetic doesn't hold: the sweep block itself is 4 tags and a fully
+ * configured launch carries ~30 more, so 35 params puts a maximal sweep member at
+ * ~73 tags and RunInstances rejects the launch. spawn-ts inherited the same
+ * comment and the same bug. Rather than swap in a smaller guessed number, cap
+ * against what's actually left, so the budget stays correct as tags are added.
+ *
+ * Dropping parameters is itself lossy — spawn:param:* tags are how a sweep member
+ * records which point in the parameter space it *is* — but a truncated tag set
+ * beats a launch that fails outright, and the keys are emitted in sorted order so
+ * the surviving subset is at least deterministic.
+ */
+function paramTagBudget(alreadyUsed: number): number {
+  return Math.max(0, AWS_TAG_LIMIT - alreadyUsed);
+}
 
 /** RFC3339 (what Go's time.Format(time.RFC3339) produces; JS toISOString is compatible). */
 function rfc3339(ms: number): string {
@@ -63,16 +92,87 @@ function parseRfc3339(v: string): number {
 }
 
 /**
+ * Who launched an instance, and into which account — Go's "base identity"
+ * (pkg/aws/tags.go:32, "Section 1: base identity (always present)").
+ *
+ * Passed in as data rather than resolved here so buildLaunchTags stays pure. The
+ * caller (EC2Provider) resolves it once per provider via GetCallerIdentity.
+ */
+export interface LaunchIdentity {
+  /** AWS account id, 12 decimal digits → spawn:account-id + base36 subdomain. */
+  accountId: string;
+  /** Caller's IAM/role ARN → spawn:iam-user. Load-bearing: see buildIdentityTags. */
+  userArn: string;
+  /** Optional account alias; slugified into spawn:account-name (#121). */
+  accountName?: string;
+}
+
+/**
+ * The always-present base-identity tags. Split out from buildLaunchTags so the
+ * launch, sweep and job-array paths can share one definition.
+ *
+ * **spawn:iam-user is the load-bearing one.** Three portal paths filter on it:
+ * the instance list (lambda/dashboard-api/instances.go:60), single-instance
+ * lookup (:168), and terminate (:285, which 403s on a mismatch). `spawn list`
+ * filters on spawn:managed alone, so an instance missing this tag appears in the
+ * CLI yet is invisible *and unterminatable* through the portal — the divergence
+ * only surfaces when someone tries to clean up. `spawn cleanup --only-mine`
+ * skips it too (pkg/aws/cleanup.go:93).
+ *
+ * created-by is deliberately "spawn-ts", not Go's "spawn": no reader compares the
+ * value for equality, and an operator benefits from knowing which launcher
+ * produced an instance.
+ */
+export function buildIdentityTags(id: LaunchIdentity): Record<string, string> {
+  const tags: Record<string, string> = {
+    [tag("managed")]: "true",
+    [tag("root")]: "true",
+    [tag("created-by")]: "spawn-ts",
+    [tag("version")]: LIB_VERSION,
+    [tag("account-id")]: id.accountId,
+    [tag("account-base36")]: encodeAccountId(id.accountId),
+    [tag("iam-user")]: id.userArn,
+  };
+  // Only when it slugifies to a usable DNS label — an alias like "!!!" yields ""
+  // and an empty tag value is worse than an absent one.
+  if (id.accountName) {
+    const slug = slugifyDnsLabel(id.accountName);
+    if (slug) tags[tag("account-name")] = slug;
+  }
+  return tags;
+}
+
+/**
  * Build the full spawn:* tag map for a launch. launchTimeMs is passed in (not
  * read from a clock) so callers control it and results stay testable.
+ *
+ * `identity` is optional only so the MockProvider and existing tests can launch
+ * without an AWS call. On the real path EC2Provider always supplies it, and
+ * refuses to launch if it can't — omitting spawn:iam-user silently produces an
+ * instance the portal can neither see nor terminate.
  */
-export function buildLaunchTags(spec: LaunchSpec, launchTimeMs: number): Record<string, string> {
+export function buildLaunchTags(
+  spec: LaunchSpec,
+  launchTimeMs: number,
+  identity?: LaunchIdentity,
+): Record<string, string> {
   const tags: Record<string, string> = {
     Name: spec.name,
     [tag("managed")]: "true",
+    ...(identity ? buildIdentityTags(identity) : {}),
     [tag("launch-time")]: rfc3339(launchTimeMs),
     [tag("compute-seconds")]: "0",
+    // Explicit rather than absent: Go's `connect` branches on
+    // `tags["spawn:os"] == "windows"` (cmd/connect.go:120) and treats absent and
+    // "linux" alike today, but wire-compatibility means stating it — and spawn-ts
+    // launches Linux only (no Windows support anywhere in src/).
+    [tag("os")]: "linux",
   };
+  // Go's `connect` prefers spawn:local-username, falling back to ec2-user "for
+  // instances launched before that tag existed" (cmd/connect.go:135). userdata
+  // already creates this user, so the value was known and simply unrecorded —
+  // meaning a non-default username sent `spawn connect` to the wrong account.
+  if (spec.localUsername) tags[tag("local-username")] = spec.localUsername;
 
   // DNS name: spored registers {dns-name}.{base36(account)}.spore.host only when
   // spawn:dns-name is present (agent.go gates on a non-empty config.DNSName). The
@@ -107,27 +207,40 @@ export function buildLaunchTags(spec: LaunchSpec, launchTimeMs: number): Record<
     tags[tag("session-timeout")] = formatDuration(spec.sessionTimeoutMs);
   }
   if (spec.hooks) Object.assign(tags, buildHookTags(spec.hooks));
-  if (spec.sweep) Object.assign(tags, buildSweepTags(spec.sweep));
   if (spec.jobArray) Object.assign(tags, buildJobArrayTags(spec.jobArray));
+  // Sweep last, so its parameter tags can be capped against what the rest of the
+  // launch actually consumed. The caller adds spawn:local-username too, so leave
+  // one slot for it.
+  if (spec.sweep) {
+    Object.assign(tags, buildSweepTags(spec.sweep, Object.keys(tags).length + 1));
+  }
   return tags;
 }
 
 /**
- * Build the spawn:sweep-* + spawn:param:* tags for one sweep member. Emitted
- * only for sweep launches; wire-identical to the Go tool (pkg/aws/tags.go),
- * including the 35-parameter cap that keeps a member under AWS's 50-tag limit.
- * Parameter keys are emitted in sorted order so the (capped) subset is stable.
+ * Build the spawn:sweep-* + spawn:param:* tags for one sweep member. Emitted only
+ * for sweep launches. Parameter keys are emitted in sorted order so the (capped)
+ * subset is deterministic rather than dependent on object insertion order.
+ *
+ * `tagsAlreadyUsed` is how many tags the rest of the launch has consumed, so the
+ * parameter cap can be a real budget against AWS_TAG_LIMIT. Called directly (not
+ * via buildLaunchTags) it defaults to just this block, which is the standalone
+ * behaviour tests expect.
  */
-export function buildSweepTags(m: SweepMembership): Record<string, string> {
+export function buildSweepTags(
+  m: SweepMembership,
+  tagsAlreadyUsed = 0,
+): Record<string, string> {
   const tags: Record<string, string> = {
     [tag("sweep-id")]: m.id,
     [tag("sweep-name")]: m.name,
     [tag("sweep-size")]: String(m.size),
     [tag("sweep-index")]: String(m.index),
   };
+  const budget = paramTagBudget(tagsAlreadyUsed + Object.keys(tags).length);
   let count = 0;
   for (const key of Object.keys(m.parameters).sort()) {
-    if (count >= MAX_PARAM_TAGS) break;
+    if (count >= budget) break;
     tags[PARAM_TAG_PREFIX + key] = m.parameters[key];
     count++;
   }
@@ -276,6 +389,7 @@ export function buildHookTags(h: LifecycleHooks): Record<string, string> {
   if (h.notifyPlatform) tags[tag("notify-platform")] = h.notifyPlatform;
   if (h.notifyCommand) tags[tag("notify-command")] = h.notifyCommand;
   if (h.activeProcesses) tags[tag("active-processes")] = h.activeProcesses;
+  if (h.activePorts) tags[tag("active-ports")] = h.activePorts;
   return tags;
 }
 
@@ -301,5 +415,6 @@ export function decodeHookTags(tags: Record<string, string>): LifecycleHooks | u
   if (tags[tag("notify-platform")]) h.notifyPlatform = tags[tag("notify-platform")];
   if (tags[tag("notify-command")]) h.notifyCommand = tags[tag("notify-command")];
   if (tags[tag("active-processes")]) h.activeProcesses = tags[tag("active-processes")];
+  if (tags[tag("active-ports")]) h.activePorts = tags[tag("active-ports")];
   return Object.keys(h).length > 0 ? h : undefined;
 }
