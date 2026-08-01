@@ -225,4 +225,15 @@
 .sweep-card .state { margin-left: auto; padding: 1px 8px; border-radius: 10px; font-size: 11px; background: rgba(88,166,255,.15); color: var(--accent); }
 .sweep-card.done .state { background: rgba(63,185,80,.15); color: var(--green); }
 .sweep-card .meta { color: var(--muted); font-size: 11px; margin-top: 4px; }
+/* A non-viable array is being torn down — it must not look like ordinary
+   progress, or a user reads disappearing members as the job finishing. */
+.sweep-card.nonviable { background: rgba(248,81,73,.06); border-color: rgba(248,81,73,.3); }
+/* Beats .done's green chip: a torn-down array reached its end, but "done" reads
+   as success and this is the opposite. Full opacity too — it still wants reading. */
+.sweep-card.nonviable, .sweep-card.nonviable.done { opacity: 1; }
+.sweep-card.nonviable .state, .sweep-card.nonviable.done .state {
+  background: rgba(248,81,73,.15); color: var(--red);
+}
+.sweep-card .meta.warn { color: var(--red); }
+.sweep-card.nonviable .meter.sweep > span { background: var(--red); }
 .meter.sweep > span { background: var(--accent); }

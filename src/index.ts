@@ -31,6 +31,7 @@ export type {
   TickResult,
   SweepMembership,
   JobArrayMembership,
+  MpiMembership,
   LifecycleHooks,
 } from "./core/types.js";
 
@@ -71,10 +72,12 @@ export {
   buildLaunchTags,
   buildSweepTags,
   buildJobArrayTags,
+  buildMpiTags,
   buildHookTags,
   decodeConfigTags,
   decodeSweepTags,
   decodeJobArrayTags,
+  decodeMpiTags,
   decodeHookTags,
   isManaged,
   tag,
@@ -120,7 +123,7 @@ export type {
 export { Sweep, buildSweep, generateSweepId } from "./core/sweep.js";
 export type { SweepOptions, BuiltSweep } from "./core/sweep.js";
 export { JobArray, buildJobArray, generateJobArrayId } from "./core/jobarray.js";
-export type { JobArrayOptions, BuiltJobArray } from "./core/jobarray.js";
+export type { JobArrayOptions, BuiltJobArray, MpiOptions } from "./core/jobarray.js";
 
 // Batch job queues (issue #5), built on the same fan-out engine.
 export {

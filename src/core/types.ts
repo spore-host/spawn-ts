@@ -89,6 +89,22 @@ export interface LaunchSpec {
   jobArray?: JobArrayMembership;
 
   /**
+   * MPI declaration (optional, #52). Written to spawn:mpi-enabled and
+   * spawn:mpi-processes-per-node so a spawn-ts-launched instance is
+   * *recognisable* as part of an MPI job by the Go CLI and the portal.
+   *
+   * Tag-emit only (tier C), and the boundary is deliberate rather than a
+   * shortfall: spawn-ts does not orchestrate the collective launch. Go's own
+   * pkg/mpicohort is a self-declared spike whose unresolved problem is that
+   * cohort's Placement is per-entity while a placement group and EFA fabric are
+   * collective constraints — one rank's placement is not independent of another's.
+   * The two knobs Go validates alongside these tags (EFA validation in the launch
+   * region, --auto-placement-group) are out of reach from a browser. See
+   * docs/execution-shapes.md.
+   */
+  mpi?: MpiMembership;
+
+  /**
    * Plugins to install at launch (optional). Carried into user-data as
    * /etc/spawn/plugins.json, which spored reads at startup — the one plugin
    * transport that needs no on-instance controller and is therefore reachable
@@ -171,6 +187,23 @@ export interface JobArrayMembership {
   size: number;
 }
 
+/**
+ * A launch's MPI declaration, serialized to the two tags Go writes at
+ * `cmd/launch_single.go:704-706`. Tag-emit only — see `LaunchSpec.mpi` for why
+ * spawn-ts stops at the tag rather than orchestrating the cohort.
+ */
+export interface MpiMembership {
+  /** Emits spawn:mpi-enabled=true. */
+  enabled: boolean;
+  /**
+   * Ranks per node → spawn:mpi-processes-per-node. Omitted from the tags when
+   * absent or <= 0, matching Go's `if mpiProcessesPerNode > 0` guard: a zero
+   * would otherwise be written as the string "0" and read back as a real
+   * declaration of zero processes per node.
+   */
+  processesPerNode?: number;
+}
+
 /** Lifecycle state as observed through the provider (mirrors EC2 states). */
 export type InstanceState =
   | "pending"
@@ -238,6 +271,14 @@ export interface ManagedInstance {
    * Undefined when the instance is not part of a job array.
    */
   jobArray?: JobArrayMembership;
+
+  /**
+   * MPI declaration decoded from the instance's spawn:mpi-* tags (#52).
+   * Undefined when the instance is not declared MPI — including for a Go-launched
+   * instance whose spored predates the tags, so absence is "not declared", not
+   * "not MPI".
+   */
+  mpi?: MpiMembership;
 
   /**
    * Daemon-enforced lifecycle hooks decoded from the instance's spawn:* tags

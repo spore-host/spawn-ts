@@ -429,15 +429,33 @@ export class Dashboard {
         ...(s.failed ? [`${s.failed} failed`] : []),
         ...(s.skipped ? [`${s.skipped} skipped`] : []),
       ];
+      // The viability line (#52) — shown only for an array that set a threshold,
+      // since 1 is the no-op default. When the array has gone non-viable, say so
+      // and say what follows: otherwise a user watching the card sees running
+      // members disappear with no stated reason.
+      const viability =
+        s.minViable > 1
+          ? s.nonViable
+            ? `<div class="meta warn">non-viable — only ${s.viableCandidates} of ${s.total} can come up, ` +
+              `below min-viable ${s.minViable}; survivors are being terminated</div>`
+            : `<div class="meta">min-viable ${s.minViable} of ${s.total}</div>`
+          : "";
+      // Which slices have no worker. "97 of 100 running" doesn't say which three
+      // are missing, and for an indexed array that is the actionable part.
+      const missing =
+        v.kind === "jobarray" && s.missingIndexes.length > 0 && s.missingIndexes.length < s.total
+          ? `<div class="meta">missing index${s.missingIndexes.length === 1 ? "" : "es"}: ${s.missingIndexes.join(", ")}</div>`
+          : "";
       const card = document.createElement("div");
-      card.className = `sweep-card ${v.kind}` + (v.done ? " done" : "");
+      card.className = `sweep-card ${v.kind}` + (v.done ? " done" : "") + (s.nonViable ? " nonviable" : "");
       card.innerHTML = `
         <div class="row1">
           <span class="name">${escapeHtml(v.name)}</span>
           <span class="id">${escapeHtml(v.kind === "jobarray" ? "job array" : v.kind)} · ${escapeHtml(id)}</span>
-          <span class="state">${v.done ? "done" : "running"}</span>
+          <span class="state">${s.nonViable ? "non-viable" : v.done ? "done" : "running"}</span>
         </div>
         <div class="meta">${s.total} ${v.kind === "queue" ? "jobs" : "members"} · ${parts.join(" · ")}</div>
+        ${viability}${missing}
         <div class="meter sweep"><span style="width:${pct}%"></span></div>`;
       this.sweepsEl.appendChild(card);
     }

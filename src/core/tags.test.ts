@@ -6,6 +6,8 @@ import {
   decodeSweepTags,
   buildJobArrayTags,
   decodeJobArrayTags,
+  buildMpiTags,
+  decodeMpiTags,
   buildHookTags,
   decodeHookTags,
   buildLaunchTags,
@@ -194,6 +196,87 @@ describe("job-array tags", () => {
     expect(buildLaunchTags(baseSpec(), 0)[tag("job-array-id")]).toBeUndefined();
     const withArr = buildLaunchTags({ ...baseSpec(), jobArray: m }, 0);
     expect(withArr[tag("job-array-id")]).toBe("arr-20260721-0000ab");
+  });
+});
+
+describe("mpi tags (#52)", () => {
+  it("emits the wire-compatible pair", () => {
+    const tags = buildMpiTags({ enabled: true, processesPerNode: 4 });
+    expect(tags).toEqual({
+      [tag("mpi-enabled")]: "true",
+      [tag("mpi-processes-per-node")]: "4",
+    });
+  });
+
+  it("omits processes-per-node unless > 0, mirroring Go's guard", () => {
+    // A zero would be written as "0" and read back as a real declaration of zero
+    // processes per node.
+    for (const ppn of [undefined, 0, -1, NaN, Infinity]) {
+      const tags = buildMpiTags({ enabled: true, processesPerNode: ppn as number });
+      expect(tags[tag("mpi-enabled")]).toBe("true");
+      expect(tags[tag("mpi-processes-per-node")]).toBeUndefined();
+    }
+  });
+
+  it("floors a fractional count rather than tagging a decimal", () => {
+    expect(buildMpiTags({ enabled: true, processesPerNode: 4.7 })[tag("mpi-processes-per-node")]).toBe(
+      "4",
+    );
+  });
+
+  it("emits nothing at all when disabled — never mpi-enabled=false", () => {
+    // Go reaches its tag block only inside `if mpiEnabled`, so it has no notion
+    // of writing a false; an explicit "false" would invite a reader to treat
+    // MPI-ness as a field that is always recorded.
+    expect(buildMpiTags({ enabled: false })).toEqual({});
+    expect(buildMpiTags({ enabled: false, processesPerNode: 4 })).toEqual({});
+  });
+
+  it("round-trips through decodeMpiTags", () => {
+    const m = { enabled: true as const, processesPerNode: 8 };
+    expect(decodeMpiTags(buildMpiTags(m))).toEqual(m);
+    expect(decodeMpiTags(buildMpiTags({ enabled: true }))).toEqual({ enabled: true });
+  });
+
+  it("decodes absence as undefined, not as {enabled: false}", () => {
+    // "Not an MPI launch" and "an MPI launch we know nothing else about" must stay
+    // distinguishable — a Go-launched instance whose spored predates the tags
+    // reads identically to a non-MPI one.
+    expect(decodeMpiTags({})).toBeUndefined();
+    expect(decodeMpiTags({ [tag("managed")]: "true" })).toBeUndefined();
+    expect(decodeMpiTags({ [tag("mpi-enabled")]: "false" })).toBeUndefined();
+    expect(decodeMpiTags({ [tag("mpi-enabled")]: "1" })).toBeUndefined();
+  });
+
+  it("keeps enabled=true when the rank density is unreadable", () => {
+    // The instance is still an MPI member; we just can't read how dense it is.
+    for (const raw of ["", "lots", "0", "-2"]) {
+      expect(
+        decodeMpiTags({ [tag("mpi-enabled")]: "true", [tag("mpi-processes-per-node")]: raw }),
+      ).toEqual({ enabled: true });
+    }
+  });
+
+  it("buildLaunchTags includes mpi tags only when declared", () => {
+    expect(buildLaunchTags(baseSpec(), 0)[tag("mpi-enabled")]).toBeUndefined();
+    const withMpi = buildLaunchTags({ ...baseSpec(), mpi: { enabled: true, processesPerNode: 2 } }, 0);
+    expect(withMpi[tag("mpi-enabled")]).toBe("true");
+    expect(withMpi[tag("mpi-processes-per-node")]).toBe("2");
+  });
+
+  it("counts against the sweep parameter budget rather than overflowing it", () => {
+    // The mpi block is emitted BEFORE the sweep block so its tags are inside the
+    // budget when the parameter cap is computed. Otherwise a maximal sweep member
+    // could be pushed past AWS's 50-tag limit after the cap was already decided.
+    const params: Record<string, string> = {};
+    for (let i = 0; i < 60; i++) params[`p${i}`] = String(i);
+    const sweep: SweepMembership = { id: "s", name: "s", index: 0, size: 1, parameters: params };
+    const withMpi = buildLaunchTags(
+      { ...baseSpec(sweep), mpi: { enabled: true, processesPerNode: 2 } },
+      0,
+    );
+    expect(Object.keys(withMpi).length).toBeLessThanOrEqual(AWS_TAG_LIMIT);
+    expect(withMpi[tag("mpi-enabled")]).toBe("true");
   });
 });
 

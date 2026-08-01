@@ -104,3 +104,246 @@ describe("JobArray + SpawnClient integration", () => {
     expect(ja.isComplete).toBe(true);
   });
 });
+
+/** Fail the launches whose input name is in `names`; pass the rest through. */
+function failLaunches(c: SpawnClient, names: string[]): void {
+  const real = c.launch.bind(c);
+  (c as unknown as { launch: SpawnClient["launch"] }).launch = ((input: LaunchInput) =>
+    names.includes(input.name)
+      ? Promise.reject(new Error(`no capacity for ${input.name}`))
+      : real(input)) as SpawnClient["launch"];
+}
+
+describe("JobArray --min-viable (#52)", () => {
+  it("terminates the survivors of a non-viable array", async () => {
+    const c = client();
+    // compute-1 and compute-2 can't come up, so at most 2 of 4 can — below the 3
+    // required. compute-0 launched, and is exactly the instance that would
+    // otherwise bill indefinitely for a job that cannot be done.
+    failLaunches(c, ["compute-1", "compute-2"]);
+    const ja = JobArray.create(c, { ...base, ttl: "1h" }, 4, { id: "arr", minViable: 3 });
+    await ja.pump(c.now());
+    await c.refresh();
+    expect(ja.summary.nonViable).toBe(true);
+    expect(c.list().filter((i) => i.state === "running")).toHaveLength(1);
+
+    const { terminated, failed } = await ja.enforceViability();
+    expect(terminated).toHaveLength(1);
+    expect(failed).toEqual([]);
+    expect(c.list().filter((i) => i.state === "running")).toHaveLength(0);
+  });
+
+  it("is a no-op on a viable array", async () => {
+    const c = client();
+    const ja = JobArray.create(c, { ...base, ttl: "1h" }, 3, { id: "arr", minViable: 2 });
+    await ja.pump(c.now());
+    await c.refresh();
+    expect(ja.summary.nonViable).toBe(false);
+    expect(await ja.enforceViability()).toEqual({ terminated: [], failed: [] });
+    expect(c.list().filter((i) => i.state === "running")).toHaveLength(3);
+  });
+
+  it("reports each survivor once, even before the fan-out has reconciled", async () => {
+    const c = client();
+    failLaunches(c, ["compute-1"]);
+    const ja = JobArray.create(c, { ...base, ttl: "1h" }, 2, { id: "arr", minViable: 2 });
+    await ja.pump(c.now());
+    await c.refresh();
+    expect((await ja.enforceViability()).terminated).toHaveLength(1);
+    // The member stays `running` in the fan-out's record until a pump reconciles
+    // it, so a second call within the same tick still sees it as a survivor. It
+    // must not be reported again: the caller turns each returned id into a
+    // user-visible terminate event, and two events for one instance reads as two
+    // instances wound down.
+    expect(await ja.enforceViability()).toEqual({ terminated: [], failed: [] });
+    await ja.pump(c.now());
+    expect(ja.summary.completed).toBe(1);
+    expect(await ja.enforceViability()).toEqual({ terminated: [], failed: [] });
+  });
+
+  it("reports a survivor once even when two drains overlap", async () => {
+    const c = client();
+    failLaunches(c, ["compute-1"]);
+    const ja = JobArray.create(c, { ...base, ttl: "1h" }, 2, { id: "arr", minViable: 2 });
+    await ja.pump(c.now());
+    await c.refresh();
+    // Two pumps genuinely overlap on the monitor loop — startJobArray kicks one
+    // without awaiting it and the first tick starts another — so the claim has to
+    // be taken before the terminate resolves, not after.
+    const [a, b] = await Promise.all([ja.enforceViability(), ja.enforceViability()]);
+    expect([...a.terminated, ...b.terminated]).toHaveLength(1);
+    expect([...a.failed, ...b.failed]).toEqual([]);
+  });
+
+  it("retries a survivor whose termination failed, and reports it once it lands", async () => {
+    const c = client();
+    failLaunches(c, ["compute-1", "compute-2"]);
+    const ja = JobArray.create(c, { ...base, ttl: "1h" }, 4, { id: "arr", minViable: 3 });
+    await ja.pump(c.now());
+    await c.refresh();
+    const real = c.terminate.bind(c);
+    (c as unknown as { terminate: SpawnClient["terminate"] }).terminate = (() =>
+      Promise.reject(new Error("RequestLimitExceeded"))) as SpawnClient["terminate"];
+    expect((await ja.enforceViability()).failed).toHaveLength(1);
+    // Only successes are remembered — an instance that is still billing has to
+    // stay retryable, or a transient throttle would strand it forever.
+    (c as unknown as { terminate: SpawnClient["terminate"] }).terminate = real;
+    expect((await ja.enforceViability()).terminated).toHaveLength(1);
+    expect(c.list().filter((i) => i.state === "running")).toHaveLength(0);
+  });
+
+  it("reports an un-terminable survivor instead of swallowing it", async () => {
+    const c = client();
+    failLaunches(c, ["compute-1", "compute-2"]);
+    const ja = JobArray.create(c, { ...base, ttl: "1h" }, 4, { id: "arr", minViable: 3 });
+    await ja.pump(c.now());
+    await c.refresh();
+    (c as unknown as { terminate: SpawnClient["terminate"] }).terminate = (() =>
+      Promise.reject(new Error("AccessDenied"))) as SpawnClient["terminate"];
+
+    const { terminated, failed } = await ja.enforceViability();
+    // A caller that believes the array was wound down when it wasn't is exactly
+    // the wrong outcome to hide: this is the case where money keeps being spent.
+    expect(terminated).toEqual([]);
+    expect(failed).toHaveLength(1);
+  });
+
+  it("keeps terminating after one termination throws", async () => {
+    const c = client();
+    const ja = JobArray.create(c, { ...base, ttl: "1h" }, 3, { id: "arr", minViable: 3 });
+    await ja.pump(c.now());
+    await c.refresh();
+    // Force non-viability with all three up, so there are 3 survivors to drain.
+    const real = c.terminate.bind(c);
+    const ids = ja.fanOut.survivorIds;
+    (c as unknown as { terminate: SpawnClient["terminate"] }).terminate = ((
+      id: string,
+      reason?: string,
+    ) => (id === ids[0] ? Promise.reject(new Error("boom")) : real(id, reason))) as SpawnClient["terminate"];
+    (ja.fanOut as unknown as { minViable: number }).minViable = 4;
+
+    const { terminated, failed } = await ja.enforceViability();
+    // The goal is to stop the billing, so one unreachable instance must not
+    // leave the other two running.
+    expect(failed).toEqual([ids[0]]);
+    expect(terminated).toHaveLength(2);
+  });
+
+  it("winds a non-viable array down automatically on the monitor loop", async () => {
+    const c = client();
+    failLaunches(c, ["compute-1", "compute-2"]);
+    const actions: string[] = [];
+    c.on((e) => {
+      if (e.type === "action" && e.rule === "min-viable") actions.push(e.instance);
+    });
+    // startJobArray registers the array, so the drain needs no caller action —
+    // forgetting it would mean instances billing for an undoable job.
+    //
+    // Two ticks, because the gate can only be evaluated after the pump that
+    // records the failures: tick 1 lands them and flips nonViable, tick 2 drains
+    // the survivor. The delay is one monitor interval, not unbounded.
+    c.startJobArray({ ...base, ttl: "1h" }, 4, { id: "arr", minViable: 3 });
+    await c.step(1000);
+    await c.step(1000);
+    // Exactly one event per drained instance. A tick can reach the drain twice
+    // (launching refreshes the client, which re-fires the pump), and before
+    // `drained` this emitted the same terminate twice — which reads to a
+    // dashboard as two instances wound down.
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatch(/^i-/);
+    expect(new Set(actions).size).toBe(actions.length);
+    expect(c.list().filter((i) => i.state === "running")).toHaveLength(0);
+  });
+
+  it("warns on the monitor loop when a survivor could not be terminated", async () => {
+    const c = client();
+    failLaunches(c, ["compute-1", "compute-2"]);
+    const warnings: string[] = [];
+    c.on((e) => {
+      if (e.type === "warning" && e.rule === "min-viable") warnings.push(e.message);
+    });
+    // Stubbed before the array starts, because the drain lands on the first tick
+    // — the same tick the failures do.
+    (c as unknown as { terminate: SpawnClient["terminate"] }).terminate = (() =>
+      Promise.reject(new Error("AccessDenied"))) as SpawnClient["terminate"];
+    c.startJobArray({ ...base, ttl: "1h" }, 4, { id: "arr", minViable: 3 });
+    await c.step(1000);
+    // A failed drain is precisely the case where money keeps being spent, so it
+    // is the last thing that should be quiet.
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("may still be billing");
+    expect(c.list().filter((i) => i.state === "running")).toHaveLength(1);
+  });
+
+  it("does not drain a sweep or queue — --min-viable is a job-array concept", async () => {
+    const c = client();
+    const seen: string[] = [];
+    c.on((e) => {
+      if (e.type === "action" && e.rule === "min-viable") seen.push(e.instance);
+    });
+    c.startSweep({ grid: { alpha: [1, 2] } } as never, { name: "s", nowMs: T0 });
+    await c.step(1000);
+    expect(seen).toEqual([]);
+  });
+});
+
+describe("job array MPI tags (#52)", () => {
+  it("stamps every member when --mpi is set", () => {
+    const built = buildJobArray(base, 3, { id: "arr", mpi: { enabled: true, processesPerNode: 4 } });
+    // Set on every member, as Go sets it on the shared baseConfig before the
+    // array fans out — so a reader can identify any single instance as part of an
+    // MPI job without first resolving its array.
+    for (const m of built.members) {
+      expect(m.input.mpi).toEqual({ enabled: true, processesPerNode: 4 });
+    }
+  });
+
+  it("omits processesPerNode when not given", () => {
+    const built = buildJobArray(base, 1, { id: "arr", mpi: { enabled: true } });
+    expect(built.members[0].input.mpi).toEqual({ enabled: true });
+  });
+
+  it("emits nothing for a disabled declaration", () => {
+    const built = buildJobArray(base, 1, { id: "arr", mpi: { enabled: false } });
+    expect(built.members[0].input.mpi).toBeUndefined();
+  });
+
+  it("preserves the base's own declaration when no option is given", () => {
+    const built = buildJobArray({ ...base, mpi: { enabled: true, processesPerNode: 2 } }, 1, {
+      id: "arr",
+    });
+    expect(built.members[0].input.mpi).toEqual({ enabled: true, processesPerNode: 2 });
+  });
+
+  it("an explicit --mpi wins over the base", () => {
+    const built = buildJobArray({ ...base, mpi: { enabled: true, processesPerNode: 2 } }, 1, {
+      id: "arr",
+      mpi: { enabled: true, processesPerNode: 8 },
+    });
+    expect(built.members[0].input.mpi).toEqual({ enabled: true, processesPerNode: 8 });
+  });
+
+  it("reaches the launched instance's tags and decodes back", async () => {
+    const c = client();
+    c.startJobArray(base, 2, { id: "arr", mpi: { enabled: true, processesPerNode: 4 } });
+    await c.step(1000);
+    const list = await c.refresh();
+    expect(list).toHaveLength(2);
+    for (const inst of list) {
+      expect(inst.tags[tag("mpi-enabled")]).toBe("true");
+      expect(inst.tags[tag("mpi-processes-per-node")]).toBe("4");
+      expect(inst.mpi).toEqual({ enabled: true, processesPerNode: 4 });
+    }
+  });
+
+  it("leaves a non-MPI array's instances with no mpi tags at all", async () => {
+    const c = client();
+    c.startJobArray(base, 1, { id: "arr" });
+    await c.step(1000);
+    const [inst] = await c.refresh();
+    // Absence, not "false": a missing tag means "not declared", and a literal
+    // false would invite a reader to treat MPI-ness as always recorded.
+    expect(inst.tags[tag("mpi-enabled")]).toBeUndefined();
+    expect(inst.mpi).toBeUndefined();
+  });
+});

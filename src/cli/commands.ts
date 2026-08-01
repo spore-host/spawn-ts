@@ -79,6 +79,10 @@ const BOOLEAN_FLAGS = new Set([
   // refused the launch rather than allowing an unbounded one — but the flag was
   // silently inert in that word order.
   "no-timeout",
+  // `array --mpi NAME 10` — boolean, or the array name is eaten as its value
+  // (same shape as the --no-timeout bug above). Note --mpi-processes-per-node
+  // deliberately stays a value flag; only the bare toggle is registered here.
+  "mpi",
 ]);
 
 /** Entry point: parse a raw line and dispatch. */
@@ -166,6 +170,13 @@ function help(): CmdResult {
     "queue: <config> is an inline JSON queue (jobs[] with depends_on/retry/timeout),",
     "       one instance per job launched in dependency order.",
     "       flags: --max-concurrent --launch-delay",
+    "",
+    "array: flags: --count N --max-concurrent --launch-delay + the launch flags",
+    "       --min-viable N   terminate the survivors if fewer than N members can",
+    "                        come up (a 2-of-100 array is not a 2% success)",
+    "       --mpi [--mpi-processes-per-node N]  stamp the spawn:mpi-* tags so the",
+    "                        array is recognisable as MPI — tags only, no collective",
+    "                        launch (see docs/execution-shapes.md)",
     "",
     "durations use Go form: 4h, 90m, 1h30m, 45s",
   );
@@ -367,6 +378,19 @@ async function status(p: ParsedArgs, ctx: ShellCtx): Promise<CmdResult> {
   if (i.jobArray) {
     lines.push(
       `  job array:    ${i.jobArray.name} [${i.jobArray.index + 1}/${i.jobArray.size}] ${i.jobArray.id}`,
+    );
+  }
+  // MPI is shown only when declared. Absence is not printed as "mpi: no",
+  // because a missing spawn:mpi-enabled means "not declared" — a Go-launched
+  // instance whose spored predates the tag reads identically to a non-MPI one,
+  // and a line asserting "no" would turn that unknown into a false negative.
+  if (i.mpi) {
+    lines.push(
+      `  mpi:          enabled` +
+        (i.mpi.processesPerNode !== undefined
+          ? `, ${i.mpi.processesPerNode} processes per node`
+          : "") +
+        " (declared by tag; orchestration is the launcher's)",
     );
   }
   if (i.hooks) {
@@ -745,24 +769,106 @@ async function array(p: ParsedArgs, ctx: ShellCtx): Promise<CmdResult> {
     return raw ? parseDuration(raw) ?? 0 : 0;
   })();
 
+  // --min-viable is rejected here when unusable, rather than passed on to be
+  // clamped. FanOut's clamp implements Go's out-of-range behaviour (200 on a
+  // 100-member array means "all of them"), but garbage is a different case:
+  // `Number("hlaf")` is NaN, which lands on the default of 1 and silently
+  // disables the cost guard the user explicitly asked for. A typo'd threshold
+  // must fail loudly, not become a no-op.
+  const mv = numFlag(p, "min-viable");
+  if (mv.error) return err(`array: ${mv.error}`);
+  const minViable = mv.value;
+
+  const ppnFlag = numFlag(p, "mpi-processes-per-node");
+  if (ppnFlag.error) return err(`array: ${ppnFlag.error}`);
+  const ppn = ppnFlag.value;
+  if (ppn !== undefined && ppn <= 0) {
+    return err(`array: --mpi-processes-per-node must be a positive number, got "${ppn}"`);
+  }
+  // --mpi-processes-per-node without --mpi is refused rather than quietly
+  // dropped: buildMpiTags emits nothing when disabled, so the flag would have no
+  // effect at all, and a user who set rank density plainly believes they asked
+  // for an MPI job.
+  const mpiEnabled = flagBool(p.flags, "mpi");
+  if (ppn !== undefined && !mpiEnabled) {
+    return err("array: --mpi-processes-per-node needs --mpi");
+  }
+
   let ja;
   try {
-    ja = ctx.client.startJobArray(base, count, { name, maxConcurrent, launchDelayMs: delayMs });
+    ja = ctx.client.startJobArray(base, count, {
+      name,
+      maxConcurrent,
+      launchDelayMs: delayMs,
+      minViable,
+      ...(mpiEnabled
+        ? { mpi: { enabled: true, ...(ppn !== undefined ? { processesPerNode: ppn } : {}) } }
+        : {}),
+    });
   } catch (e) {
     return err(`array: ${(e as Error).message}`);
   }
 
   const s = ja.summary;
-  return ok(
+  const lines = [
     `array ${ja.id} — ${ja.size} member${ja.size === 1 ? "" : "s"}`,
     `  ${maxConcurrent > 0 ? `max ${maxConcurrent} at a time` : "all at once"}` +
       `${delayMs > 0 ? `, ${formatDuration(delayMs)} between launches` : ""}`,
+  ];
+  // Report the *effective* threshold from the summary, not the flag: it may have
+  // been clamped (out of range) or truncated (fractional), and echoing the raw
+  // request would hide that the enforced number differs from the asked-for one.
+  // Shown only when the threshold does something — 1 is the default no-op.
+  const adjusted = minViable !== undefined && s.minViable !== minViable;
+  if (s.minViable > 1 || adjusted) {
+    lines.push(
+      `  min-viable ${s.minViable} of ${ja.size}` +
+        (adjusted ? ` (adjusted from ${minViable})` : "") +
+        " — survivors are terminated if the array can't reach it",
+    );
+  }
+  if (mpiEnabled) {
+    lines.push(
+      `  mpi tags on every member${ppn !== undefined ? `, ${ppn} processes per node` : ""}` +
+        " — tags only, no collective orchestration (see docs/execution-shapes.md)",
+    );
+  }
+  lines.push(
     `  launched ${s.running}, pending ${s.pending}${s.failed ? `, failed ${s.failed}` : ""}`,
     "  watch progress with 'list' (spawn:job-array-* tags mark membership)",
   );
+  return ok(...lines);
 }
 
 // ---- helpers ----
+
+/**
+ * Read an optional numeric flag: `undefined` when absent, a number when usable,
+ * an error message when not.
+ *
+ * Distinct from `Number(flagStr(...)) || 0` (the pattern the older flags use)
+ * because a *threshold* must not silently become its default. Two cases matter:
+ *
+ * - Non-numeric text (`--min-viable hlaf`) → `NaN`, which would clamp to the
+ *   no-op 1 and quietly disable the cost guard the user asked for.
+ * - A flag with no value. parseArgs treats `--min-viable -2` as two flags (a
+ *   leading `-` starts a new flag, so the value is never attached) and records
+ *   `min-viable: true`. Reading that as "absent" would accept a plainly
+ *   malformed threshold as a default; it's reported instead.
+ */
+function numFlag(
+  p: ParsedArgs,
+  name: string,
+): { value?: number; error?: string } {
+  const v = p.flags[name];
+  if (v === undefined) return {};
+  if (typeof v !== "string" || v.trim() === "") {
+    return { error: `--${name} needs a number` };
+  }
+  const n = Number(v);
+  if (!Number.isFinite(n)) return { error: `--${name} must be a number, got "${v}"` };
+  return { value: n };
+}
 
 function durFlag(p: ParsedArgs, name: string): { ms: number; error?: string } {
   const raw = flagStr(p.flags, name);

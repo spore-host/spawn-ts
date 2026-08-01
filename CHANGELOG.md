@@ -24,6 +24,68 @@ version strings agree.
   `npm ci` resolves it from the registry like any other package.
 
 ### Added
+- **`--min-viable` for job arrays** (#52) — a threshold on the *set*, which is a
+  different thing from `onFailure`. `onFailure` decides whether to keep
+  *launching*; `stop` leaves the members that already came up **running**, so a
+  100-member array that reaches 2-of-100 is two instances billing indefinitely for
+  a job that cannot be done. `--min-viable N` states the count below which the
+  whole array is pointless, and spawn-ts then does what Go's `cohort.Reconciler`
+  does for the stated reason *"Drain surviving instances so nothing idles and
+  bills"*:
+  - **Fast-fail** — the moment the threshold becomes unreachable, the unstarted
+    members are skipped rather than launched. Without this, an array with
+    `--min-viable 50` that lost 51 members would still launch the other 49.
+  - **Drain** — `JobArray.enforceViability()` terminates the survivors, and
+    `SpawnClient.pumpFanOuts` calls it on every tick, so the wind-down needs no
+    caller action. It emits an `action`/`terminate` event with `rule: "min-viable"`;
+    a survivor that could *not* be terminated emits a **warning** instead of being
+    swallowed, because that is exactly the case where money keeps being spent.
+    Each survivor is reported exactly once, including when two pumps overlap
+    (`startJobArray` kicks one without awaiting it) — one instance, one event, not
+    two that read as two instances wound down. A *failed* terminate stays
+    retryable.
+  - The gate is a **monotone latch** (skipping raises the lost count, which keeps
+    it non-viable), and `nonViable: false` means "not yet ruled out" — never
+    "confirmed viable". `completed` counts toward viability, or a fully successful
+    array would turn non-viable as it drained.
+  - The value is **clamped** to `[1, size]` as Go clamps it, since `--min-viable
+    200` on a 100-member array is an obviously-intended "all of them". A
+    *malformed* value is rejected by the CLI rather than clamped: `Number("hlaf")`
+    would land on the no-op `1` and silently disable the guard.
+  - `FanOutSummary` gains `minViable`/`viableCandidates`/`nonViable`/
+    `missingIndexes`. The last is the sparse-index view Go's `missingIndexes`
+    provides: "97 of 100 running" hides *which* three slices have no worker, and a
+    terminated member's index counts as missing too.
+  - The **dashboard card** states the threshold, and when the array goes
+    non-viable it says so in red with what follows ("survivors are being
+    terminated") and its state chip reads **non-viable** rather than the green
+    `done`. Without that a user watches running members disappear with no reason
+    given, and an array that was torn down looks like one that succeeded.
+    `minviable.harness.html` reaches that state — it needs capacity failures, which
+    no control in the UI can produce, so it is the state most likely to be left
+    broken.
+  - Lives in `FanOut` (report) + `JobArray` (enforce) because `FanOut` owns no
+    lifecycle authority — every other state change it makes is a launch, and a
+    shared engine that silently terminated instances would surprise the sweep and
+    queue callers.
+- **MPI declaration tags for arrays** (#52) — `--mpi` and
+  `--mpi-processes-per-node N` stamp `spawn:mpi-enabled` /
+  `spawn:mpi-processes-per-node` on every member, decoded onto
+  `ManagedInstance.mpi` and shown in `spawn status`, so a spawn-ts-launched array
+  is *recognisable* as an MPI job by the Go CLI and the portal.
+  This is the tag half **only**, and that boundary is deliberate rather than
+  unfinished: Go's `pkg/mpicohort` is a self-declared spike whose header states the
+  unresolved problem — cohort's `Placement` is per-entity while a placement group
+  and an EFA fabric are *collective* constraints. Porting a spike would commit
+  spawn-ts to a shape Go is still deciding. EFA validation must run in the launch
+  region (blocked on truffle-ts#33) and `--auto-placement-group` creates a real AWS
+  resource. Absence stays absence: no `mpi-enabled=false` is ever written and
+  `status` never prints "mpi: no".
+- **`docs/execution-shapes.md`** — the three shapes (single node / job array /
+  MPI), what `--min-viable` guarantees, sparse indexes, and an explicit out-of-reach
+  table for `logs`/`collect`/`retry --failed` quoting Go's own reason (a local
+  launch record under `~/.config/spore/arrays/` that "must run from the machine
+  that launched the array").
 - **Browser-native Globus Transfer** (#53, new `./transfer` subpath) — data
   movement in and out of launched instances with no local machine and nothing
   installed. Globus **Transfer** is not Globus Connect **Personal**: it moves data

@@ -544,6 +544,120 @@ describe("CLI array (job arrays)", () => {
   });
 });
 
+describe("CLI array --min-viable (#52)", () => {
+  it("reports the threshold it will enforce", async () => {
+    const { ctx: c } = clientCtx();
+    const r = await runCommand("array j --count 10 --min-viable 6 --ttl 1h", c);
+    expect(r.error).toBeFalsy();
+    expect(r.lines.join("\n")).toContain("min-viable 6 of 10");
+  });
+
+  it("says so when it clamped, rather than echoing the request", async () => {
+    const { ctx: c } = clientCtx();
+    const r = await runCommand("array j --count 3 --min-viable 99 --ttl 1h", c);
+    // The effective threshold is what will be enforced; echoing 99 back would
+    // hide that it was corrected.
+    expect(r.lines.join("\n")).toContain("min-viable 3 of 3");
+    expect(r.lines.join("\n")).toContain("adjusted from 99");
+  });
+
+  it("reports a downward adjustment too, even though it lands on the no-op", async () => {
+    const { ctx: c } = clientCtx();
+    // 0 clamps to 1, which happens to be the default — but the user asked for
+    // something specific and got something else, so silence would be wrong.
+    const r = await runCommand("array j --count 3 --min-viable 0 --ttl 1h", c);
+    expect(r.error).toBeFalsy();
+    expect(r.lines.join("\n")).toContain("min-viable 1 of 3 (adjusted from 0)");
+  });
+
+  it("stays quiet about a threshold of 1 (the default no-op)", async () => {
+    const { ctx: c } = clientCtx();
+    const r = await runCommand("array j --count 3 --ttl 1h", c);
+    expect(r.lines.join("\n")).not.toContain("min-viable");
+    // An explicit --min-viable 1 asked for exactly what it got, so no note.
+    const explicit = await runCommand("array k --count 3 --min-viable 1 --ttl 1h", c);
+    expect(explicit.lines.join("\n")).not.toContain("min-viable");
+  });
+
+  it("rejects a non-numeric threshold instead of silently disabling the guard", async () => {
+    const { ctx: c } = clientCtx();
+    // Number("hlaf") is NaN, which would land on the default 1 — a silently
+    // disabled cost guard the user explicitly asked for.
+    const r = await runCommand("array j --count 3 --min-viable hlaf --ttl 1h", c);
+    expect(r.error).toBe(true);
+    expect(r.lines.join("\n")).toContain("must be a number");
+  });
+
+  it("rejects --min-viable with no value at all", async () => {
+    const { ctx: c } = clientCtx();
+    // A lone flag parses as boolean true. Reading that as "absent" would accept a
+    // plainly malformed threshold as the no-op default.
+    const r = await runCommand("array j --count 3 --min-viable --ttl 1h", c);
+    expect(r.error).toBe(true);
+    expect(r.lines.join("\n")).toContain("needs a number");
+  });
+});
+
+describe("CLI array --mpi (#52)", () => {
+  it("stamps the mpi tags and says they are tags only", async () => {
+    const { ctx: c, client } = clientCtx();
+    const r = await runCommand("array solver --count 2 --mpi --mpi-processes-per-node 4 --ttl 1h", c);
+    expect(r.error).toBeFalsy();
+    expect(r.lines.join("\n")).toContain("4 processes per node");
+    expect(r.lines.join("\n")).toContain("no collective orchestration");
+    await client.step(1000);
+    const list = await client.refresh();
+    expect(list).toHaveLength(2);
+    expect(list.every((i) => i.mpi?.processesPerNode === 4)).toBe(true);
+  });
+
+  it("does not eat the array name as the flag's value", async () => {
+    const { ctx: c } = clientCtx();
+    // Unregistered as a boolean, `--mpi solver` would consume "solver" as the
+    // flag's VALUE and the name would vanish (the --no-timeout bug's shape).
+    const r = await runCommand("array --mpi solver --count 1 --ttl 1h", c);
+    expect(r.error).toBeFalsy();
+    expect(r.lines.join("\n")).toContain("solver-");
+  });
+
+  it("refuses a rank density without --mpi", async () => {
+    const { ctx: c } = clientCtx();
+    // buildMpiTags emits nothing when disabled, so the flag would have no effect
+    // at all — and a user who set rank density plainly wants an MPI job.
+    const r = await runCommand("array j --count 2 --mpi-processes-per-node 4 --ttl 1h", c);
+    expect(r.error).toBe(true);
+    expect(r.lines.join("\n")).toContain("needs --mpi");
+  });
+
+  it("rejects a non-positive or unparseable rank density", async () => {
+    const { ctx: c } = clientCtx();
+    for (const v of ["0", "abc"]) {
+      const r = await runCommand(`array j --count 2 --mpi --mpi-processes-per-node ${v} --ttl 1h`, c);
+      expect(r.error).toBe(true);
+    }
+    // A negative never reaches the value check: parseArgs treats a leading "-" as
+    // the start of a new flag, so the flag arrives with no value. Reported as
+    // malformed rather than read as absent, which would accept it as a default.
+    const neg = await runCommand("array j --count 2 --mpi --mpi-processes-per-node -2 --ttl 1h", c);
+    expect(neg.error).toBe(true);
+    expect(neg.lines.join("\n")).toContain("needs a number");
+  });
+
+  it("status shows mpi only when declared", async () => {
+    const { ctx: c, client } = clientCtx();
+    await runCommand("array solver --count 1 --mpi --mpi-processes-per-node 2 --ttl 1h", c);
+    await runCommand("array plain --count 1 --ttl 1h", c);
+    await client.step(1000);
+    const withMpi = await runCommand("status solver-0", c);
+    expect(withMpi.lines.join("\n")).toContain("mpi:");
+    expect(withMpi.lines.join("\n")).toContain("2 processes per node");
+    // Absence is not printed as "mpi: no" — a missing tag means "not declared",
+    // and asserting a negative would turn that unknown into a false one.
+    const without = await runCommand("status plain-0", c);
+    expect(without.lines.join("\n")).not.toContain("mpi:");
+  });
+});
+
 describe("CLI on-idle + lifecycle hooks", () => {
   it("--on-idle hibernate sets the hibernate-on-idle tag", async () => {
     const c = ctx();
