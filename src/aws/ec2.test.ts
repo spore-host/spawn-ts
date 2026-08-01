@@ -39,12 +39,22 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+/** The identity a caller would hand in (federated path) — no STS call needed. */
+const testIdentity = {
+  accountId: "123456789012",
+  userArn: "arn:aws:sts::123456789012:assumed-role/spore-portal/alice",
+};
+
 function provider(overrides: Partial<ConstructorParameters<typeof EC2Provider>[0]> = {}) {
   return new EC2Provider({
     region: "us-east-1",
     accessKeyId: "AKIA_TEST",
     secretAccessKey: "secret",
     endpoint: "http://localhost:4566",
+    // Supplied so these tests exercise the launch, not GetCallerIdentity. The
+    // refuse-to-launch path when it's absent and STS fails is covered separately
+    // below — that behaviour is deliberate, not incidental.
+    identity: testIdentity,
     ...overrides,
   });
 }
@@ -116,6 +126,18 @@ describe("EC2Provider.launch", () => {
     expect(byKey[tag("managed")]).toBe("true");
     expect(byKey[tag("ttl")]).toBe("4h");
 
+    // Base identity. spawn:iam-user is the load-bearing one: the portal filters
+    // its instance list on it, and terminate 403s without a match — so an
+    // instance launched without it is visible in `spawn list` yet unterminatable
+    // from the portal.
+    expect(byKey[tag("iam-user")]).toBe(testIdentity.userArn);
+    expect(byKey[tag("account-id")]).toBe("123456789012");
+    expect(byKey[tag("account-base36")]).toBe("1kpqzg2c"); // base36(123456789012)
+    expect(byKey[tag("created-by")]).toBe("spawn-ts"); // not "spawn" — provenance
+    expect(byKey[tag("root")]).toBe("true");
+    expect(byKey[tag("os")]).toBe("linux");
+    expect(byKey[tag("local-username")]).toBe("ec2-user");
+
     // Returned instance trusts the tags we sent, decoding TTL deadline from them.
     expect(inst.instanceId).toBe("i-abc");
     expect(inst.name).toBe("job");
@@ -149,6 +171,62 @@ describe("EC2Provider.launch", () => {
   it("throws when RunInstances returns no instance", async () => {
     handler = () => ({ Instances: [] });
     await expect(provider().launch(baseSpec, T0)).rejects.toThrow(/no instance/);
+  });
+
+  it("REFUSES to launch when the identity can't be resolved", async () => {
+    // The tempting alternative — omit spawn:iam-user and launch anyway — produces
+    // an instance that is invisible in the portal's list, 403s on terminate there
+    // (lambda/dashboard-api/instances.go:285), and bills the whole time. An
+    // orphaned billable instance is strictly worse than a failed launch, so the
+    // error must be loud rather than a quietly missing tag.
+    const { STSClient } = await import("@aws-sdk/client-sts");
+    vi.spyOn(STSClient.prototype, "send").mockRejectedValue(new Error("access denied"));
+    const p = provider({ identity: undefined });
+    await expect(p.launch(baseSpec, T0)).rejects.toThrow(/cannot determine the launching identity/);
+    // And nothing was launched — it fails BEFORE RunInstances, not after.
+    expect(sent.filter((c) => c instanceof RunInstancesCommand)).toHaveLength(0);
+  });
+
+  it("REFUSES to launch when GetCallerIdentity returns no Arn", async () => {
+    // A 200 with empty fields is the sneakier case: it isn't an error, so a
+    // `try/catch` alone would sail past it and stamp `undefined`.
+    const { STSClient } = await import("@aws-sdk/client-sts");
+    vi.spyOn(STSClient.prototype, "send").mockResolvedValue({ Account: "1234" } as never);
+    const p = provider({ identity: undefined });
+    await expect(p.launch(baseSpec, T0)).rejects.toThrow(/no Account\/Arn/);
+    expect(sent.filter((c) => c instanceof RunInstancesCommand)).toHaveLength(0);
+  });
+
+  it("resolves the identity via STS once and reuses it across launches", async () => {
+    handler = () => ({ Instances: [{ InstanceId: "i-1", State: { Name: "pending" } }] });
+    const { STSClient } = await import("@aws-sdk/client-sts");
+    const stsSend = vi
+      .spyOn(STSClient.prototype, "send")
+      .mockResolvedValue({ Account: "210987654321", Arn: "arn:aws:iam::210987654321:user/bob" } as never);
+
+    const p = provider({ identity: undefined });
+    await p.launch(baseSpec, T0);
+    await p.launch(baseSpec, T0);
+
+    // Credentials can't change under a provider, so one call serves both launches.
+    expect(stsSend).toHaveBeenCalledTimes(1);
+    const tags = lastOf(RunInstancesCommand).input.TagSpecifications![0].Tags!;
+    const byKey = Object.fromEntries(tags.map((t: any) => [t.Key, t.Value]));
+    expect(byKey[tag("iam-user")]).toBe("arn:aws:iam::210987654321:user/bob");
+  });
+
+  it("records the local username actually created on the box", async () => {
+    // These must agree or `spawn connect` SSHes to a user that doesn't exist:
+    // Go prefers spawn:local-username and falls back to ec2-user
+    // (cmd/connect.go:135), so a custom username with no tag sends it to ec2-user.
+    handler = () => ({ Instances: [{ InstanceId: "i-1", State: { Name: "pending" } }] });
+    await provider({ username: "researcher" }).launch(baseSpec, T0);
+    const tags = lastOf(RunInstancesCommand).input.TagSpecifications![0].Tags!;
+    const byKey = Object.fromEntries(tags.map((t: any) => [t.Key, t.Value]));
+    expect(byKey[tag("local-username")]).toBe("researcher");
+    // The same value reached user-data, not just the tag.
+    const userData = Buffer.from(lastOf(RunInstancesCommand).input.UserData!, "base64").toString();
+    expect(userData).toContain("researcher");
   });
 
   it("attaches the IAM instance profile (name or ARN) when configured", async () => {

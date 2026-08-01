@@ -1,4 +1,6 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
   buildSweepTags,
   decodeSweepTags,
@@ -10,6 +12,9 @@ import {
   slugifyDnsLabel,
   tag,
   PARAM_TAG_PREFIX,
+  AWS_TAG_LIMIT,
+  LIB_VERSION,
+  buildIdentityTags,
 } from "./tags.js";
 import type { LaunchSpec, SweepMembership, JobArrayMembership, LifecycleHooks } from "./types.js";
 
@@ -99,12 +104,64 @@ describe("sweep tags", () => {
     expect(decoded).toMatchObject({ id: "s", index: 0, size: 0, parameters: {} });
   });
 
-  it("caps parameter tags at 35 to stay under the AWS tag limit", () => {
+  it("caps parameter tags against the remaining AWS tag budget", () => {
+    // This asserted a flat 35 and therefore asserted the bug. Go's comment claims
+    // 35 keeps a member "under AWS 50-tag limit" (pkg/aws/tags.go:247), but the
+    // sweep block is 4 tags and a configured launch carries ~30 more, so a maximal
+    // sweep member reached 73 tags and RunInstances rejected the launch outright.
+    // The cap is now a budget, so the assertion is the invariant, not a number.
     const parameters: Record<string, string> = {};
-    for (let i = 0; i < 50; i++) parameters[`p${String(i).padStart(2, "0")}`] = String(i);
+    for (let i = 0; i < 60; i++) parameters[`p${String(i).padStart(2, "0")}`] = String(i);
     const tags = buildSweepTags({ ...membership, parameters });
-    const paramTags = Object.keys(tags).filter((k) => k.startsWith(PARAM_TAG_PREFIX));
-    expect(paramTags).toHaveLength(35);
+    expect(Object.keys(tags).length).toBeLessThanOrEqual(AWS_TAG_LIMIT);
+    // Standalone, the 4 sweep tags leave 46 slots for parameters.
+    expect(Object.keys(tags).filter((k) => k.startsWith(PARAM_TAG_PREFIX))).toHaveLength(46);
+    // Sorted order, so the surviving subset is deterministic rather than
+    // dependent on object insertion order.
+    expect(tags[`${PARAM_TAG_PREFIX}p00`]).toBe("0");
+    expect(tags[`${PARAM_TAG_PREFIX}p59`]).toBeUndefined();
+  });
+
+  it("a MAXIMAL sweep launch stays within the AWS tag limit", () => {
+    // The end-to-end version of the above, and the one that would actually have
+    // caught the bug: every optional block populated at once. A launch over 50
+    // tags doesn't degrade, it fails.
+    const parameters: Record<string, string> = {};
+    for (let i = 0; i < 40; i++) parameters[`p${String(i).padStart(2, "0")}`] = String(i);
+    const spec: LaunchSpec = {
+      ...baseSpec({ ...membership, parameters }),
+      costLimit: 10,
+      pricePerHour: 0.5,
+      onComplete: "stop",
+      completionFile: "/tmp/done",
+      completionDelayMs: 60_000,
+      sessionTimeoutMs: 3600_000,
+      idleTimeoutMs: 600_000,
+      hibernateOnIdle: true,
+      idleCpuPercent: 5,
+      hooks: {
+        preStop: "sync.sh",
+        preStopTimeoutMs: 30_000,
+        spotWebhookUrl: "https://example.invalid/spot",
+        webhookCorrelation: "corr",
+        webhookTimeoutMs: 5_000,
+        notifyUrl: "https://example.invalid/notify",
+        notifyPlatform: "slack",
+        notifyCommand: "/spawn",
+        activeProcesses: "R,python",
+        activePorts: "8787",
+      },
+    };
+    const tags = buildLaunchTags(spec, 0, {
+      accountId: "123456789012",
+      userArn: "arn:aws:iam::123456789012:user/alice",
+      accountName: "my-lab",
+    });
+    // +1 for spawn:local-username, which EC2Provider adds after this returns.
+    expect(Object.keys(tags).length + 1).toBeLessThanOrEqual(AWS_TAG_LIMIT);
+    // The identity block survives the squeeze — parameters are what get dropped,
+    // never the tag the portal needs to own the instance.
+    expect(tags[tag("iam-user")]).toBe("arn:aws:iam::123456789012:user/alice");
   });
 
   it("buildLaunchTags includes sweep tags only when a membership is set", () => {
@@ -188,5 +245,72 @@ describe("session-timeout tag", () => {
     expect(buildLaunchTags(baseSpec(), 0)[tag("session-timeout")]).toBeUndefined();
     const s = { ...baseSpec(), sessionTimeoutMs: 30 * 60_000 };
     expect(buildLaunchTags(s, 0)[tag("session-timeout")]).toBe("30m");
+  });
+});
+
+describe("base identity tags", () => {
+  const id = {
+    accountId: "123456789012",
+    userArn: "arn:aws:iam::123456789012:user/alice",
+  };
+
+  it("LIB_VERSION matches package.json", () => {
+    // spawn:version is read by Go's pkg/aws/ami_mgmt.go:170. The constant is
+    // hand-maintained (a browser lib can't read package.json at runtime, and
+    // importing src/index.ts here would be circular), so this is the guard that
+    // stops a release shipping a stale value. truffle-ts's 0.5.0 bump missed its
+    // equivalent constant and lagotto-ts's guard fired on its 0.2.0 bump.
+    const pkgPath = fileURLToPath(new URL("../../package.json", import.meta.url));
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as { version: string };
+    expect(LIB_VERSION).toBe(pkg.version);
+  });
+
+  it("emits Go's always-present base-identity block", () => {
+    const t = buildIdentityTags(id);
+    expect(t[tag("managed")]).toBe("true");
+    expect(t[tag("root")]).toBe("true");
+    expect(t[tag("version")]).toBe(LIB_VERSION);
+    expect(t[tag("account-id")]).toBe("123456789012");
+    expect(t[tag("iam-user")]).toBe(id.userArn);
+  });
+
+  it("derives account-base36 with the same encoder spored's DNS uses", () => {
+    // spored builds the notification FQDN from this tag, not from IMDS
+    // (pkg/agent/notifier.go:66). Absent, every notification carries the bare
+    // label ("my-box") instead of "my-box.1kpqzg2c.spore.host" — an unusable link.
+    expect(buildIdentityTags(id)[tag("account-base36")]).toBe("1kpqzg2c");
+  });
+
+  it("records created-by as spawn-ts, not spawn", () => {
+    // No Go reader compares this for equality, and an operator benefits from
+    // being able to tell which launcher produced an instance.
+    expect(buildIdentityTags(id)[tag("created-by")]).toBe("spawn-ts");
+  });
+
+  it("slugifies account-name and omits it when it slugifies to nothing", () => {
+    expect(buildIdentityTags({ ...id, accountName: "Kempner Lab" })[tag("account-name")]).toBe(
+      "kempner-lab",
+    );
+    // An empty tag value is worse than an absent tag — it looks like a real answer.
+    expect(buildIdentityTags({ ...id, accountName: "!!!" })[tag("account-name")]).toBeUndefined();
+    expect(buildIdentityTags(id)[tag("account-name")]).toBeUndefined();
+  });
+
+  it("rejects a non-numeric account id rather than writing a bogus subdomain", () => {
+    expect(() => buildIdentityTags({ ...id, accountId: "not-an-account" })).toThrow(/invalid account id/);
+  });
+
+  it("buildLaunchTags omits the identity block when no identity is given", () => {
+    // The MockProvider path: offline, no AWS call, so there is no identity to
+    // stamp. It must not invent one — a fabricated ARN would be worse than none.
+    const t = buildLaunchTags(baseSpec(), 0);
+    expect(t[tag("iam-user")]).toBeUndefined();
+    expect(t[tag("managed")]).toBe("true"); // still managed
+  });
+
+  it("stamps spawn:os explicitly rather than leaving it absent", () => {
+    // Go's connect branches on `== "windows"` (cmd/connect.go:120) and treats
+    // absent and "linux" alike today, but wire-compatibility means stating it.
+    expect(buildLaunchTags(baseSpec(), 0)[tag("os")]).toBe("linux");
   });
 });

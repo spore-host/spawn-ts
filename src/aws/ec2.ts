@@ -26,7 +26,7 @@ import type {
   ManagedInstance,
 } from "../core/types.js";
 import { validateDeclarations } from "../core/plugins.js";
-import { buildLaunchTags, decodeConfigTags, decodeSweepTags, decodeJobArrayTags, decodeHookTags, isManaged, tag } from "../core/tags.js";
+import { buildLaunchTags, decodeConfigTags, decodeSweepTags, decodeJobArrayTags, decodeHookTags, isManaged, tag, type LaunchIdentity } from "../core/tags.js";
 import { buildLinuxBootstrap, encodeUserData } from "./userdata.js";
 
 export interface EC2ProviderOptions {
@@ -53,6 +53,14 @@ export interface EC2ProviderOptions {
    * bootstrap relies on the SHA256 checksum only. See userdata.ts.
    */
   sporedSigningPublicKey?: string;
+  /**
+   * Who is launching, for the spawn:* base-identity tags. Supply it when the
+   * caller already knows (the federated BYOA path gets
+   * `AssumedRoleUser.Arn` + the account id straight back from
+   * AssumeRoleWithWebIdentity, so no extra call is needed); otherwise the
+   * provider resolves it once via GetCallerIdentity on first launch.
+   */
+  identity?: LaunchIdentity;
 }
 
 export class EC2Provider implements Provider {
@@ -60,6 +68,7 @@ export class EC2Provider implements Provider {
   readonly isReal: boolean;
   private client: EC2Client;
   private opts: EC2ProviderOptions;
+  private cachedIdentity?: LaunchIdentity;
 
   constructor(opts: EC2ProviderOptions) {
     this.opts = opts;
@@ -76,13 +85,68 @@ export class EC2Provider implements Provider {
     });
   }
 
+  /**
+   * Resolve (and cache) the launching identity. Cached for the provider's
+   * lifetime because credentials don't change under it.
+   *
+   * Throws rather than degrading. A launch that can't stamp spawn:iam-user
+   * produces an instance the portal can neither list nor terminate (it 403s on
+   * the owner mismatch — lambda/dashboard-api/instances.go:285), and it still
+   * accrues cost. Failing at launch is recoverable; an orphaned billable
+   * instance is the #63 invariant in its most expensive form, so the error must
+   * not look like an absence of identity.
+   */
+  private async resolveIdentity(): Promise<LaunchIdentity> {
+    if (this.opts.identity) return this.opts.identity;
+    if (this.cachedIdentity) return this.cachedIdentity;
+    // Imported lazily: only the real launch path needs STS, so the pure/offline
+    // consumers of this module don't pay for the client.
+    const { STSClient, GetCallerIdentityCommand } = await import("@aws-sdk/client-sts");
+    const sts = new STSClient({
+      region: this.opts.region,
+      endpoint: this.opts.endpoint || undefined,
+      credentials: {
+        accessKeyId: this.opts.accessKeyId,
+        secretAccessKey: this.opts.secretAccessKey,
+        sessionToken: this.opts.sessionToken,
+      },
+    });
+    let out;
+    try {
+      out = await sts.send(new GetCallerIdentityCommand({}));
+    } catch (err) {
+      throw new Error(
+        `cannot determine the launching identity (sts:GetCallerIdentity failed: ${
+          (err as Error).message
+        }). Refusing to launch: without spawn:iam-user the instance would be ` +
+          `invisible to the portal and impossible to terminate there, while still costing money.`,
+      );
+    }
+    if (!out.Account || !out.Arn) {
+      throw new Error(
+        "sts:GetCallerIdentity returned no Account/Arn. Refusing to launch: " +
+          "without spawn:iam-user the instance would be unterminatable from the portal.",
+      );
+    }
+    this.cachedIdentity = { accountId: out.Account, userArn: out.Arn };
+    return this.cachedIdentity;
+  }
+
   async launch(spec: LaunchSpec, launchTimeMs: number): Promise<ManagedInstance> {
-    const tags = buildLaunchTags(spec, launchTimeMs);
+    const identity = await this.resolveIdentity();
+    const tags = buildLaunchTags(spec, launchTimeMs, identity);
+
+    // The tag must name the user userdata actually creates, so resolve once and
+    // use the same value for both — otherwise `spawn connect` SSHes to a user
+    // that doesn't exist. Set before tagList is snapshotted below.
+    const localUsername = spec.localUsername ?? this.opts.username ?? "ec2-user";
+    tags[tag("local-username")] = localUsername;
+
     const tagList: AwsTag[] = Object.entries(tags).map(([Key, Value]) => ({ Key, Value }));
 
     const userData = encodeUserData(
       buildLinuxBootstrap({
-        username: this.opts.username ?? "ec2-user",
+        username: localUsername,
         publicKey: this.opts.publicKey,
         command: spec.onComplete ? undefined : undefined, // workload wiring is a later feature
         sessionTimeoutMs: spec.sessionTimeoutMs,

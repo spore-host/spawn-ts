@@ -49,22 +49,63 @@ it does write: they are byte-for-byte what `spored` (and `spawn list`) expect, e
 for behaviors spawn-ts can't run itself. The docs are careful to say which tier a
 feature is in so nothing over-promises.
 
-**Wire-compatible is not yet wire-complete.** Go's `buildLaunchTags`
-(`spawn/pkg/aws/tags.go:32`) stamps 55 tags at launch; spawn-ts stamps 33. The
-absent ones are not all tier D — the base-identity block is tier **B**, and its
-absence has real consumers:
+### Wire-compatible, and what that does *not* cover
 
-| absent tag | tier | consequence |
+"Wire-compatible" is a claim about the tags spawn-ts writes, so it's only as
+useful as the list of tags it doesn't. `buildTags`
+(`spawn/pkg/aws/tags.go:32`) can write 54 distinct keys; `buildLaunchTags`
+(`src/core/tags.ts`) writes 43 — 13 of Go's absent, 2 of spawn-ts's own not in
+Go. Every difference below is classified in the same A–E tiers, because "absent"
+alone doesn't say whether it's a gap or a decision.
+
+Since [#51](https://github.com/spore-host/spawn-ts/issues/51), the **base-identity
+block is stamped**: `managed`, `root`, `created-by`, `version`, `account-id`,
+`account-base36`, `iam-user`, `account-name`, plus `os` and `local-username`. That
+block is what makes an instance *ownable* — the portal filters its list, its
+single-instance lookup and its terminate on `spawn:iam-user`
+(`lambda/dashboard-api/instances.go:60`/`:168`/`:285`, the last 403ing on a
+mismatch), while `spawn list` filters on `spawn:managed` alone. An instance
+missing it was therefore visible in the CLI yet invisible *and unterminatable*
+in the portal, so `EC2Provider` now **refuses to launch** when it can't resolve
+the identity rather than omitting the tag: an orphaned billable instance is worse
+than a failed launch.
+
+What Go writes and spawn-ts still does not:
+
+| absent tag | tier | why |
 |---|---|---|
-| `spawn:iam-user` | **B** | the portal can neither list nor terminate a spawn-ts instance (`lambda/dashboard-api/instances.go:285` → 403); `cleanup --only-mine` skips it |
-| `spawn:account-base36` | **B** | `spored`'s notifier can't build the instance FQDN |
-| `spawn:os`, `spawn:local-username` | **B** | `spawn connect` can't infer the SSH user |
-| `spawn:version` | **B** | AMI management can't tell which launcher wrote the instance |
-| `spawn:active-ports` | **C** | `spored` writes this one itself; not a launcher gap |
-| FSx / EFS / DCV tags | **D** | the provisioning they describe isn't browser-reachable |
+| `spawn:fsx-*` (7 keys), `spawn:efs-id`, `spawn:efs-mount-point` | **D** | describe filesystem provisioning + on-node mounts the browser can't perform |
+| `spawn:dcv-session-id`, `spawn:app-name` | **D** | DCV streaming sessions; no browser path to create one |
+| `spawn:command` | **B** | observability only — spawn-ts already delivers the command via user-data (`src/aws/userdata.ts`), which is the load-bearing half. If added it must keep Go's `len(cmd) <= 256` guard, or `RunInstances` fails outright (spawn#214/#246) |
+| `spawn:slack-workspace-id` | **B** | only meaningful once the notify path carries a workspace binding |
+| `spawn:job-array-created` | **E** | deliberate: non-deterministic, no reader exists, and `spawn:launch-time` already records it (`src/core/tags.ts`) |
 
-Tracked in [#51](https://github.com/spore-host/spawn-ts/issues/51); the full
-50-command tier matrix is [#57](https://github.com/spore-host/spawn-ts/issues/57).
+And two spawn-ts writes that Go's launcher doesn't, both read by Go:
+
+| extra tag | why it's correct |
+|---|---|
+| `spawn:compute-seconds` | seeded at `0` so cost accounting has a defined starting point. Go leaves it absent and `spored` creates it (`pkg/agent/agent.go:404`); `pkg/provider/ec2.go:486` reads it either way |
+| `spawn:idle-cpu` | Go's launcher never writes it although `pkg/provider/ec2.go:508` decodes it — so a Go-launched instance's `--idle-cpu` threshold is unreachable by the reader that wants it. spawn-ts writing it is the fix, not the divergence |
+
+One more difference is deliberate and visible: `spawn:created-by` is
+`"spawn-ts"`, not Go's `"spawn"`. No reader compares the value, and an operator
+benefits from knowing which launcher produced an instance.
+
+The full 50-command tier matrix is
+[#57](https://github.com/spore-host/spawn-ts/issues/57).
+
+### The tag budget is a real constraint
+
+AWS caps a resource at **50 tags**, and exceeding it fails `RunInstances`
+outright — it doesn't truncate. A fully configured non-sweep launch already
+stamps 39, so the per-member `spawn:param:*` tags of a sweep cannot be a fixed
+allowance. Go uses a flat 35 with a comment claiming it stays "under AWS 50-tag
+limit" (`pkg/aws/tags.go:247`), which doesn't hold: 35 params on a maximal launch
+reaches ~73 tags. spawn-ts computes the remaining budget instead
+(`AWS_TAG_LIMIT` minus what the launch has already consumed) and drops the
+surplus in sorted key order, so the surviving subset is deterministic. Dropping
+parameters is itself lossy — they're how a sweep member records which point in
+the space it *is* — but a truncated tag set beats a launch that fails.
 
 ## Why the catalog is offline (and where live data goes)
 
