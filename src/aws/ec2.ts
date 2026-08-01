@@ -25,6 +25,7 @@ import type {
   LaunchSpec,
   ManagedInstance,
 } from "../core/types.js";
+import { validateDeclarations } from "../core/plugins.js";
 import { buildLaunchTags, decodeConfigTags, decodeSweepTags, decodeJobArrayTags, decodeHookTags, isManaged, tag } from "../core/tags.js";
 import { buildLinuxBootstrap, encodeUserData } from "./userdata.js";
 
@@ -86,6 +87,13 @@ export class EC2Provider implements Provider {
         command: spec.onComplete ? undefined : undefined, // workload wiring is a later feature
         sessionTimeoutMs: spec.sessionTimeoutMs,
         sporedSigningPublicKey: this.opts.sporedSigningPublicKey,
+        // Only the accepted declarations reach user-data. Rejections are dropped
+        // here rather than thrown, because failing the whole launch over one
+        // unsupported plugin is worse than launching without it — but a caller
+        // that wants to TELL the user must run validateDeclarations() itself and
+        // surface `rejected`. Dropping silently at this layer is a UI bug waiting
+        // to happen, so the launch form is where the explanation belongs.
+        plugins: spec.plugins ? validateDeclarations(spec.plugins).accepted : undefined,
       }),
     );
 

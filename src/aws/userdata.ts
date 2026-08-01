@@ -13,6 +13,8 @@
 // we keep it simple (base64 of text) since the browser has no gzip-to-bytes
 // helper as ergonomic as Go's. If size ever matters, swap in CompressionStream.
 
+import { type PluginDeclaration, serializeDeclarations } from "../core/plugins.js";
+
 export interface BootstrapOptions {
   /** Primary login user for the instance (e.g. "ec2-user", "ubuntu"). */
   username: string;
@@ -43,6 +45,18 @@ export interface BootstrapOptions {
    * compiled in.
    */
   sporedSigningPublicKey?: string;
+  /**
+   * Plugins to declare at launch. Written to /etc/spawn/plugins.json, which
+   * spored reads at startup (`loadPluginDeclarations`, pkg/provider/ec2.go:630).
+   *
+   * This is the ONLY portable plugin-install transport: `spawn plugin install`
+   * needs an SSH tunnel to the on-instance controller, which a browser has not
+   * got. Restricted to `LAUNCH_DECLARABLE_PLUGINS` — see `core/plugins.ts` for
+   * why the other five park at waiting-for-push. Callers should run the refs
+   * through `validateDeclarations()` first so a rejection can be explained to
+   * the user rather than discovered on the instance.
+   */
+  plugins?: PluginDeclaration[];
 }
 
 /**
@@ -79,6 +93,15 @@ chmod 600 /etc/spawn/command
   // SHA256 check and before the atomic install; fail-closed on any mismatch.
   const sigVerifyBlock = buildSigVerifyBlock(opts.sporedSigningPublicKey);
 
+  // Plugin declarations for spored to load at startup. Written BEFORE the spored
+  // install/start, unlike the Go bootstrap, which appends this block after
+  // `systemctl start spored` (pkg/launcher/bootstrap.go:146). Go gets away with
+  // it because spored retries, but the ordering is a real race: spored's
+  // loadPluginDeclarations runs once at startup and silently returns nil when the
+  // file is absent, so a fast start reads no plugins and nothing reports why.
+  // Writing first removes the race and the resulting file is byte-identical.
+  const pluginsBlock = buildPluginsBlock(opts.plugins);
+
   return `#!/bin/bash
 set -e
 
@@ -87,7 +110,7 @@ mkdir -p /home/${user}/.ssh && chmod 700 /home/${user}/.ssh
 ${keyLine}
 chown -R ${user}:${user} /home/${user}/.ssh 2>/dev/null || true
 
-${commandBlock}${sessionBlock}
+${commandBlock}${pluginsBlock}${sessionBlock}
 # Install spored — the in-instance lifecycle daemon. It reads the spawn:* tags
 # this instance was launched with (via IMDS + ec2:DescribeTags) and enforces
 # TTL/idle/cost/completion locally, so the instance self-terminates even if the
@@ -170,6 +193,36 @@ EOF
 systemctl daemon-reload
 systemctl enable spored
 systemctl start spored
+`;
+}
+
+/**
+ * Bootstrap fragment writing plugin declarations to /etc/spawn/plugins.json.
+ * Empty when no plugins are declared, so an instance without plugins gets a
+ * byte-identical script to before this feature existed.
+ *
+ * The JSON is emitted by `serializeDeclarations`, which matches Go's
+ * `plugin.Declaration` marshalling exactly (including `config,omitempty`), so
+ * spored's decoder sees the same bytes from either writer.
+ *
+ * A single-quoted here-doc delimiter (EOFPLUGINS, as in the Go bootstrap) keeps
+ * the JSON verbatim: no shell expansion, so a `$` inside a config value can't be
+ * interpolated at write time.
+ */
+function buildPluginsBlock(plugins?: PluginDeclaration[]): string {
+  if (!plugins || plugins.length === 0) return "";
+  const json = serializeDeclarations(plugins);
+  const n = plugins.length;
+  return `
+# Plugin declarations, read at startup by spored's loadPluginDeclarations
+# (pkg/provider/ec2.go:630). This is the launch-time plugin path; there is no
+# on-instance controller here, so only plugins with no local install step work.
+mkdir -p /etc/spawn
+cat > /etc/spawn/plugins.json <<'EOFPLUGINS'
+${json}
+EOFPLUGINS
+chmod 644 /etc/spawn/plugins.json
+echo "Plugin declarations written: ${n} plugin(s)"
 `;
 }
 

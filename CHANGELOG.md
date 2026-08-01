@@ -14,6 +14,48 @@ Pre-1.0, breaking changes bump the MINOR version.
   `npm ci` resolves it from the registry like any other package.
 
 ### Added
+- **Browser-native Globus Transfer** (#53, new `./transfer` subpath) — data
+  movement in and out of launched instances with no local machine and nothing
+  installed. Globus **Transfer** is not Globus Connect **Personal**: it moves data
+  between *managed* collections (an HPC DTN, an S3 collection) over REST, and every
+  endpoint is CORS-enabled. `transferClient()` covers `endpoint_search`,
+  `submit_transfer`, `task`/`task_list`, cancel, and an `awaitTask` polling loop —
+  all over an injected `fetch`, so it is unit-tested with no credentials.
+  - `submitTransfer` fetches a `submission_id` first: that is Globus's idempotency
+    mechanism, and skipping it lets a network retry move the data twice.
+  - An empty item list is refused — Globus would accept it and return a task that
+    succeeds having moved nothing, which reads as a silent failure.
+  - `GlobusTransferError` carries Globus's own `code`, and `needsConsent`
+    separates a fixable missing consent from a flat permission denial (both 403).
+  - `INACTIVE` is not terminal, and `niceStatus` is surfaced so a stuck task says
+    *why*.
+- **The Globus Transfer scope, opt-in** — `GlobusConfig.requestTransfer` adds
+  `TRANSFER_SCOPE` and `completeLogin` returns `GlobusTokens.transferToken` from
+  the *same* sign-in (Globus issues one token per resource server). Deliberately
+  **not** in `DEFAULT_SCOPE`: that would show every signing-in user a consent
+  screen about managing their transfers and reading their files, including users
+  who only want to see their instances. An absent `transferToken` is a normal
+  outcome, not an error.
+- **Plugin detection and launch-time declaration** (#53). Two columns, not one:
+  the browser can **declare 7 of 12** plugins at launch and **detect all 12**.
+  - `parsePluginTag` / `detectPlugins` / `instancePlugins` decode the
+    `spore:plugin:<name>` provenance tag. An absent or unparseable tag reads as
+    "unknown", never "not installed"; `verify=none` stays distinct from a missing
+    `verify=`; unknown `key=value` pairs are preserved rather than dropped.
+    Go's `"(none)"` digest placeholder is normalised away.
+  - `LaunchSpec.plugins` writes `/etc/spawn/plugins.json` in user-data, which
+    spored reads at startup — byte-compatible with Go's `plugin.Declaration`.
+    Written *before* spored starts, unlike the Go bootstrap, which appends it
+    after `systemctl start spored`; spored reads the file once at startup, so that
+    ordering is a race.
+  - `canDeclareAtLaunch` / `validateDeclarations` refuse the other five **with
+    distinct reasons**. Four need a locally-minted secret pushed to the instance
+    and would park at `StatusWaitingForPush` — a limitation of Go's own async path
+    (`pkg/pluginruntime/runtime.go:62`), not a browser gap. `spore-sync`'s local
+    half is mutagen on the developer's machine and stays the CLI's job.
+    Rejections are returned, not thrown, so a caller can launch with what works
+    and still say what was dropped.
+  - See `docs/data-movement.md`.
 - **Cross-account launch for the live smoke test** (#38) — the real-aws tier can
   now role-chain from the OIDC identity-anchor account into a separate compute
   account, so the ephemeral instance launches there rather than in the anchor

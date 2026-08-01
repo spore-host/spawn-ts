@@ -31,6 +31,7 @@
     "./terminal": { "types": "./dist/terminal.d.ts", "import": "./dist/terminal.js" },
     "./quotas": { "types": "./dist/quotas.d.ts", "import": "./dist/quotas.js" },
     "./dns": { "types": "./dist/dns/index.d.ts", "import": "./dist/dns/index.js" },
+    "./transfer": { "types": "./dist/transfer/index.d.ts", "import": "./dist/transfer/index.js" },
     "./portal": { "types": "./dist/portal/portal-core.d.ts", "import": "./dist/portal/portal-core.js" },
     "./ui": { "types": "./dist/ui/index.d.ts", "import": "./dist/ui/index.js" },
     "./ui/style.css": "./dist/ui/dashboard.css"

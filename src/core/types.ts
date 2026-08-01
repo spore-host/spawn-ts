@@ -3,6 +3,8 @@
 // launched here are indistinguishable from instances launched by the real CLI:
 // same `spawn:*` tags, same lifecycle semantics.
 
+import type { PluginDeclaration } from "./plugins.js";
+
 /** Action taken when a lifecycle condition fires. */
 export type LifecycleAction = "terminate" | "stop" | "hibernate" | "exit";
 
@@ -79,6 +81,20 @@ export interface LaunchSpec {
    * member); a job array's members are identical but for JOB_ARRAY_INDEX.
    */
   jobArray?: JobArrayMembership;
+
+  /**
+   * Plugins to install at launch (optional). Carried into user-data as
+   * /etc/spawn/plugins.json, which spored reads at startup — the one plugin
+   * transport that needs no on-instance controller and is therefore reachable
+   * from a browser.
+   *
+   * Only the seven remote-only plugins work here; see
+   * `LAUNCH_DECLARABLE_PLUGINS` and `validateDeclarations` in `core/plugins.ts`.
+   * Unlike everything else on this type, plugins are NOT written as a spawn:*
+   * tag — Go carries them in user-data too, since a JSON array would not fit the
+   * 256-char tag limit.
+   */
+  plugins?: PluginDeclaration[];
 }
 
 /**

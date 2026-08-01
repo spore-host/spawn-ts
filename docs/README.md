@@ -14,6 +14,9 @@
 - **[API reference](api.md)** — the `SpawnClient` public API. The generated
   [TypeDoc reference](https://spore-host.github.io/spawn-ts/api/) is published
   alongside the demo.
+- **[Data movement and plugins](data-movement.md)** — browser-native Globus
+  Transfer (no local machine required), and the plugin split: 7 of 12 declarable
+  at launch, 12 of 12 detectable via the `spore:plugin:*` tag.
 - **[Integration with truffle-ts](integration.md)** — how the launcher/lifecycle
   (spawn-ts) and instance-discovery (truffle-ts) tools compose, and the
   tag-emit-vs-execution boundary.
