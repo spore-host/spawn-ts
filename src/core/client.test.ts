@@ -247,4 +247,54 @@ describe("SpawnClient end-to-end", () => {
     expect((await viewer.get("zombie"))!.state).toBe("terminated");
     expect(viewer.findOrphans()).toEqual([]);
   });
+
+  describe("plugin declarations at launch (#53)", () => {
+    it("passes declarations through to the spec the provider receives", async () => {
+      const provider = new MockProvider();
+      const seen: string[][] = [];
+      const orig = provider.launch.bind(provider);
+      provider.launch = async (spec, now) => {
+        seen.push((spec.plugins ?? []).map((d) => d.ref));
+        return orig(spec, now);
+      };
+      const c = new SpawnClient({ provider, startMs: T0, clock: 1 });
+      await c.launch({
+        name: "job",
+        ttl: "4h",
+        plugins: [{ ref: "jupyterlab" }, { ref: "docker", config: { rootless: "true" } }],
+      });
+      expect(seen).toEqual([["jupyterlab", "docker"]]);
+    });
+
+    it("refuses a plugin the launch-time path can't honour, before anything launches", async () => {
+      // Diverges from Go, which writes the ref into /etc/spawn/plugins.json and
+      // lets it park at StatusWaitingForPush on the box — a failure invisible from
+      // the launch side. Nothing is billed yet here and the fix is a one-word
+      // edit, so refusing costs a retry while launching costs an instance that
+      // can't do the job it was launched for.
+      const provider = new MockProvider();
+      const c = new SpawnClient({ provider, startMs: T0, clock: 1 });
+      await expect(
+        c.launch({ name: "job", ttl: "4h", plugins: [{ ref: "tailscale" }] }),
+      ).rejects.toThrow(/mints an auth key and pushes it/);
+      expect(await provider.get("job")).toBeNull();
+    });
+
+    it("names every rejected plugin, not only the first", async () => {
+      const c = client();
+      await expect(
+        c.launch({
+          name: "job",
+          ttl: "4h",
+          plugins: [{ ref: "docker" }, { ref: "tailscale" }, { ref: "nonesuch" }],
+        }),
+      ).rejects.toThrow(/tailscale[\s\S]*nonesuch/);
+    });
+
+    it("launches normally when no plugins are declared", async () => {
+      const c = client();
+      const inst = await c.launch({ name: "job", ttl: "4h" });
+      expect(inst.state).toBe("running");
+    });
+  });
 });

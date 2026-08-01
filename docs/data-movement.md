@@ -164,12 +164,50 @@ import { validateDeclarations } from "@spore-host/spawn-ts";
 const { accepted, rejected } = validateDeclarations([{ ref: "jupyterlab" }, { ref: "tailscale" }]);
 // accepted: [{ ref: "jupyterlab" }]
 // rejected: [{ ref: "tailscale", reason: "…would park at waiting-for-push…" }]
-await client.launch({ ...spec, plugins: accepted });
 ```
 
-Rejections are **returned, not thrown**, so a caller can launch with what works
-while telling the user exactly what was dropped. Silently filtering would produce
-an instance missing a plugin the user asked for, with nothing to explain it.
+`validateDeclarations` **returns** rejections rather than throwing, because the
+reason is data a caller may want to render, aggregate, or partially act on.
+
+### Declaring at launch
+
+```ts
+await client.launch({ name: "web", ttl: "4h", plugins: [{ ref: "jupyterlab" }] });
+```
+
+Passing a ref that can't be honoured makes `launch()` **throw, before any instance
+exists** — and the CLI's `--plugin` (repeatable, matching Go's pflag StringArray)
+refuses the same way:
+
+```
+$ spawn launch bad --ttl 4h --plugin tailscale --plugin nonesuch
+launch: 2 plugins cannot be declared at launch — nothing was launched.
+  "tailscale" cannot be declared at launch: its local half mints an auth key and pushes it, …
+  "nonesuch" is not a known launch-declarable plugin. Declarable: cloudwatch-agent, …
+```
+
+This is deliberately stricter than Go, which writes any ref straight into
+`/etc/spawn/plugins.json` and lets a push-dependent plugin park on the box — a
+failure invisible from the launch side. At the point of refusal nothing has been
+billed and the fix is a one-word edit, so refusing costs a retry while launching
+costs an instance that can't do the job it was launched for.
+
+The dashboard's launch form takes it one step further and offers a **checkbox per
+declarable plugin**, so the offered set *is* the supported set and a rejection
+can't be reached from the form at all. The five that aren't offered are named
+underneath with the reason — an unexplained absence would read as an arbitrary
+omission, and worse, as "the browser has no plugin support".
+
+On success the output says **declared**, never *installed*:
+
+```
+  plugins declared: jupyterlab, mountpoint-s3
+    installed by spored at boot; check 'status web' for what it reports
+```
+
+spored does the install at boot. Whether it succeeded is only knowable later, from
+the `spore:plugin:*` tags below — so a launch message must not report an outcome
+nobody has observed yet.
 
 ### Reading what's deployed
 
@@ -201,6 +239,42 @@ would assert something the data doesn't support:
 Go's `shortHash` writes the literal string `"(none)"` for an empty digest. That's
 a display placeholder, not a hash, so it is normalised to `undefined` — otherwise
 a UI would render `sha256=(none)` and imply a digest was recorded.
+
+`spawn status` renders all of it, and `--plugins` asks the question explicitly:
+
+```
+$ spawn status web
+  plugins:      5 reported
+    code-server: version v4.1, verify=manifest, channel=beta
+    docker: version unknown, verify=unknown
+      (deployed, but its tag carried no readable provenance)
+      unrecognised in its tag: garbage-no-kv
+    jupyterlab: version v1.2.0, verify=signature, sha256 abc123def456, commit 789abcdef012
+    mountpoint-s3: version v0.4, verify=none
+    spore-sync: version v0.9, verify=unknown
+
+$ spawn status web --plugins        # when no tag is present
+  plugins:      none reported
+    No plugin provenance tags found. This does not mean no plugins are installed — …
+```
+
+Two rendering rules follow from the parser's honesty, and both are load-bearing:
+
+- **With no tags, `status` says nothing at all** unless you pass `--plugins`.
+  Silence makes no claim; the full caveat is three lines long and printing it
+  under every status would train the reader to skip the block. Ask, and you get
+  the caveat rather than a bare "none".
+- **A bare unparseable token gets its own line**, not a slot in the comma list
+  beside `verify=signature`. A `key=value` pair this parser predates *is*
+  provenance and belongs inline; `garbage-no-kv` is not, and listing it inline
+  read as though it had been decoded.
+
+The dashboard applies the same rules to the instance card: a `plugins —` line
+only when at least one tag is present, and three distinct styles so
+`verify=none` (a finding), `verify=signature` (clean) and `verify=unknown` (no
+data) can't be read alike. Plugins the browser could never install — `spore-sync`,
+`tailscale` — appear there exactly like the rest, which is the whole point of the
+second column.
 
 ## What still needs the CLI
 

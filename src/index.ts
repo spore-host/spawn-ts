@@ -142,3 +142,8 @@ export type {
 // CLI (used by the terminal pane, but reusable for a headless REPL/test).
 export { runCommand } from "./cli/commands.js";
 export type { ShellCtx, CmdResult } from "./cli/commands.js";
+// The flag parser, for an embedder building its own commands over the same argv
+// conventions. `flagList` is the repeatable-flag reader (`--plugin a --plugin b`);
+// `flagStr` is last-wins and would silently drop all but the final occurrence.
+export { tokenize, parseArgs, flagStr, flagBool, flagList } from "./cli/args.js";
+export type { ParsedArgs } from "./cli/args.js";

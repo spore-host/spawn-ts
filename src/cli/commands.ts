@@ -13,7 +13,14 @@ import { parseDuration, formatDuration, humanRemaining } from "../core/duration.
 import { accumulatedCost, computeExtension, ttlDeadline } from "../core/lifecycle.js";
 import { evaluateBounds } from "../core/bounds.js";
 import { statusNotices, type ElasticIpLookup } from "../core/notices.js";
-import { parseArgs, flagStr, flagBool, type ParsedArgs } from "./args.js";
+import {
+  describePluginState,
+  instancePlugins,
+  LAUNCH_DECLARABLE_PLUGINS,
+  validateDeclarations,
+  type PluginDeclaration,
+} from "../core/plugins.js";
+import { parseArgs, flagStr, flagBool, flagList, type ParsedArgs } from "./args.js";
 
 /** Ambient context a command runs in. */
 export interface ShellCtx {
@@ -63,6 +70,9 @@ const BOOLEAN_FLAGS = new Set([
   "all",
   "json",
   "reap",
+  // `status NAME --plugins` — boolean, so "status --plugins job" doesn't eat the
+  // instance name as its value (the --no-timeout bug below, same shape).
+  "plugins",
   // Unregistered, `--no-timeout job` consumed "job" as the flag's VALUE (see
   // parseArgs: an unknown flag followed by a non-dash token takes it), so the
   // instance name vanished and flagBool() read false. It failed safe — the guard
@@ -128,7 +138,7 @@ function help(): CmdResult {
     "",
     "  launch <name> [flags]   launch an instance",
     "  list                    list managed instances",
-    "  status <name>           show TTL, cost, state",
+    "  status <name>           show TTL, cost, state (--plugins for plugin provenance)",
     "  connect <name>          show how to connect (SSH/SSM)",
     "  extend <name> <dur>     push out the TTL deadline",
     "  stop | start <name>     stop / start an instance",
@@ -145,6 +155,9 @@ function help(): CmdResult {
     "  hooks (run by spored on the instance): --pre-stop <cmd> --pre-stop-timeout",
     "              --spot-webhook-url --webhook-correlation --notify-url --notify-platform",
     "              --active-processes <names>",
+    "  --plugin <ref[@version]>  declare a plugin (repeatable; installed by spored at boot)",
+    `              declarable: ${LAUNCH_DECLARABLE_PLUGINS.join(", ")}`,
+    "              others need a local half and belong to the real CLI",
     "",
     "sweep: <spec> is inline JSON ({\"params\":[...]} or {\"grid\":{...}}), or use",
     "       --grid 'lr=0.1,0.2 bs=32,64' for a quick cartesian product.",
@@ -201,6 +214,27 @@ async function launch(p: ParsedArgs, ctx: ShellCtx): Promise<CmdResult> {
   if (flagStr(p.flags, "active-processes")) hooks.activeProcesses = flagStr(p.flags, "active-processes");
   const hasHooks = Object.keys(hooks).length > 0;
 
+  // --plugin ref[@version], repeatable (Go's is a pflag StringArray,
+  // cmd/launch_flags.go:351), so it's read via flagList and not flagStr —
+  // last-wins would install one and silently drop the rest.
+  //
+  // A ref the launch-time path can't honour aborts the launch rather than being
+  // filtered out of it. The reason string is the whole point (canDeclareAtLaunch
+  // distinguishes needs-a-pushed-secret / belongs-to-the-CLI / not-a-plugin, and
+  // only the last is likely a typo), and it's worth far more before the launch
+  // than after, when the plugin is simply absent from a running box.
+  const pluginRefs = flagList(p, "plugin");
+  const plugins: PluginDeclaration[] = pluginRefs.map((ref) => ({ ref }));
+  const pluginVerdict = validateDeclarations(plugins);
+  if (pluginVerdict.rejected.length) {
+    return err(
+      `launch: ${pluginVerdict.rejected.length} plugin${
+        pluginVerdict.rejected.length === 1 ? "" : "s"
+      } cannot be declared at launch — nothing was launched.`,
+      ...pluginVerdict.rejected.map((r) => `  ${r.reason}`),
+    );
+  }
+
   const spec: LaunchSpec = {
     name,
     instanceType: flagStr(p.flags, "instance-type", "c6a.xlarge"),
@@ -219,6 +253,7 @@ async function launch(p: ParsedArgs, ctx: ShellCtx): Promise<CmdResult> {
     pricePerHour: Number(flagStr(p.flags, "price-per-hour", "0")) || 0,
     sessionTimeoutMs: session.ms,
     hooks: hasHooks ? hooks : undefined,
+    plugins: plugins.length ? plugins : undefined,
   };
 
   // Cost-safety guard. This path reaches the provider directly rather than going
@@ -254,6 +289,17 @@ async function launch(p: ParsedArgs, ctx: ShellCtx): Promise<CmdResult> {
       `${spec.idleTimeoutMs ? `, idle ${formatDuration(spec.idleTimeoutMs)}` : ""}` +
       `${spec.costLimit ? `, cost-limit $${spec.costLimit}` : ""}`,
     ctx.provider.isReal ? "  backend: REAL AWS — this is billable" : "  backend: mock — not billable",
+    // "declared", not "installed". The declarations are written to
+    // /etc/spawn/plugins.json in user-data; spored installs them at boot, and
+    // whether it succeeded is only knowable later from the spore:plugin:* tags
+    // (see `spawn status`). Saying "installed" here would report an outcome we
+    // haven't observed.
+    ...(plugins.length
+      ? [
+          `  plugins declared: ${plugins.map((d) => d.ref).join(", ")}`,
+          `    installed by spored at boot; check 'status ${inst.name}' for what it reports`,
+        ]
+      : []),
     // Printed on a real launch whose only bounds live on the box. "no TTL" above
     // states the fact; this states the consequence, which is the part a user
     // reading a success message won't otherwise infer.
@@ -329,6 +375,54 @@ async function status(p: ParsedArgs, ctx: ShellCtx): Promise<CmdResult> {
     if (h.spotWebhookUrl) lines.push(`  spot webhook: ${h.spotWebhookUrl}`);
     if (h.notifyUrl) lines.push(`  notify:       ${h.notifyPlatform ? h.notifyPlatform + " → " : ""}${h.notifyUrl}`);
     if (h.activeProcesses) lines.push(`  active-procs: ${h.activeProcesses}`);
+  }
+
+  // Plugins, decoded from the spore:plugin:* tags DescribeInstances already
+  // returns. Shown when at least one tag is present, or on demand with
+  // --plugins.
+  //
+  // The gate matters: an instance with no plugin tags is the common case, and
+  // `describePluginState`'s explanation of what that absence does and does not
+  // mean is three lines long. Printing it under every status would train the
+  // reader to skip the block — but suppressing it entirely when someone actually
+  // asked about plugins would leave them to infer "none installed", which the tag
+  // cannot establish. So: silence makes no claim, and --plugins gets the full
+  // caveat.
+  const plugins = instancePlugins(i);
+  if (plugins.length > 0 || flagBool(p.flags, "plugins")) {
+    lines.push(
+      "",
+      plugins.length
+        ? `  plugins:      ${plugins.length} reported`
+        : "  plugins:      none reported",
+      // describePluginState() owns the wording of what the absence means, so the
+      // CLI, the dashboard and the portal can't drift into three different
+      // claims about the same silence.
+      ...(plugins.length ? [] : [`    ${describePluginState(plugins)}`]),
+    );
+    for (const pl of plugins) {
+      // Fields this parser predates, split by whether they even looked like
+      // provenance. Both are surfaced rather than dropped (parsePluginTag keeps
+      // them precisely so a newer Go builder's provenance doesn't vanish here),
+      // but a bare unparseable token must not sit in the same comma list as
+      // `verify=signature` — driving the CLI, "verify=unknown, garbage-no-kv" read
+      // as if the garbage were a decoded field.
+      const extras = Object.entries(pl.extra || {});
+      const bits = [
+        pl.version ? `version ${pl.version}` : "version unknown",
+        `verify=${pl.verify}`,
+        ...(pl.contentSha256 ? [`sha256 ${pl.contentSha256}`] : []),
+        ...(pl.commitSha ? [`commit ${pl.commitSha}`] : []),
+        ...extras.filter(([, v]) => v).map(([k, v]) => `${k}=${v}`),
+      ];
+      lines.push(`    ${pl.name}: ${bits.join(", ")}`);
+      // "installed, provenance unreadable" is a different statement from either
+      // "installed and verified" or "not installed", and the tag's existence is
+      // what makes the first one true.
+      if (!pl.parsed) lines.push(`      (deployed, but its tag carried no readable provenance)`);
+      const bare = extras.filter(([, v]) => !v).map(([k]) => k);
+      if (bare.length) lines.push(`      unrecognised in its tag: ${bare.join(" ")}`);
+    }
   }
 
   // The tag-derived notices Go's `spawn status` appends (cmd/status.go:130-134).

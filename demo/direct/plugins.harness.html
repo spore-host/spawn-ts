@@ -1,0 +1,46 @@
+<!doctype html>
+<!--
+  Dev-only harness for plugin detection (#53). Mounts the REAL Dashboard over a
+  real SpawnClient + MockProvider, then stamps the spore:plugin:* tags spored
+  would write — including one plugin the browser could never have installed.
+
+  It exists because there is no way to reach that state from the app itself: the
+  tags are written by the Go CLI or by spored on the box, and the launch form
+  (correctly) can't fabricate them. Without this, the detect half of #53 could
+  only ever be seen in a unit test, which is not the same as seeing it render.
+
+  Open at /demo/direct/plugins.harness.html under `npm run dev`. Not referenced by
+  index.html, so it is never part of the demo itself.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>plugins harness</title>
+    <link rel="stylesheet" href="../../src/ui/dashboard.css" />
+    <style>
+      body { margin: 0; background: #010409; padding: 16px; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module">
+      import { SpawnClient, MockProvider } from "../../src/index.js";
+      import { Dashboard } from "../../src/ui/dashboard.js";
+
+      const client = new SpawnClient({ provider: new MockProvider(), clock: 1 });
+      const dash = new Dashboard(client, async () => true);
+      document.getElementById("app").appendChild(dash.el);
+
+      // Exposed for the Playwright driver; a harness, not the app.
+      window.harness = {
+        client,
+        /** Stamp the tags spored writes after installing plugins on the box. */
+        async tag(name, tags) {
+          const i = await client.get(name);
+          await client.activeProvider.setTags(i.instanceId, tags);
+          await client.refresh();
+        },
+      };
+    </script>
+  </body>
+</html>

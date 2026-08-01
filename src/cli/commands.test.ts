@@ -693,4 +693,175 @@ describe("CLI on-idle + lifecycle hooks", () => {
       expect(out).not.toContain("expired left");
     });
   });
+
+  describe("plugins: declare at launch, detect in status (#53)", () => {
+    it("declares every --plugin occurrence, not just the last", async () => {
+      const c = ctx();
+      const r = await runCommand("launch job --ttl 4h --plugin docker --plugin jupyterlab", c);
+      expect(r.error).toBeFalsy();
+      const out = r.lines.join("\n");
+      expect(out).toContain("plugins declared: docker, jupyterlab");
+    });
+
+    it("carries the declarations onto the LaunchSpec, not just into the output", async () => {
+      // The output line is cosmetic; the spec is what reaches user-data. Assert the
+      // wire, or a formatting-only implementation would pass.
+      const c = ctx();
+      const launched: string[][] = [];
+      const orig = c.provider.launch.bind(c.provider);
+      c.provider.launch = async (spec, now) => {
+        launched.push((spec.plugins ?? []).map((d) => d.ref));
+        return orig(spec, now);
+      };
+      await runCommand("launch job --ttl 4h --plugin docker --plugin mountpoint-s3", c);
+      expect(launched).toEqual([["docker", "mountpoint-s3"]]);
+    });
+
+    it("says 'declared', never 'installed' — the outcome hasn't been observed yet", async () => {
+      // spored installs at boot. Whether it succeeded is only knowable later from
+      // the spore:plugin:* tags, so a success message must not claim it.
+      const out = (await runCommand("launch job --ttl 4h --plugin docker", ctx())).lines.join("\n");
+      expect(out).toContain("declared");
+      expect(out).not.toMatch(/plugins installed/);
+    });
+
+    it("refuses a push-dependent plugin and launches NOTHING", async () => {
+      // tailscale's local half mints an auth key and pushes it; the launch-time
+      // path has no controller to do that, so in Go it parks at
+      // waiting-for-push on the box. Refusing beats launching an instance whose
+      // plugin can never finish.
+      const c = ctx();
+      const r = await runCommand("launch job --ttl 4h --plugin tailscale", c);
+      expect(r.error).toBe(true);
+      expect(r.lines.join("\n")).toContain("nothing was launched");
+      expect(await c.provider.get("job")).toBeNull();
+    });
+
+    it("gives the REASON for each rejection, not just a refusal", async () => {
+      // "not supported" reads as an arbitrary limitation. Three distinct things
+      // are going on, and only the third is likely the caller's typo.
+      const push = (await runCommand("launch a --ttl 4h --plugin tailscale", ctx())).lines.join("\n");
+      expect(push).toContain("mints an auth key and pushes it");
+
+      const cli = (await runCommand("launch b --ttl 4h --plugin spore-sync", ctx())).lines.join("\n");
+      expect(cli).toContain("mutagen running on your own machine");
+
+      const unknown = (await runCommand("launch c --ttl 4h --plugin nonesuch", ctx())).lines.join("\n");
+      expect(unknown).toContain("not a known launch-declarable plugin");
+      // ...and name what IS declarable, so the typo is correctable from the error.
+      expect(unknown).toContain("jupyterlab");
+    });
+
+    it("accepts a version-pinned ref", async () => {
+      const out = (await runCommand("launch job --ttl 4h --plugin jupyterlab@v1.2.0", ctx())).lines.join(
+        "\n",
+      );
+      expect(out).toContain("plugins declared: jupyterlab@v1.2.0");
+    });
+
+    it("reports detected plugin provenance in status", async () => {
+      const c = ctx();
+      await runCommand("launch job --ttl 4h", c);
+      const i = (await c.provider.get("job"))!;
+      await c.provider.setTags(i.instanceId, {
+        "spore:plugin:jupyterlab": "version=v1.2.0;sha256=abc123def456;verify=signature",
+      });
+      const out = (await runCommand("status job", c)).lines.join("\n");
+      expect(out).toContain("jupyterlab: version v1.2.0, verify=signature");
+      expect(out).toContain("sha256 abc123def456");
+    });
+
+    it("keeps verify=none visibly distinct from a missing verify=", async () => {
+      // The first says verification ran and reached neither a signature nor a
+      // manifest — a supply-chain finding. The second says we can't tell.
+      const c = ctx();
+      await runCommand("launch job --ttl 4h", c);
+      const i = (await c.provider.get("job"))!;
+      await c.provider.setTags(i.instanceId, {
+        "spore:plugin:docker": "version=v2;verify=none",
+        "spore:plugin:rclone": "version=v3",
+      });
+      const out = (await runCommand("status job", c)).lines.join("\n");
+      expect(out).toContain("docker: version v2, verify=none");
+      expect(out).toContain("rclone: version v3, verify=unknown");
+    });
+
+    it("reports a plugin whose tag carried no readable provenance as deployed anyway", async () => {
+      // The tag's existence is the evidence the plugin is deployed. Dropping the
+      // record would turn "deployed, provenance unreadable" into "not deployed".
+      const c = ctx();
+      await runCommand("launch job --ttl 4h", c);
+      const i = (await c.provider.get("job"))!;
+      await c.provider.setTags(i.instanceId, { "spore:plugin:docker": "garbage" });
+      const out = (await runCommand("status job", c)).lines.join("\n");
+      expect(out).toContain("docker:");
+      expect(out).toContain("no readable provenance");
+      // Caught by driving the CLI, not by the suite: the bare token was joined
+      // into the same comma list as verify=, reading as a decoded field.
+      expect(out).toContain("unrecognised in its tag: garbage");
+      expect(out).not.toContain("verify=unknown, garbage");
+    });
+
+    it("keeps a forward-compatible key=value alongside the known fields", async () => {
+      // A field a newer Go builder writes and this parser predates. It IS
+      // provenance, so unlike a bare token it belongs on the main line.
+      const c = ctx();
+      await runCommand("launch job --ttl 4h", c);
+      const i = (await c.provider.get("job"))!;
+      await c.provider.setTags(i.instanceId, {
+        "spore:plugin:code-server": "version=v4.1;verify=manifest;channel=beta",
+      });
+      const out = (await runCommand("status job", c)).lines.join("\n");
+      expect(out).toContain("code-server: version v4.1, verify=manifest, channel=beta");
+      expect(out).not.toContain("unrecognised");
+    });
+
+    it("reports plugins the browser could never install — detection is universal", async () => {
+      // spore-sync is refused at launch (CLI's job) yet must still be REPORTED.
+      // A UI built on the install column alone tells a user nothing is deployed
+      // when five things are.
+      const c = ctx();
+      await runCommand("launch job --ttl 4h", c);
+      const i = (await c.provider.get("job"))!;
+      await c.provider.setTags(i.instanceId, {
+        "spore:plugin:spore-sync": "version=v0.9;verify=manifest",
+      });
+      const out = (await runCommand("status job", c)).lines.join("\n");
+      expect(out).toContain("spore-sync: version v0.9, verify=manifest");
+    });
+
+    it("says nothing about plugins when no tag is present", async () => {
+      // Silence makes no claim. The tag is best-effort and is never written at all
+      // for launch-time declarations, so absence means "we don't know".
+      const c = ctx();
+      await runCommand("launch job --ttl 4h", c);
+      const out = (await runCommand("status job", c)).lines.join("\n");
+      expect(out).not.toContain("plugins:");
+    });
+
+    it("--plugins spells out that absence is not a negative claim", async () => {
+      const c = ctx();
+      await runCommand("launch job --ttl 4h", c);
+      const out = (await runCommand("status job --plugins", c)).lines.join("\n");
+      expect(out).toContain("none reported");
+      expect(out).toContain("does not mean no plugins are installed");
+      expect(out).not.toMatch(/no plugins (are )?installed\./);
+    });
+
+    it("--plugins does not swallow the instance name", async () => {
+      // The --no-timeout bug's exact shape: unregistered as boolean,
+      // "--plugins job" would take "job" as the flag's value and lose the name.
+      const c = ctx();
+      await runCommand("launch job --ttl 4h", c);
+      const r = await runCommand("status --plugins job", c);
+      expect(r.error).toBeFalsy();
+      expect(r.lines.join("\n")).toContain("none reported");
+    });
+
+    it("names the declarable set in help, so the refusal is avoidable up front", async () => {
+      const out = (await runCommand("help", ctx())).lines.join("\n");
+      expect(out).toContain("--plugin <ref[@version]>");
+      expect(out).toContain("mountpoint-s3");
+    });
+  });
 });

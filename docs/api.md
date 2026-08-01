@@ -53,8 +53,14 @@ await client.signalComplete(nameOrId);          // fire the completion action
 
 `LaunchInput` accepts `name`, `instanceType`, `region`, `ami`, `keyPair`,
 `spot`, `ttl`, `idleTimeout`, `hibernateOnIdle`, `idleCpuPercent`, `costLimit`,
-`pricePerHour`, `onComplete`, `completionFile`, `completionDelay`, and
+`pricePerHour`, `onComplete`, `completionFile`, `completionDelay`, `plugins`, and
 `allowUnbounded`. Durations are Go-form strings or ms.
+
+> **`plugins`** carries `PluginDeclaration[]` into user-data as
+> `/etc/spawn/plugins.json`, which spored reads at boot. Only the seven remote-only
+> plugins can be declared this way; anything else makes `launch` **throw before an
+> instance exists**, naming every rejected ref and why. See
+> [data-movement.md](./data-movement.md#plugins-two-columns-not-one).
 
 > **Cost safety:** on a **real** backend, `launch` throws if _none_ of `ttl`,
 > `idleTimeout` or `costLimit` is set, unless `allowUnbounded: true`. If the only

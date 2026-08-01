@@ -66,6 +66,21 @@
 .inst .notice.warn { background: rgba(248,81,73,.12); color: var(--red); border: 1px solid rgba(248,81,73,.3); }
 .inst .notice.info { background: rgba(88,166,255,.1); color: var(--accent); }
 
+/* Detected plugins (#53), from the spore:plugin:* tags. verify=none must not look
+   like verify=signature — the first is a supply-chain finding, the second a clean
+   install, and "unknown" is a third thing again (we couldn't tell). */
+.inst .plugins { display: flex; flex-wrap: wrap; gap: 4px; align-items: baseline; }
+.inst .plugin { padding: 0 5px; border-radius: 3px; border: 1px solid var(--border); }
+.inst .plugin.vok { color: var(--green); border-color: rgba(63,185,80,.4); }
+.inst .plugin.vnone { color: var(--yellow); border-color: rgba(210,153,34,.5); }
+.inst .plugin.vunknown { color: var(--muted); }
+
+/* Launch-form plugin picker: a checkbox per declarable plugin + the note saying
+   why the other five aren't offered. */
+.launch-form .plugin-picker { margin-top: 10px; }
+.launch-form .plugin-checks { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.launch-form .plugin-note { color: var(--muted); font-size: 10px; margin-top: 5px; line-height: 1.5; }
+
 .meter { height: 6px; background: #21262d; border-radius: 3px; margin-top: 6px; overflow: hidden; }
 .meter > span { display: block; height: 100%; background: var(--accent); }
 .meter.ttl > span { background: var(--green); }

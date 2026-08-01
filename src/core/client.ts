@@ -34,6 +34,7 @@ import { buildSweep, Sweep, type SweepOptions } from "./sweep.js";
 import { buildQueue, Queue, type QueueConfig, type QueueOptions } from "./queue.js";
 import { buildJobArray, JobArray, type JobArrayOptions } from "./jobarray.js";
 import type { ParamSpec } from "./params.js";
+import { validateDeclarations, type PluginDeclaration } from "./plugins.js";
 
 export type SpawnEvent =
   | { type: "instances"; instances: ManagedInstance[] }
@@ -95,6 +96,14 @@ export interface LaunchInput {
   jobArray?: JobArrayMembership;
   /** Daemon-enforced lifecycle hooks; stamps the pre-stop/webhook/notify tags. */
   hooks?: LifecycleHooks;
+  /**
+   * Plugins to install at launch, carried in user-data as /etc/spawn/plugins.json
+   * (#53). Only the seven remote-only plugins work this way — see
+   * `LAUNCH_DECLARABLE_PLUGINS`. Anything else makes `launch()` throw with the
+   * reason, before any instance exists: the alternative is a running instance
+   * missing a plugin the caller asked for and nothing to explain it.
+   */
+  plugins?: PluginDeclaration[];
 }
 
 export class SpawnClient {
@@ -353,6 +362,28 @@ export class SpawnClient {
     // provider directly — one definition so the two can't drift apart.
     const verdict = evaluateBounds(spec, this.provider.isReal);
     if (verdict.refuse && !input.allowUnbounded) throw new Error(verdict.refuse);
+
+    // A plugin the launch-time path can't honour is refused BEFORE the launch,
+    // not dropped from it. `validateDeclarations` returns rejections so a caller
+    // *can* proceed with the accepted subset, and the provider filters to that
+    // subset defensively (ec2.ts:162) — but proceeding is the wrong call here:
+    // nothing has been billed yet, the fix is a one-word edit, and the
+    // alternative is a running instance missing a plugin the caller asked for
+    // with only a log line to explain it. Refusing costs a retry; launching
+    // costs an instance that can't do the job it was launched for.
+    //
+    // This diverges from Go, which writes any ref straight into
+    // /etc/spawn/plugins.json and lets a push-dependent plugin park at
+    // StatusWaitingForPush on the box (pkg/pluginruntime/runtime.go:62). That
+    // failure is invisible from the launch side, which is exactly why it's
+    // caught here instead.
+    if (spec.plugins?.length) {
+      const { rejected } = validateDeclarations(spec.plugins);
+      if (rejected.length) {
+        throw new Error(rejected.map((r) => `plugin "${r.ref}": ${r.reason}`).join("\n"));
+      }
+    }
+
     const inst = await this.provider.launch(spec, this.now());
     // Emitted AFTER the launch so it names a real instance, and only for a real
     // provider — a mock launch bills nothing, so the caveat would be noise. A
@@ -500,6 +531,7 @@ export class SpawnClient {
       sweep: input.sweep,
       jobArray: input.jobArray,
       hooks: input.hooks,
+      plugins: input.plugins,
     };
   }
 }
