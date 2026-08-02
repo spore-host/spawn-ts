@@ -80,6 +80,7 @@ actually happened in this repo:
 | typecheck + test + build:lib pass | shipping a broken `dist/` |
 | `LIB_VERSION` matches (via `tags.test.ts`) | a stale `spawn:version` on every launched instance |
 | every `exports` target exists in `dist/` | a consumer's import resolving to nothing — the list in `publish.yml` had already gone stale, missing `./transfer` |
+| every code subpath actually **imports** | existence is weaker than importability: `./terminal` shipped in 0.6.0 and 0.7.0 present-but-unimportable under plain Node (#70). Bundler-only subpaths are held to a *declared* reason, so the restriction fails loudly if it spreads — or if it goes away |
 
 ## If a publish fails after the tag is pushed
 

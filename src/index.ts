@@ -83,6 +83,10 @@ export {
   tag,
   TAG_PREFIX,
   PARAM_TAG_PREFIX,
+  // The value this build stamps into spawn:version. Exported so a consumer can
+  // report which library version tagged an instance — it was previously readable
+  // only from the tag on a launched instance, i.e. after the fact (#70).
+  LIB_VERSION,
 } from "./core/tags.js";
 export { parseDuration, formatDuration, humanRemaining } from "./core/duration.js";
 

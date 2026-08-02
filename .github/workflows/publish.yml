@@ -48,6 +48,12 @@ jobs:
       - name: Assert every declared export exists
         run: npm run check:exports
 
+      # Existence is weaker than importability: ./terminal shipped in 0.6.0 and
+      # 0.7.0 present-but-unimportable under plain Node (#70). This imports every
+      # code subpath for real, and holds bundler-only ones to a declared reason.
+      - name: Assert every subpath imports
+        run: npm run check:imports
+
       # Guard: the pushed tag must match the package.json version, so a v0.6.0 tag
       # can't accidentally publish 0.5.0.
       - name: Verify tag matches package version
