@@ -18,7 +18,36 @@ version strings agree.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+- **`npm run check:imports`** (#70) — imports every code subpath from the built
+  `dist/` under plain Node, because the existing `check:exports` proves a file
+  *exists* and existence is weaker than importability. `./terminal` shipped in both
+  0.6.0 and 0.7.0 present-but-unimportable, and the guard reported "all 19 targets
+  present" for a subpath no non-bundler consumer could load. Found by installing the
+  published 0.7.0 tarball and importing all nine subpaths — not by any check in the
+  repo, which is the point.
+  - Bundler-only subpaths are **declared with a reason** rather than skipped, and
+    the check fails in *both* directions: an undeclared subpath that stops importing,
+    and a declared one that starts working (a stale restriction still documented to
+    consumers is its own bug). Both were verified to fail.
+  - `./terminal` is declared bundler-only. The reason is mostly upstream:
+    `@xterm/xterm` publishes no `exports` field, so Node resolves its CJS `main` and
+    ignores the ESM `module` build, and the two disagree on shape — `xterm.mjs` has
+    no default export while Node's CJS view exposes `Terminal` only under `default`,
+    so no single import form satisfies both. Dropping the module's xterm CSS import
+    was tried and reverted: it breaks styling for every current (bundled) consumer
+    while the CJS problem keeps the subpath bundler-only regardless.
+- **A README entry-point table** — all ten subpaths, what each holds, and which work
+  under plain Node, with `./ssm` named as the xterm-free alternative to `./terminal`.
+  The README also still advertised the pre-library `"spawn-ts"` import name.
+
+### Changed
+- **`LIB_VERSION` is exported from the package root** (#70). It is stamped into
+  `spawn:version` on every launch, but was readable only from the tag on an
+  already-launched instance — so a consumer could not report which library version
+  it was running until after it had launched something.
+- `repository.url` is `git+https://…`, the form npm was silently normalising it to
+  on every publish (so published metadata no longer differs from the repo's).
 
 ## [0.7.0] — 2026-08-01
 

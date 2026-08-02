@@ -66,8 +66,35 @@ extend an instance past its deadline — same invariant as the Go tool.
 
 ## Using the API
 
+```bash
+npm i @spore-host/spawn-ts
+```
+
+### Entry points
+
+| subpath | what's in it | plain Node |
+|---|---|---|
+| `.` | the DOM-free engine — `SpawnClient`, `EC2Provider`, tags, lifecycle, bounds, notices, orphans, plugins | yes |
+| `./auth` | Globus Auth OIDC → STS federation (`credsFromIdToken`) | yes |
+| `./ssm` | the SSM data-channel session (no xterm) | yes |
+| `./transfer` | Globus Transfer REST client | yes |
+| `./dns` | spore.host DNS naming and resolution | yes |
+| `./quotas` | EC2 vCPU quota lookup | yes |
+| `./portal` | portal-side helpers | yes |
+| `./ui` | `Dashboard`, `Terminal`, modals (DOM components) | yes |
+| `./ui/style.css` | the Dashboard's styles — **you import this** | n/a |
+| `./terminal` | xterm glue: `attachTerminal()` over an SSM session | **bundler only** |
+
+`./terminal` requires a bundler (Vite, esbuild, webpack). Two reasons, one of them
+upstream: `@xterm/xterm` publishes no `exports` field, so Node resolves its CJS
+`main` and ignores the ESM `module` build; and the module imports xterm's CSS as a
+side effect. Everything else imports fine under plain Node — `npm run check:imports`
+asserts exactly that, and holds `./terminal` to a *declared* reason so the
+restriction can't quietly spread (see #70). If you only need the data channel and
+not xterm rendering, use `./ssm`, which has neither constraint.
+
 ```ts
-import { SpawnClient } from "spawn-ts";
+import { SpawnClient } from "@spore-host/spawn-ts";
 
 const spawn = new SpawnClient({ clock: 60 }); // 1 sim-minute per real second
 spawn.on((e) => console.log(e));              // typed event stream
@@ -80,7 +107,7 @@ await spawn.launch({ name: "job", ttl: "4h", onComplete: "terminate", pricePerHo
 Swap to real AWS (credentials held in memory only, never persisted):
 
 ```ts
-import { SpawnClient, EC2Provider } from "spawn-ts";
+import { SpawnClient, EC2Provider } from "@spore-host/spawn-ts";
 spawn.setProvider(new EC2Provider({ region: "us-east-1", accessKeyId, secretAccessKey }));
 ```
 
