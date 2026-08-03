@@ -33,6 +33,15 @@ jobs:
       - name: Test (with coverage)
         run: npm run test:cov
 
+      # The half of pin hygiene that needs the network, so it can't live in the
+      # (hermetic) vitest suite: does each pin's `# vX.Y.Z` actually name the tag
+      # its SHA carries? A wrong label is worse than none — it makes a
+      # major-version jump read as a routine same-line bump, which is how a
+      # checkout v6 -> v7.0.1 bump nearly landed in nf-spawn labelled `# v6`.
+      # Read-only (git ls-remote), no auth.
+      - name: Verify pin comments match their SHAs
+        run: ./scripts/verify-pins.sh
+
       - name: Build
         run: npm run build
 
