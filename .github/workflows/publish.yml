@@ -28,11 +28,11 @@ jobs:
       # (df4cb1c → d23441a) with no signal to consumers. Dependabot bumps these
       # pins (see .github/dependabot.yml) so they stay current without being
       # mutable. (#72)
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Node 22: npm's Trusted Publishing support needs a recent npm CLI, and
       # current npm releases require Node >= 22.
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: npm
