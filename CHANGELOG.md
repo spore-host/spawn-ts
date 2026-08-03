@@ -18,6 +18,32 @@ version strings agree.
 
 ## [Unreleased]
 
+### Security
+- **Every GitHub Actions ref is now pinned to a commit SHA, with Dependabot to
+  bump the pins** ([#72](https://github.com/spore-host/spawn-ts/issues/72)). All 17
+  `uses:` refs were floating tags (`@v4`, `@v5`, `@v3`), and a tag is mutable —
+  `@v4` means "whatever `v4` points at when the job runs." `actions/checkout@v6`
+  genuinely moved (`df4cb1c` → `d23441a`) with no signal to consumers, so this is
+  not hypothetical.
+  - It matters most in `publish.yml`, which uses **npm Trusted Publishing**:
+    `id-token: write` + OIDC authorizes publishing `@spore-host/spawn-ts`, so
+    whatever runs in that job can publish as us — and unlike a leaked `NPM_TOKEN`
+    there is nothing to rotate afterward. Nothing in this repo sat between an
+    upstream tag being repointed and code executing with that authority.
+    `pages.yml` and `live-smoke.yml` also hold `id-token: write`, and live-smoke
+    assumes an AWS role.
+  - A SHA alone would trade a mutable-tag hole for a staleness one — pins never
+    move, including past a security fix — so a new `.github/dependabot.yml` bumps
+    them weekly with a 7-day cooldown (a freshly published tag is exactly when a
+    compromised one is still unnoticed) and covers `npm` dependencies too. Its
+    group pattern is `*`, not `actions/*`: `aws-actions/configure-aws-credentials`
+    would otherwise fall outside the group and be silently skipped.
+  - `src/ci-hygiene.test.ts` makes both halves regressions rather than
+    conventions — reverting a pin or dropping the Dependabot entry now fails
+    `npm test`. `yaml` becomes a dev dependency for it; `"files": ["dist"]` and
+    the `tsconfig.build.json` test exclusion keep it out of the published package.
+  No runtime change — CI wiring and tests only.
+
 ### Added
 - **`npm run check:imports`** (#70) — imports every code subpath from the built
   `dist/` under plain Node, because the existing `check:exports` proves a file

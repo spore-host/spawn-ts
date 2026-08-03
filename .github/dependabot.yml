@@ -1,0 +1,73 @@
+# Dependabot configuration for spawn-ts.
+# https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+#
+# Why this file exists: every action in .github/workflows is now pinned to a commit
+# SHA (#72), which closes the mutable-tag hole but opens a staleness one — a SHA
+# never moves, including past a security fix, and unlike `@v4` nothing updates it.
+# Pinning is only safe when something bumps the pins. That something is this file.
+#
+# This matters most for publish.yml, which holds npm Trusted Publishing authority:
+# `id-token: write` + OIDC means whatever runs there can publish
+# @spore-host/spawn-ts as us, with no token to rotate afterward.
+
+version: 2
+updates:
+  # GitHub Actions. Dependabot understands SHA pins: it rewrites both the SHA and
+  # the trailing `# vX.Y.Z` comment, so pins stay readable and the hygiene test
+  # (src/ci-hygiene.test.ts) keeps passing.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/Los_Angeles"
+    # Don't propose a release the day it ships; let it sit a week first. A fresh
+    # action tag is exactly when a compromised or broken one is still unnoticed.
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "deps(actions)"
+      include: "scope"
+    # No `reviewers:` key on purpose — it's deprecated and inert. Every one of the
+    # umbrella repo's Dependabot PRs asks for a reviewer and none has ever had a
+    # review request. Use CODEOWNERS if you want one.
+    groups:
+      # One PR for all of them. The pattern is "*", not "actions/*", because
+      # aws-actions/configure-aws-credentials (which assumes an AWS role in
+      # live-smoke.yml) is not under actions/ — with "actions/*" it would fall
+      # outside the group, which is how updates get quietly ignored.
+      github-actions:
+        patterns:
+          - "*"
+
+  # npm dependencies from package.json.
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/Los_Angeles"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    groups:
+      # The toolchain moves together and is dev-only; one PR, not eight.
+      dev-toolchain:
+        dependency-type: "development"
+        update-types:
+          - "minor"
+          - "patch"
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
