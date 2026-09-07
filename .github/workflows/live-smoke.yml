@@ -91,7 +91,7 @@ jobs:
 
       # Step 1: OIDC → the infra identity-anchor role (LIVE_SMOKE_ROLE_ARN).
       - name: Assume the infra OIDC role
-        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
         with:
           role-to-assume: ${{ vars.LIVE_SMOKE_ROLE_ARN }}
           role-session-name: spawn-ts-live-smoke
@@ -104,7 +104,7 @@ jobs:
       # is unset, so this composes with the single-account setup.
       - name: Hop into the dev launch role
         if: ${{ vars.LIVE_SMOKE_LAUNCH_ROLE_ARN != '' }}
-        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
         with:
           role-to-assume: ${{ vars.LIVE_SMOKE_LAUNCH_ROLE_ARN }}
           role-session-name: spawn-ts-live-smoke-dev
