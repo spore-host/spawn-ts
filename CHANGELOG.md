@@ -18,6 +18,14 @@ version strings agree.
 
 ## [Unreleased]
 
+### Changed
+
+- Dependabot no longer proposes **TypeScript major** upgrades. The 7.0.2 bump
+  (#80) failed `typecheck`, `test` and `build`, so it sat open and red rather than
+  landing — TypeScript 7 needs a deliberate migration, not a version bump. The
+  toolchain is capped at 5.x until that happens, so CI stops being red on an
+  upgrade nobody scheduled.
+
 ### Fixed
 - **A pin's version comment can no longer silently misstate what CI runs.**
   `src/ci-hygiene.test.ts` required only that *some* `# vN` comment be present,

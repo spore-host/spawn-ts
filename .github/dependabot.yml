@@ -60,6 +60,14 @@ updates:
     commit-message:
       prefix: "deps"
       include: "scope"
+    # TypeScript majors are held back deliberately. The 7.0.2 bump (#80) failed
+    # typecheck, test AND build here and sat red for weeks — TS 7 needs a real
+    # migration, not a version bump. Cap at 5.x until that migration is done on
+    # purpose. Same call the Python repos made when ruff 0.16 moved rules into its
+    # default set: pin the toolchain, don't let CI stay red on an unasked-for major.
+    ignore:
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
     groups:
       # The toolchain moves together and is dev-only; one PR, not eight.
       dev-toolchain:
