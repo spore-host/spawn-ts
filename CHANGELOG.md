@@ -20,6 +20,12 @@ version strings agree.
 
 ### Changed
 
+- **vitest 5** (from 4.1): `vitest` and `@vitest/coverage-v8` moved together
+  to ^5.0.5. Dependabot had proposed them as separate PRs (#97, #98), and each failed
+  `npm ci`, because the coverage plugin must match vitest's exact version. A
+  Dependabot `vitest` group now keeps `vitest` and `@vitest/*` in one PR,
+  majors included.
+
 - Dependabot no longer proposes **TypeScript major** upgrades. The 7.0.2 bump
   (#80) failed `typecheck`, `test` and `build`, so it sat open and red rather than
   landing — TypeScript 7 needs a deliberate migration, not a version bump. The
