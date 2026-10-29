@@ -20,6 +20,38 @@ version strings agree.
 
 ### Changed
 
+- **A real launch now sends Go spawn's release-build bootstrap, pinned to spawn
+  v0.149.0** (#108; Go spawn#1274, spawn#1412). The user data used to be a
+  hand-written copy of an August Go bootstrap: it installed the unversioned
+  latest `spored` (so the spored on a spawn-ts instance changed under it with
+  every Go release), skipped signature verification unless a key was passed,
+  had no recovery when the install failed, and had drifted from Go in a dozen
+  other ways (no SELinux relabel, no curl retry for EL8, no Spot-replacement
+  check, the session timeout written inline). It is now the stub a Go v0.149.0
+  release build sends: it fetches that release's published bootstrap body,
+  refuses it unless its sha256 is the pinned one and its signature verifies
+  against the spore.host key, and runs it; the body installs `spored` from
+  `spawn/versions/0.149.0/`, and any exit before `spored` is running
+  terminates the instance (`spawn_fatal_retire`), because nothing would
+  enforce its TTL. `src/aws/userdata.test.ts` requires the script to be
+  byte-identical to Go's for the same inputs; the fixtures come from the
+  published module via `scripts/gen-go-fixtures.sh`.
+  - **Why 0.149.0, not the newest Go release:** spored v0.150.0 (spawn#1359)
+    reads `activePorts`, `activeProcesses`, the webhooks and `notify*` only from
+    a per-launch config object and ignores them as tags. spawn-ts writes them as
+    tags, so 0.149.0 is the newest spored that enforces what spawn-ts writes.
+    The versioned path is permanent, unlike the unversioned latest.
+  - User data is gzip + base64, as Go sends it (1.8 KB for a bare launch).
+  - `EC2ProviderOptions.sporedSigningPublicKey` is now an override for a key
+    rotation. Absent means the spore.host key, not "checksum only": signature
+    verification is no longer optional, exactly as in a Go release build.
+  - The local username is held to Go's `ValidateUsername` and refused before
+    any AWS call. It was interpolated into the script unquoted.
+  - `plugins.json` is written with Go's `json.Marshal` bytes (sorted config
+    keys, `<>&` escaped), via a new `core/gojson.ts`.
+- **A Spot launch is tagged `spawn:spot-request-type=one-time`** (Go #922), which
+  Go's `spawn stop`/`status`, the dashboard and the reaper read.
+
 - **vitest 5** (from 4.1): `vitest` and `@vitest/coverage-v8` moved together
   to ^5.0.5. Dependabot had proposed them as separate PRs (#97, #98), and each failed
   `npm ci`, because the coverage plugin must match vitest's exact version. A
@@ -33,6 +65,23 @@ version strings agree.
   upgrade nobody scheduled.
 
 ### Fixed
+- **A launch that fails after the instance was created now terminates it**,
+  unless `keepOnError` / `--keep-on-error` (Go spawn#1298). `SpawnClient.launch`
+  rejected (a listener threw, the follow-up list failed) while the instance kept
+  billing, and the caller had been told the launch failed. The error now says
+  whether the instance was terminated, kept, or could not be terminated.
+- **An unparseable lifetime is refused instead of dropped** (Go spawn#990).
+  `SpawnClient.launch({ ttl: "1d" })`, `"4 h"` or `"-1h"` became a launch with
+  no TTL at all, the one bound enforced from outside the instance. Launch
+  durations now use a port of Go's `pkg/ttl` parser (`1d` works, signed and
+  unit-less values are refused, with Go's reasons); `--ttl 0` and negative
+  `--ttl=` values are refused by the CLI too. Tag values are still read with
+  the stricter `time.ParseDuration` grammar.
+- **Refusals before any AWS call, as Go's `Client.Launch` makes them:** user
+  data over EC2's 16 KiB limit (Go spawn#1063); an instance profile named
+  `spawn-instance-nested-*` (by name or ARN) without a TTL, since it can launch
+  more instances (Go spawn#1375); and a tag set over AWS's 50-tag limit
+  (Go spawn#1336; sweep parameters are still budgeted to fit, not refused).
 - **A pin's version comment can no longer silently misstate what CI runs.**
   `src/ci-hygiene.test.ts` required only that *some* `# vN` comment be present,
   never that it was true. A wrong label is worse than a missing one: it makes a

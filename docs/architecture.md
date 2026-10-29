@@ -44,13 +44,19 @@ tool; the GUI and terminal are two consumers of that library.
 - `ec2.ts` — `EC2Provider` over `@aws-sdk/client-ec2` v3; targets real AWS or a
   substrate emulator by endpoint.
 - `userdata.ts` — the instance bootstrap that installs `spored`, so instances
-  self-terminate even with the browser closed. It downloads the arch-appropriate
-  `spored` from the regional S3 bucket and **always verifies a SHA256 checksum**
-  (guards corruption). Optionally, when an `EC2Provider` is given a
-  `sporedSigningPublicKey`, it also **verifies a publisher signature** (`openssl`
-  against a key carried by the launcher, not the binary's bucket — fail-closed),
-  proving authenticity. Checksum-only is the default, matching the Go tool when
-  no signing key is compiled in.
+  self-terminate even with the browser closed. It is Go spawn's release-build
+  user data (`pkg/launcher` `BuildLinuxBootstrap`, spawn#1274), rendered for a
+  pinned spawn release (`SPAWN_BOOTSTRAP_VERSION`, 0.149.0): a short stub that
+  fetches the bootstrap body that release published in every
+  `spawn-binaries-<region>` bucket, refuses it unless its sha256 is the pinned
+  one **and** its signature verifies against the spore.host key the launcher
+  carries, and only then runs it. The body installs that same release's
+  `spored` from `spawn/versions/<version>/` (spawn#1412), never the unversioned
+  latest, and any failure before `spored` is running terminates the instance
+  (`spawn_fatal_retire`). `userdata.test.ts` holds Go's own output for the same
+  inputs (`scripts/gen-go-fixtures.sh`) and requires byte equality. Why 0.149.0
+  and not the newest Go release: see #108 and the comment on
+  `SPAWN_BOOTSTRAP_VERSION`.
 
 ### `src/cli`
 

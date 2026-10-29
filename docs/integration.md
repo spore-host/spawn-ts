@@ -76,7 +76,7 @@ What Go writes and spawn-ts still does not:
 |---|---|---|
 | `spawn:fsx-*` (7 keys), `spawn:efs-id`, `spawn:efs-mount-point` | **D** | describe filesystem provisioning + on-node mounts the browser can't perform |
 | `spawn:dcv-session-id`, `spawn:app-name` | **D** | DCV streaming sessions; no browser path to create one |
-| `spawn:command` | **B** | observability only — spawn-ts already delivers the command via user-data (`src/aws/userdata.ts`), which is the load-bearing half. If added it must keep Go's `len(cmd) <= 256` guard, or `RunInstances` fails outright (spawn#214/#246) |
+| `spawn:command` | **B** | observability only — the command rides user-data (`BootstrapOptions.command`, `src/aws/userdata.ts`), which is the load-bearing half; `LaunchSpec` does not carry a command yet. If added it must keep Go's `len(cmd) <= 256` guard, or `RunInstances` fails outright (spawn#214/#246) |
 | `spawn:slack-workspace-id` | **B** | only meaningful once the notify path carries a workspace binding |
 | `spawn:job-array-created` | **E** | deliberate: non-deterministic, no reader exists, and `spawn:launch-time` already records it (`src/core/tags.ts`) |
 
@@ -143,7 +143,8 @@ docs (both carry the same stale framing — truffle-ts#35).
 
 The browser is the **launcher and viewer**; the `spored` daemon on the instance
 is the **enforcer**. spawn-ts installs `spored` via the bootstrap
-([userdata.ts](../src/aws/userdata.ts)) — arch-detected download, SHA256
-checksum, and optional publisher-signature verification — so the
-self-termination guarantee holds even after the browser tab is closed. That
+([userdata.ts](../src/aws/userdata.ts)) — Go's release-build stub, pinned to
+spawn 0.149.0's signed bootstrap body and `spored`, verified by sha256 and the
+spore.host signature — so the self-termination guarantee holds even after the
+browser tab is closed. That
 guarantee is validated end-to-end on real AWS (see the closed issue #2).
