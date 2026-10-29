@@ -20,6 +20,22 @@ version strings agree.
 
 ### Changed
 
+- **Real launches write the launch config object and install spored 0.150.0**
+  (#110; Go spawn#1359). spored from v0.150.0 reads the launch-fixed settings
+  only from a per-launch object named by `spawn:config=<sha256>`, and ignores
+  them as tags. spawn-ts writes nine of them: the spot webhook URL, correlation
+  and timeout, `notifyUrl`/`notifyPlatform`/`notifyCommand`, `activeProcesses`,
+  `activePorts` and `idleCpuPercent`. On a real launch these leave the tags, go
+  into the object (Go's canonical bytes, so the same sha256), and the object is
+  **seeded into spored's cache by the user data**. spored uses it only if it
+  hashes to the instance's tag. A browser therefore never writes to the staging
+  bucket, so the bucket needs no CORS and the caller's instance profile needs no
+  new grant. A launch that sets none of them has no object and no tag.
+  `SPAWN_BOOTSTRAP_VERSION` moves to 0.150.0 in the same change, because the
+  pin and the object only work together. A `list()`/`get()` of a real instance
+  no longer shows those nine settings, since they are not tags; the instance
+  `launch()` returns still does.
+
 - **A real launch now sends Go spawn's release-build bootstrap, pinned to spawn
   v0.149.0** (#108; Go spawn#1274, spawn#1412). The user data used to be a
   hand-written copy of an August Go bootstrap: it installed the unversioned

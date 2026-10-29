@@ -1,0 +1,1 @@
+["active-ports","active-processes","app-mode","completion-webhook-url","idle-cpu","metrics-bind","metrics-path","metrics-port","notify-command","notify-platform","notify-url","ready-path","ready-port","slack-workspace-id","spot-webhook-url","tracing-enabled","tracing-exporter","tracing-sampling","web-auth","webhook-correlation","webhook-timeout"]

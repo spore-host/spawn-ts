@@ -19,7 +19,7 @@ import { EC2Provider, archForInstanceType } from "./ec2.js";
 import type { LaunchSpec } from "../core/types.js";
 import { tag } from "../core/tags.js";
 import { gunzipSync } from "node:zlib";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { SPORED_SIGNING_KEY_PEM } from "./userdata.js";
 
 /** RunInstances UserData is gzip + base64 (Go's EncodeLinuxUserData). */
@@ -295,11 +295,11 @@ describe("EC2Provider.launch", () => {
     expect(script).toContain("SPORED_SIG_VERIFY=1");
   });
 
-  it("sends the release-build stub pinned to spored 0.149.0, not an inline bootstrap (#1274, #1412)", async () => {
+  it("sends the release-build stub pinned to spored 0.150.0, not an inline bootstrap (#1274, #1412)", async () => {
     handler = () => ({ Instances: [{ InstanceId: "i-1", State: { Name: "pending" } }] });
     await provider().launch(baseSpec, T0);
     const script = decodeUserData(lastOf(RunInstancesCommand).input.UserData!);
-    expect(script).toContain("SPAWN_SPORED_VERSION='0.149.0'");
+    expect(script).toContain("SPAWN_SPORED_VERSION='0.150.0'");
     expect(script).toContain(". /etc/spawn/bootstrap-body.sh");
     expect(script).not.toContain("systemctl start spored");
   });
@@ -629,4 +629,51 @@ describe("EC2Provider state mapping", () => {
       expect(list[0].state).toBe(expected);
     });
   }
+});
+
+describe("EC2Provider.launch writes the launch config object (#110, spawn#1359)", () => {
+  const hooks = {
+    preStop: "sync",
+    spotWebhookUrl: "https://example.com/hook?a=1&b=2",
+    notifyUrl: "https://hooks.slack.com/services/T/B/x",
+    notifyPlatform: "slack",
+    activePorts: "8787",
+  };
+
+  it("moves the settings out of the tags, tags spawn:config, and seeds the same bytes", async () => {
+    handler = () => ({ Instances: [{ InstanceId: "i-1", State: { Name: "pending" } }] });
+    const inst = await provider().launch({ ...baseSpec, hooks, idleTimeoutMs: 3600_000, idleCpuPercent: 5 }, T0);
+    const tags = Object.fromEntries(
+      lastOf(RunInstancesCommand).input.TagSpecifications![0].Tags!.map((t: any) => [t.Key, t.Value]),
+    );
+    for (const k of ["spot-webhook-url", "notify-url", "notify-platform", "active-ports", "idle-cpu"]) {
+      expect(tags[tag(k)], k).toBeUndefined();
+    }
+    expect(tags[tag("pre-stop")]).toBe("sync");
+
+    const script = decodeUserData(lastOf(RunInstancesCommand).input.UserData!);
+    const b64 = /echo '([A-Za-z0-9+/=]+)' \| base64 -d > \/etc\/spawn\/launch-config\.json/.exec(script)![1];
+    const body = Buffer.from(b64, "base64");
+    expect(createHash("sha256").update(body).digest("hex")).toBe(tags["spawn:config"]);
+    expect(JSON.parse(body.toString("utf8"))).toEqual({
+      schema: 1,
+      settings: {
+        "active-ports": "8787",
+        "idle-cpu": "5",
+        "notify-platform": "slack",
+        "notify-url": "https://hooks.slack.com/services/T/B/x",
+        "spot-webhook-url": "https://example.com/hook?a=1&b=2",
+      },
+    });
+    // The launch knows what it set, even though the tags no longer say.
+    expect(inst.hooks).toEqual(hooks);
+  });
+
+  it("writes no object, no tag and no seed when the launch sets none of the settings", async () => {
+    handler = () => ({ Instances: [{ InstanceId: "i-1", State: { Name: "pending" } }] });
+    await provider().launch({ ...baseSpec, hooks: { preStop: "sync" } }, T0);
+    const tags = lastOf(RunInstancesCommand).input.TagSpecifications![0].Tags!;
+    expect(tags.some((t: any) => t.Key === "spawn:config")).toBe(false);
+    expect(decodeUserData(lastOf(RunInstancesCommand).input.UserData!)).not.toContain("launch-config.json");
+  });
 });

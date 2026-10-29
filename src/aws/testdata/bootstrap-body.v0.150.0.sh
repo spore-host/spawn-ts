@@ -101,8 +101,12 @@ spore_install_spored_from_buckets() {
     if [ -n "$v" ]; then
         echo "Installing spored $v, the version of the spawn that rendered this script"
         spore_install_verified_spored "$1" "$2/spawn/versions/$v" "$3/spawn/versions/$v"
-    else
-        spore_install_verified_spored "$1" "$2/spawn" "$2" "$3/spawn" "$3"
+    elif ! spore_install_verified_spored "$1" "$2/spawn/current" "$3/spawn/current"; then
+        if [ "${SPAWN_SPORED_READS_LAUNCH_CONFIG:-}" = 1 ]; then
+            echo "no spawn/current/ spored; 0.149.0 ignores launch configs (#1419)" >&2
+            return 1
+        fi
+        spore_install_verified_spored "$1" "$2/spawn" "$3/spawn"
     fi
 }
 spawn_is_spot_replacement() {

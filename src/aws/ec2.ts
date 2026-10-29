@@ -28,6 +28,7 @@ import type {
 import { validateDeclarations } from "../core/plugins.js";
 import { buildLaunchTags, checkTagLimit, decodeConfigTags, decodeSweepTags, decodeJobArrayTags, decodeMpiTags, decodeHookTags, isManaged, tag, type LaunchIdentity } from "../core/tags.js";
 import { checkNestedSpawnTtl, checkSpotStoppable } from "../core/bounds.js";
+import { LAUNCH_CONFIG_TAG, encodeLaunchConfig, splitLaunchConfigTags } from "../core/launchconfig.js";
 import { buildLinuxBootstrap, checkUserDataSize, encodeLinuxUserData } from "./userdata.js";
 import { lookupElasticIp } from "./eip.js";
 import type { ElasticIpLookup } from "../core/notices.js";
@@ -168,6 +169,16 @@ export class EC2Provider implements Provider {
     // that doesn't exist.
     const localUsername = spec.localUsername ?? this.opts.username ?? "ec2-user";
 
+    // The launch-fixed spored settings leave the tags for the launch config
+    // object, named by spawn:config (#1359). They do not depend on the identity,
+    // so the preflight set (Go's ValidateTagCount stand-ins) already has them.
+    const preflight = splitLaunchConfigTags(
+      withUsername(buildLaunchTags(spec, launchTimeMs, PREFLIGHT_IDENTITY), localUsername),
+    );
+    const object = await encodeLaunchConfig(preflight.settings);
+    const withObject = (t: Record<string, string>): Record<string, string> =>
+      object ? { ...t, [LAUNCH_CONFIG_TAG]: object.sha256 } : t;
+
     // EC2 refuses user data over 16 KiB (decoded) with an HTTP 400 (#1063).
     const userData = await encodeLinuxUserData(
       buildLinuxBootstrap({
@@ -177,6 +188,7 @@ export class EC2Provider implements Provider {
         // watches, so the two must agree (#1131).
         completionFile: spec.completionFile || undefined,
         sporedSigningPublicKey: this.opts.sporedSigningPublicKey,
+        launchConfig: object?.body,
         // Only the accepted declarations reach user-data. Rejections are dropped
         // here rather than thrown, because failing the whole launch over one
         // unsupported plugin is worse than launching without it — but a caller
@@ -190,10 +202,13 @@ export class EC2Provider implements Provider {
 
     // AWS's 50-tag limit (#1336), counted with stand-ins for what the identity
     // lookup adds (Go's ValidateTagCount), so it refuses before that call too.
-    checkTagLimit(withUsername(buildLaunchTags(spec, launchTimeMs, PREFLIGHT_IDENTITY), localUsername));
+    checkTagLimit(withObject(preflight.tags));
 
     const identity = await this.resolveIdentity();
-    const tags = withUsername(buildLaunchTags(spec, launchTimeMs, identity), localUsername);
+    const split = splitLaunchConfigTags(
+      withUsername(buildLaunchTags(spec, launchTimeMs, identity), localUsername),
+    );
+    const tags = withObject(split.tags);
     checkTagLimit(tags);
     const tagList: AwsTag[] = Object.entries(tags).map(([Key, Value]) => ({ Key, Value }));
 
@@ -240,7 +255,10 @@ export class EC2Provider implements Provider {
       // launch-time tags in the RunInstances response; substrate <=v0.72.0 omitted
       // them — fixed in v0.73.0, substrate#351 — but relying on the echo would be
       // fragile either way.)
-      return this.toManaged(awsInst, spec.region, tags);
+      // The object's settings are no longer tags, so the instance's tags can't
+      // say what they are; the launch knows, so the returned view keeps them.
+      // A later list()/get() reads tags only and shows them as unset.
+      return { ...this.toManaged(awsInst, spec.region, tags), hooks: spec.hooks, idleCpuPercent: spec.idleCpuPercent };
     } catch (err) {
       throw await this.retireAfterFailedLaunch(awsInst.InstanceId, spec, err as Error);
     }
