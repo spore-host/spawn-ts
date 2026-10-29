@@ -39,7 +39,7 @@ interface StubFixture {
 }
 
 const fixtures: StubFixture[] = JSON.parse(
-  readFileSync(new URL(`stub-fixtures.v${SPAWN_BOOTSTRAP_VERSION}.json`, here), "utf8"),
+  readFileSync(new URL("stub-fixtures.v0.149.0.json", here), "utf8"),
 );
 
 describe("buildLinuxBootstrap matches Go's release-build stub (v0.149.0)", () => {
@@ -63,7 +63,7 @@ describe("buildLinuxBootstrap matches Go's release-build stub (v0.149.0)", () =>
 
 describe("the pinned bootstrap body", () => {
   it("BOOTSTRAP_BODY_SHA256 is the sha256 of `spawn bootstrap-body` at the pinned release", () => {
-    const body = readFileSync(new URL(`bootstrap-body.v${SPAWN_BOOTSTRAP_VERSION}.sh`, here));
+    const body = readFileSync(new URL("bootstrap-body.v0.149.0.sh", here));
     expect(createHash("sha256").update(body).digest("hex")).toBe(BOOTSTRAP_BODY_SHA256);
   });
 
@@ -73,7 +73,7 @@ describe("the pinned bootstrap body", () => {
     expect(s).toContain(`SPAWN_BS_VERSION='${SPAWN_BOOTSTRAP_VERSION}'`);
     // The body installs from spawn/versions/<v>/ when the pin is set; the
     // unversioned path is only its dev-build branch.
-    const body = readFileSync(new URL(`bootstrap-body.v${SPAWN_BOOTSTRAP_VERSION}.sh`, here), "utf8");
+    const body = readFileSync(new URL("bootstrap-body.v0.149.0.sh", here), "utf8");
     expect(body).toContain('"$2/spawn/versions/$v" "$3/spawn/versions/$v"');
   });
 

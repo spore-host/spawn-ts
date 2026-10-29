@@ -72,6 +72,11 @@ describe("parseLifetimeDuration rejects (TestParseDurationRejects)", () => {
   }
 });
 
+it("gives Go's reason for a signed duration", () => {
+  expect(() => parseLifetimeDuration("-1h")).toThrow('invalid duration "-1h": a duration cannot be signed');
+  expect(() => parseLifetimeDuration("+1h")).toThrow("cannot be signed");
+});
+
 describe("parseTtl (TestParseTTLRejectsZero)", () => {
   for (const s of ["0", "0s", "0d", "0h0m"]) {
     it(`rejects ${s} as not greater than zero`, () => {
