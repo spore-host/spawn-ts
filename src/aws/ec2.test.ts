@@ -353,6 +353,14 @@ describe("EC2Provider.launch refusals before any AWS call", () => {
     expect(sent.filter((c) => c instanceof RunInstancesCommand)).toHaveLength(2);
   });
 
+  it("refuses a Spot launch that would need EC2 to stop it (#922/#1330)", async () => {
+    const p = provider({ identity: undefined });
+    await expect(p.launch({ ...baseSpec, spot: true, idleTimeoutMs: 3600_000 }, T0)).rejects.toThrow(
+      /one-time Spot requests, which EC2 cannot stop/,
+    );
+    expect(sent).toHaveLength(0);
+  });
+
   it("refuses user data over EC2's 16 KiB limit (#1063)", async () => {
     // Incompressible plugin config, so the gzip stream itself is over the limit.
     const noise = randomBytes(18_000).toString("base64");

@@ -154,3 +154,39 @@ export function checkNestedSpawnTtl(source: string, profile: string | undefined,
     `like --nested-spawn, requires --ttl: ${NESTED_SPAWN_NEEDS_TTL}`
   );
 }
+
+/**
+ * Go's spotrequest.NeedsStoppable: does this lifecycle ask EC2 to stop or
+ * hibernate the instance? An idle timeout does (its action is stop, or
+ * hibernate; never terminate in spawn-ts), and so does on-complete stop or
+ * hibernate.
+ */
+export function needsStoppable(
+  spec: Pick<LaunchSpec, "idleTimeoutMs" | "onComplete">,
+): boolean {
+  return spec.idleTimeoutMs > 0 || spec.onComplete === "stop" || spec.onComplete === "hibernate";
+}
+
+/**
+ * Refuse a Spot launch whose lifecycle stops the instance (Go #922/#1330).
+ *
+ * EC2 cannot stop an instance from a one-time Spot request, and one-time is the
+ * only kind spawn-ts makes. spored's stop then fails and is retried with backoff
+ * (pkg/agent stopWithBackoff: "a one-time Spot instance cannot be stopped"), so
+ * the instance keeps running until its TTL, and with only an idle timeout as its
+ * bound, indefinitely. Go's foreground launch makes such a request persistent
+ * instead; that needs the request cancelled whenever the instance is terminated,
+ * or EC2 launches a replacement, which is why Go's detached sweep refuses these
+ * members rather than doing so, and why spawn-ts does the same.
+ */
+export function checkSpotStoppable(
+  spec: Pick<LaunchSpec, "spot" | "idleTimeoutMs" | "onComplete">,
+): string | undefined {
+  if (!spec.spot || !needsStoppable(spec)) return undefined;
+  return (
+    "refusing a Spot launch whose lifecycle stops the instance (an idle timeout, or on-complete " +
+    "stop/hibernate): spawn-ts makes one-time Spot requests, which EC2 cannot stop, so the stop would " +
+    "fail and the instance would keep billing. Give it a ttl and no idle timeout, and on-complete " +
+    "terminate if it has one, or launch on-demand"
+  );
+}

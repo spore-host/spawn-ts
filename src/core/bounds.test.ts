@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { evaluateBounds, ENFORCEMENT, checkNestedSpawnTtl, NESTED_SPAWN_ROLE_PREFIX } from "./bounds.js";
+import { evaluateBounds, ENFORCEMENT, checkNestedSpawnTtl, checkSpotStoppable, NESTED_SPAWN_ROLE_PREFIX } from "./bounds.js";
 
 /** Only the three fields the guard reads. */
 const spec = (o: Partial<{ ttlMs: number; idleTimeoutMs: number; costLimit: number }> = {}) => ({
@@ -114,4 +114,21 @@ describe("checkNestedSpawnTtl (Go TestCheckNestedSpawnTTL, #1375)", () => {
       /requires --ttl: an instance that can launch other instances must have a hard lifetime$/,
     );
   });
+});
+
+describe("checkSpotStoppable (Go spotrequest.NeedsStoppable, #922/#1330)", () => {
+  const base = { spot: true, idleTimeoutMs: 0, onComplete: "" as const };
+  const cases: [string, Parameters<typeof checkSpotStoppable>[0], boolean][] = [
+    ["spot + ttl only", base, false],
+    ["spot + idle timeout", { ...base, idleTimeoutMs: 3600_000 }, true],
+    ["spot + on-complete stop", { ...base, onComplete: "stop" }, true],
+    ["spot + on-complete hibernate", { ...base, onComplete: "hibernate" }, true],
+    ["spot + on-complete terminate", { ...base, onComplete: "terminate" }, false],
+    ["on-demand + idle timeout", { ...base, spot: false, idleTimeoutMs: 3600_000 }, false],
+  ];
+  for (const [name, s, refused] of cases) {
+    it(`${name} → ${refused ? "refused" : "allowed"}`, () => {
+      expect(Boolean(checkSpotStoppable(s))).toBe(refused);
+    });
+  }
 });

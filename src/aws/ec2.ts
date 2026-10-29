@@ -27,7 +27,7 @@ import type {
 } from "../core/types.js";
 import { validateDeclarations } from "../core/plugins.js";
 import { buildLaunchTags, checkTagLimit, decodeConfigTags, decodeSweepTags, decodeJobArrayTags, decodeMpiTags, decodeHookTags, isManaged, tag, type LaunchIdentity } from "../core/tags.js";
-import { checkNestedSpawnTtl } from "../core/bounds.js";
+import { checkNestedSpawnTtl, checkSpotStoppable } from "../core/bounds.js";
 import { buildLinuxBootstrap, checkUserDataSize, encodeLinuxUserData } from "./userdata.js";
 import { lookupElasticIp } from "./eip.js";
 import type { ElasticIpLookup } from "../core/notices.js";
@@ -159,6 +159,9 @@ export class EC2Provider implements Provider {
     // A nested-spawn profile can launch more instances; it needs a TTL (#1375).
     const nested = checkNestedSpawnTtl("instance profile", this.opts.iamInstanceProfile, spec.ttlMs);
     if (nested) throw new Error(nested);
+    // A one-time Spot instance cannot be stopped (#922/#1330).
+    const spotStop = checkSpotStoppable(spec);
+    if (spotStop) throw new Error(spotStop);
 
     // The tag must name the user the bootstrap actually creates, so resolve once
     // and use the same value for both — otherwise `spawn connect` SSHes to a user
