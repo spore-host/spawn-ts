@@ -82,6 +82,13 @@ version strings agree.
   `spawn-instance-nested-*` (by name or ARN) without a TTL, since it can launch
   more instances (Go spawn#1375); and a tag set over AWS's 50-tag limit
   (Go spawn#1336; sweep parameters are still budgeted to fit, not refused).
+- **A Spot launch whose lifecycle stops the instance is refused** (an idle
+  timeout, or on-complete stop/hibernate; Go spawn#922/#1330). spawn-ts makes
+  one-time Spot requests, which EC2 cannot stop: spored's stop failed and was
+  retried with backoff while the instance kept billing, until its TTL or, with
+  only an idle timeout, indefinitely. Go makes such a request persistent; that
+  needs the request cancelled on every terminate, so spawn-ts refuses, as Go's
+  detached sweep does.
 - **A pin's version comment can no longer silently misstate what CI runs.**
   `src/ci-hygiene.test.ts` required only that *some* `# vN` comment be present,
   never that it was true. A wrong label is worse than a missing one: it makes a
