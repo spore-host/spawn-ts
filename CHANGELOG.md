@@ -82,6 +82,8 @@ version strings agree.
   `spawn-instance-nested-*` (by name or ARN) without a TTL, since it can launch
   more instances (Go spawn#1375); and a tag set over AWS's 50-tag limit
   (Go spawn#1336; sweep parameters are still budgeted to fit, not refused).
+- **An idle CPU threshold outside 0-100 is refused** (Go `validateIdleCPU`,
+  #1308): spored ignores one, so it was a setting that did nothing.
 - **A Spot launch whose lifecycle stops the instance is refused** (an idle
   timeout, or on-complete stop/hibernate; Go spawn#922/#1330). spawn-ts makes
   one-time Spot requests, which EC2 cannot stop: spored's stop failed and was

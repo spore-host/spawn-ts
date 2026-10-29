@@ -157,6 +157,7 @@ export function buildLaunchTags(
   launchTimeMs: number,
   identity?: LaunchIdentity,
 ): Record<string, string> {
+  validateIdleCpu(spec.idleCpuPercent);
   const tags: Record<string, string> = {
     Name: spec.name,
     [tag("managed")]: "true",
@@ -517,4 +518,15 @@ export function checkTagLimit(tags: Record<string, string>): void {
     .filter((k) => k in SPORED_SETTING_FLAGS)
     .map((k) => `${SPORED_SETTING_FLAGS[k]} (${k})`);
   throw new TagLimitError(keys.length, AWS_TAG_LIMIT, settings);
+}
+
+/**
+ * Go's validateIdleCPU (pkg/aws/spored_settings.go, #1308): spored ignores a
+ * threshold outside 0-100, so writing one would be a setting that does nothing.
+ * Refused, as Go's buildTags refuses it.
+ */
+export function validateIdleCpu(pct: number): void {
+  if (Number.isNaN(pct) || pct < 0 || pct > 100) {
+    throw new Error(`invalid idle CPU threshold ${pct}: must be a percentage above 0 and at most 100`);
+  }
 }

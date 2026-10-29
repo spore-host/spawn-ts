@@ -471,3 +471,18 @@ describe("spawn:spot-request-type (Go #922)", () => {
     expect(buildLaunchTags({ ...baseSpec(), spot: false }, 0)[tag("spot-request-type")]).toBeUndefined();
   });
 });
+
+describe("idle CPU threshold (Go validateIdleCPU, #1308)", () => {
+  for (const bad of [-1, 100.5, Number.NaN]) {
+    it(`refuses ${bad}`, () => {
+      expect(() => buildLaunchTags({ ...baseSpec(), idleTimeoutMs: 3600_000, idleCpuPercent: bad }, 0)).toThrow(
+        "invalid idle CPU threshold",
+      );
+    });
+  }
+  for (const ok of [0, 5, 100]) {
+    it(`accepts ${ok}`, () => {
+      expect(() => buildLaunchTags({ ...baseSpec(), idleTimeoutMs: 3600_000, idleCpuPercent: ok }, 0)).not.toThrow();
+    });
+  }
+});
