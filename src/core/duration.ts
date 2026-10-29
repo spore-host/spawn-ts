@@ -83,3 +83,68 @@ export function humanRemaining(ms: number): string {
   if (m > 0) return `${m}m ${s}s`;
   return `${s}s`;
 }
+
+// Units Go's ttl.ParseDuration accepts (pkg/ttl/parse.go), sorted, then
+// longest first so "ms" is tried before "m" and "µs"/"μs" before "s".
+const LIFETIME_UNITS_SORTED = ["d", "h", "m", "ms", "ns", "s", "us", "µs", "μs"];
+const LIFETIME_UNITS_LONGEST_FIRST = [...LIFETIME_UNITS_SORTED].sort((a, b) => b.length - a.length);
+const LIFETIME_UNIT_MS: Record<string, number> = {
+  ns: 1e-6,
+  us: 1e-3,
+  "µs": 1e-3,
+  "μs": 1e-3,
+  ms: 1,
+  s: 1000,
+  m: 60_000,
+  h: 3_600_000,
+  d: 86_400_000,
+};
+/** Go's time.Duration ceiling (math.MaxInt64 ns), in ms. */
+const MAX_DURATION_MS = 9223372036854.775807;
+
+/**
+ * Parse a lifetime flag (--ttl, --idle-timeout, …) the way Go spawn does since
+ * #990 (pkg/ttl ParseDuration): Go duration syntax plus a `d` (24h) unit, and
+ * nothing signed, spaced or unit-less. Throws with Go's reason on anything else.
+ *
+ * This is the launch-input parser. `parseDuration` stays the TAG reader: tags
+ * are written in time.ParseDuration syntax, which has no `d`, so widening that
+ * one would let spawn-ts read a value no Go reader can.
+ */
+export function parseLifetimeDuration(s: string): number {
+  if (s === "") throw new Error("empty duration");
+  if (s === "0") return 0;
+  if (s[0] === "-" || s[0] === "+") {
+    throw new Error(`invalid duration "${s}": a duration cannot be signed`);
+  }
+  let total = 0;
+  let rest = s;
+  while (rest !== "") {
+    const num = /^[0-9.]*/.exec(rest)![0];
+    if (num === "") throw new Error(`invalid duration "${s}": expected a number at "${rest}"`);
+    rest = rest.slice(num.length);
+    const unit = LIFETIME_UNITS_LONGEST_FIRST.find((u) => rest.startsWith(u));
+    if (!unit) {
+      throw new Error(
+        `invalid duration "${s}": missing or unknown unit after "${num}" (use one of ${LIFETIME_UNITS_SORTED.join(", ")})`,
+      );
+    }
+    rest = rest.slice(unit.length);
+    // time.ParseDuration's number grammar: digits, optionally ".", digits, with
+    // at least one digit somewhere ("1.", ".5" ok; ".", "1..5" not).
+    if (!/^(\d+\.?\d*|\.\d+)$/.test(num)) throw new Error(`invalid duration "${s}": bad number "${num}"`);
+    const seg = parseFloat(num) * LIFETIME_UNIT_MS[unit];
+    if (seg > MAX_DURATION_MS || total + seg > MAX_DURATION_MS) {
+      throw new Error(`invalid duration "${s}": too large`);
+    }
+    total += seg;
+  }
+  return total;
+}
+
+/** Go's ttl.ParseTTL: parseLifetimeDuration, and greater than zero. */
+export function parseTtl(s: string): number {
+  const d = parseLifetimeDuration(s);
+  if (d <= 0) throw new Error(`invalid TTL "${s}": must be greater than zero`);
+  return d;
+}

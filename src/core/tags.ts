@@ -196,6 +196,11 @@ export function buildLaunchTags(
     if (spec.hibernateOnIdle) tags[tag("hibernate-on-idle")] = "true";
     if (spec.idleCpuPercent > 0) tags[tag("idle-cpu")] = String(spec.idleCpuPercent);
   }
+  // Which kind of Spot request this is (Go #922, spotrequest.TypeTag). spawn-ts
+  // only makes one-time requests (InstanceMarketOptions { MarketType: "spot" }),
+  // and Go's `spawn stop`/`status`, the dashboard and the reaper read this to
+  // know EC2 will refuse a stop on one.
+  if (spec.spot) tags[tag("spot-request-type")] = "one-time";
   if (spec.costLimit > 0) tags[tag("cost-limit")] = String(spec.costLimit);
   if (spec.pricePerHour > 0) tags[tag("price-per-hour")] = String(spec.pricePerHour);
   if (spec.onComplete) {
@@ -462,4 +467,54 @@ export function decodeHookTags(tags: Record<string, string>): LifecycleHooks | u
   if (tags[tag("active-processes")]) h.activeProcesses = tags[tag("active-processes")];
   if (tags[tag("active-ports")]) h.activePorts = tags[tag("active-ports")];
   return Object.keys(h).length > 0 ? h : undefined;
+}
+
+/**
+ * The spored settings that each add a tag, and the spawn-ts input that sets
+ * them, for the #1336 refusal's "what can be dropped" list. Go's map
+ * (pkg/aws/tag_limit.go sporedSettingFlags) also lists the metrics and tracing
+ * settings; spawn-ts writes neither.
+ */
+const SPORED_SETTING_FLAGS: Record<string, string> = {
+  "spawn:idle-cpu": "--idle-cpu",
+};
+
+/**
+ * Refusal of a launch whose tags would not fit in AWS's per-resource limit
+ * (Go TagLimitError, #1336). RunInstances rejects such a launch outright; it
+ * does not truncate. Thrown before any AWS call.
+ */
+export class TagLimitError extends Error {
+  constructor(
+    readonly count: number,
+    readonly limit: number,
+    readonly sporedSettings: string[],
+  ) {
+    const droppable =
+      sporedSettings.length > 0
+        ? "the optional spored settings " + sporedSettings.join(", ")
+        : "the launch options that each add a spawn: tag (webhooks, notifications, storage, DNS)";
+    super(
+      `refusing to launch: the instance would carry ${count} tags and AWS allows ${limit} per resource, ` +
+        `so RunInstances would reject it (#1336). Drop at least ${count - limit} of: ${droppable}. ` +
+        "The remaining spawn: tags are what spored enforces the TTL, idle and cost limits from",
+    );
+    this.name = "TagLimitError";
+  }
+}
+
+/**
+ * Throw a TagLimitError when `tags` (the complete set RunInstances would get)
+ * is over AWS_TAG_LIMIT. Port of Go's checkTagLimit. spawn-ts writes no tags
+ * after RunInstances, so unlike Go nothing is reserved for post-launch tags.
+ * Sweep parameters are budgeted to fit (buildSweepTags), never refused; a set
+ * over the limit is one whose non-parameter tags alone do not fit.
+ */
+export function checkTagLimit(tags: Record<string, string>): void {
+  const keys = Object.keys(tags);
+  if (keys.length <= AWS_TAG_LIMIT) return;
+  const settings = keys
+    .filter((k) => k in SPORED_SETTING_FLAGS)
+    .map((k) => `${SPORED_SETTING_FLAGS[k]} (${k})`);
+  throw new TagLimitError(keys.length, AWS_TAG_LIMIT, settings);
 }

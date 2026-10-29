@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { evaluateBounds, ENFORCEMENT } from "./bounds.js";
+import { evaluateBounds, ENFORCEMENT, checkNestedSpawnTtl, NESTED_SPAWN_ROLE_PREFIX } from "./bounds.js";
 
 /** Only the three fields the guard reads. */
 const spec = (o: Partial<{ ttlMs: number; idleTimeoutMs: number; costLimit: number }> = {}) => ({
@@ -88,5 +88,30 @@ describe("evaluateBounds — which bounds count (#55)", () => {
       "idle-timeout": "on-instance",
       "cost-limit": "on-instance",
     });
+  });
+});
+
+describe("checkNestedSpawnTtl (Go TestCheckNestedSpawnTTL, #1375)", () => {
+  const nested = NESTED_SPAWN_ROLE_PREFIX + "0123abcd";
+  const cases: [string, number, boolean][] = [
+    [nested, 0, true],
+    [nested, 3600_000, false],
+    ["spawn-instance-0123abcd", 0, false],
+    ["spored-instance-profile", 0, false],
+    ["", 0, false],
+    [`arn:aws:iam::123456789012:instance-profile/${nested}`, 0, true],
+    [`arn:aws:iam::123456789012:instance-profile/team/${nested}`, 0, true],
+    ["arn:aws:iam::123456789012:instance-profile/spored-instance-profile", 0, false],
+  ];
+  for (const [profile, ttlMs, refused] of cases) {
+    it(`${JSON.stringify(profile)} ttl=${ttlMs} → ${refused ? "refused" : "allowed"}`, () => {
+      expect(Boolean(checkNestedSpawnTtl("--instance-profile", profile, ttlMs))).toBe(refused);
+    });
+  }
+
+  it("gives --nested-spawn's own reason", () => {
+    expect(checkNestedSpawnTtl("--instance-profile", nested, 0)).toMatch(
+      /requires --ttl: an instance that can launch other instances must have a hard lifetime$/,
+    );
   });
 });

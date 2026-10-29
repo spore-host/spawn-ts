@@ -1,0 +1,56 @@
+{
+  "mapHTML": "{\"M\":\"x\",\"_\":\"y\",\"a\":\"\\u003c\\u0026\\u003e\",\"aa\":\"2\",\"z\":\"1\"}",
+  "mapRaw": "{\"M\":\"x\",\"_\":\"y\",\"a\":\"\u003c\u0026\u003e\",\"aa\":\"2\",\"z\":\"1\"}",
+  "strings": [
+    {
+      "in": "plain",
+      "html": "\"plain\"",
+      "raw": "\"plain\""
+    },
+    {
+      "in": "",
+      "html": "\"\"",
+      "raw": "\"\""
+    },
+    {
+      "in": "a\"b\\c",
+      "html": "\"a\\\"b\\\\c\"",
+      "raw": "\"a\\\"b\\\\c\""
+    },
+    {
+      "in": "\u003cscript\u003e\u0026amp;\u003c/script\u003e",
+      "html": "\"\\u003cscript\\u003e\\u0026amp;\\u003c/script\\u003e\"",
+      "raw": "\"\u003cscript\u003e\u0026amp;\u003c/script\u003e\""
+    },
+    {
+      "in": "tab\there\nnl\rcr",
+      "html": "\"tab\\there\\nnl\\rcr\"",
+      "raw": "\"tab\\there\\nnl\\rcr\""
+    },
+    {
+      "in": "\b\f\u0000\u0001\u001f",
+      "html": "\"\\b\\f\\u0000\\u0001\\u001f\"",
+      "raw": "\"\\b\\f\\u0000\\u0001\\u001f\""
+    },
+    {
+      "in": "unicode é ✓ 日本",
+      "html": "\"unicode é ✓ 日本\"",
+      "raw": "\"unicode é ✓ 日本\""
+    },
+    {
+      "in": "line\u2028sep\u2029para",
+      "html": "\"line\\u2028sep\\u2029para\"",
+      "raw": "\"line\\u2028sep\\u2029para\""
+    },
+    {
+      "in": "https://hooks.slack.com/services/T0/B0/xyz?a=1\u0026b=2",
+      "html": "\"https://hooks.slack.com/services/T0/B0/xyz?a=1\\u0026b=2\"",
+      "raw": "\"https://hooks.slack.com/services/T0/B0/xyz?a=1\u0026b=2\""
+    },
+    {
+      "in": "emoji 🚀",
+      "html": "\"emoji 🚀\"",
+      "raw": "\"emoji 🚀\""
+    }
+  ]
+}
