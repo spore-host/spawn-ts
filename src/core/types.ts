@@ -117,6 +117,14 @@ export interface LaunchSpec {
    * 256-char tag limit.
    */
   plugins?: PluginDeclaration[];
+
+  /**
+   * Keep the instance when the launch fails after RunInstances succeeded (Go
+   * `--keep-on-error`, #1298). By default such an instance is TERMINATED: the
+   * caller sees a failed launch, so nobody is watching an instance that is
+   * billing and may have nothing enforcing its TTL. Not written as a tag.
+   */
+  keepOnError?: boolean;
 }
 
 /**

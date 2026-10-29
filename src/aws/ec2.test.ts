@@ -18,6 +18,14 @@ import {
 import { EC2Provider, archForInstanceType } from "./ec2.js";
 import type { LaunchSpec } from "../core/types.js";
 import { tag } from "../core/tags.js";
+import { gunzipSync } from "node:zlib";
+import { randomBytes } from "node:crypto";
+import { SPORED_SIGNING_KEY_PEM } from "./userdata.js";
+
+/** RunInstances UserData is gzip + base64 (Go's EncodeLinuxUserData). */
+function decodeUserData(b64: string): string {
+  return gunzipSync(Buffer.from(b64, "base64")).toString("utf8");
+}
 
 const T0 = Date.UTC(2026, 6, 20, 12, 0, 0);
 
@@ -225,8 +233,8 @@ describe("EC2Provider.launch", () => {
     const byKey = Object.fromEntries(tags.map((t: any) => [t.Key, t.Value]));
     expect(byKey[tag("local-username")]).toBe("researcher");
     // The same value reached user-data, not just the tag.
-    const userData = Buffer.from(lastOf(RunInstancesCommand).input.UserData!, "base64").toString();
-    expect(userData).toContain("researcher");
+    const userData = decodeUserData(lastOf(RunInstancesCommand).input.UserData!);
+    expect(userData).toContain("LOCAL_USERNAME='researcher'");
   });
 
   it("attaches the IAM instance profile (name or ARN) when configured", async () => {
@@ -273,18 +281,127 @@ describe("EC2Provider.launch", () => {
     handler = () => ({ Instances: [{ InstanceId: "i-1", State: { Name: "pending" } }] });
     const pem = "-----BEGIN PUBLIC KEY-----\nMFkwEwYHkeymaterial==\n-----END PUBLIC KEY-----";
     await provider({ sporedSigningPublicKey: pem }).launch(baseSpec, T0);
-    const b64 = lastOf(RunInstancesCommand).input.UserData!;
-    const script = Buffer.from(b64, "base64").toString("utf8");
+    const script = decodeUserData(lastOf(RunInstancesCommand).input.UserData!);
     expect(script).toContain("spored-signing-key.pem");
     expect(script).toContain("MFkwEwYHkeymaterial==");
     expect(script).toContain("openssl dgst -sha256 -verify");
   });
 
-  it("omits signature verification when no key is configured", async () => {
+  it("verifies with the spore.host key when no override is configured, as a Go release build does", async () => {
     handler = () => ({ Instances: [{ InstanceId: "i-1", State: { Name: "pending" } }] });
     await provider().launch(baseSpec, T0);
-    const script = Buffer.from(lastOf(RunInstancesCommand).input.UserData!, "base64").toString("utf8");
-    expect(script).not.toContain("spored-signing-key.pem");
+    const script = decodeUserData(lastOf(RunInstancesCommand).input.UserData!);
+    expect(script).toContain(SPORED_SIGNING_KEY_PEM);
+    expect(script).toContain("SPORED_SIG_VERIFY=1");
+  });
+
+  it("sends the release-build stub pinned to spored 0.149.0, not an inline bootstrap (#1274, #1412)", async () => {
+    handler = () => ({ Instances: [{ InstanceId: "i-1", State: { Name: "pending" } }] });
+    await provider().launch(baseSpec, T0);
+    const script = decodeUserData(lastOf(RunInstancesCommand).input.UserData!);
+    expect(script).toContain("SPAWN_SPORED_VERSION='0.149.0'");
+    expect(script).toContain(". /etc/spawn/bootstrap-body.sh");
+    expect(script).not.toContain("systemctl start spored");
+  });
+
+  it("gives the bootstrap the completion file spored watches (#1131)", async () => {
+    handler = () => ({ Instances: [{ InstanceId: "i-1", State: { Name: "pending" } }] });
+    await provider().launch({ ...baseSpec, completionFile: "/data/DONE" }, T0);
+    const script = decodeUserData(lastOf(RunInstancesCommand).input.UserData!);
+    expect(script).toContain("SPAWN_CMD_COMPLETION_FILE='/data/DONE'");
+  });
+
+  it("refuses a username the shell would interpret, before any AWS call", async () => {
+    await expect(provider({ username: "x;reboot" }).launch(baseSpec, T0)).rejects.toThrow(/username/);
+    expect(sent).toHaveLength(0);
+  });
+
+  it("tags a Spot launch spawn:spot-request-type=one-time, and on-demand not at all (#922)", async () => {
+    handler = () => ({ Instances: [{ InstanceId: "i-1", State: { Name: "pending" } }] });
+    await provider().launch({ ...baseSpec, spot: true }, T0);
+    let tags = lastOf(RunInstancesCommand).input.TagSpecifications![0].Tags!;
+    expect(tags.find((t: any) => t.Key === tag("spot-request-type"))?.Value).toBe("one-time");
+    sent = [];
+    await provider().launch(baseSpec, T0);
+    tags = lastOf(RunInstancesCommand).input.TagSpecifications![0].Tags!;
+    expect(tags.some((t: any) => t.Key === tag("spot-request-type"))).toBe(false);
+  });
+});
+
+describe("EC2Provider.launch refusals before any AWS call", () => {
+  const nested = "spawn-instance-nested-0123abcd";
+
+  it("refuses a nested-spawn profile without a TTL (#1375), by name or ARN", async () => {
+    for (const profile of [nested, `arn:aws:iam::123456789012:instance-profile/${nested}`]) {
+      sent = [];
+      // An idle timeout is a bound, but not the hard lifetime this needs.
+      const p = provider({ iamInstanceProfile: profile, identity: undefined });
+      await expect(p.launch({ ...baseSpec, ttlMs: 0, idleTimeoutMs: 3600_000 }, T0)).rejects.toThrow(
+        /nested-spawn role .* requires --ttl: an instance that can launch other instances must have a hard lifetime/,
+      );
+      expect(sent).toHaveLength(0);
+    }
+  });
+
+  it("allows a nested-spawn profile with a TTL, and any other profile without one", async () => {
+    handler = () => ({ Instances: [{ InstanceId: "i-1", State: { Name: "pending" } }] });
+    await provider({ iamInstanceProfile: nested }).launch(baseSpec, T0);
+    await provider({ iamInstanceProfile: "spawn-instance-0123abcd" }).launch(
+      { ...baseSpec, ttlMs: 0, idleTimeoutMs: 3600_000 },
+      T0,
+    );
+    expect(sent.filter((c) => c instanceof RunInstancesCommand)).toHaveLength(2);
+  });
+
+  it("refuses a Spot launch that would need EC2 to stop it (#922/#1330)", async () => {
+    const p = provider({ identity: undefined });
+    await expect(p.launch({ ...baseSpec, spot: true, idleTimeoutMs: 3600_000 }, T0)).rejects.toThrow(
+      /one-time Spot requests, which EC2 cannot stop/,
+    );
+    expect(sent).toHaveLength(0);
+  });
+
+  it("refuses user data over EC2's 16 KiB limit (#1063)", async () => {
+    // Incompressible plugin config, so the gzip stream itself is over the limit.
+    const noise = randomBytes(18_000).toString("base64");
+    const spec = { ...baseSpec, plugins: [{ ref: "mountpoint-s3", config: { bucket: noise } }] };
+    const p = provider({ identity: undefined });
+    await expect(p.launch(spec, T0)).rejects.toThrow(/user data is \d+ bytes after encoding .* EC2 allows 16384/);
+    expect(sent).toHaveLength(0);
+  });
+});
+
+describe("EC2Provider.launch after RunInstances fails (#1298)", () => {
+  it("terminates the instance it created, and says so", async () => {
+    handler = () => ({ Instances: [{ InstanceId: "i-made", State: { Name: "pending" } }] });
+    const p = provider();
+    vi.spyOn(p as any, "toManaged").mockImplementationOnce(() => {
+      throw new Error("boom");
+    });
+    await expect(p.launch(baseSpec, T0)).rejects.toThrow(/boom; instance i-made was terminated/);
+    expect(lastOf(TerminateInstancesCommand).input.InstanceIds).toEqual(["i-made"]);
+  });
+
+  it("keeps it with keepOnError, and warns that nothing enforces its lifetime", async () => {
+    handler = () => ({ Instances: [{ InstanceId: "i-made", State: { Name: "pending" } }] });
+    const p = provider();
+    vi.spyOn(p as any, "toManaged").mockImplementationOnce(() => {
+      throw new Error("boom");
+    });
+    await expect(p.launch({ ...baseSpec, keepOnError: true }, T0)).rejects.toThrow(/i-made was KEPT/);
+    expect(sent.some((c) => c instanceof TerminateInstancesCommand)).toBe(false);
+  });
+
+  it("reports a failed terminate as still billing, not as cleaned up", async () => {
+    handler = (cmd) => {
+      if (cmd instanceof TerminateInstancesCommand) throw new Error("AccessDenied");
+      return { Instances: [{ InstanceId: "i-made", State: { Name: "pending" } }] };
+    };
+    const p = provider();
+    vi.spyOn(p as any, "toManaged").mockImplementationOnce(() => {
+      throw new Error("boom");
+    });
+    await expect(p.launch(baseSpec, T0)).rejects.toThrow(/ALSO failed \(AccessDenied\): it is still running/);
   });
 });
 

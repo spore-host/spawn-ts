@@ -4,300 +4,375 @@
 // spawn:* tags and enforces TTL/idle/cost/completion locally — so an instance
 // terminates on its TTL even if the browser tab is closed.
 //
-// Mirrors the shape of ~/src/spore-host/spawn/pkg/launcher/bootstrap.go's
-// BuildLinuxBootstrap: all runtime behavior comes from tags; the script only
-// installs the daemon and (optionally) writes the embedded --command workload.
+// The script is Go spawn's release-build bootstrap (pkg/launcher/bootstrap.go,
+// BuildLinuxBootstrap, #1274), rendered for a pinned spawn release
+// (SPAWN_BOOTSTRAP_VERSION): a short stub that fetches the static bootstrap body
+// that release published beside spored in every spawn-binaries-<region> bucket,
+// refuses it unless its sha256 is BOOTSTRAP_BODY_SHA256 AND its signature
+// verifies against the spore.host key, and only then runs it. The body installs
+// that same release's spored from spawn/versions/<version>/ (#1412), never the
+// unversioned latest. Everything the body does (create the user, install and
+// start spored, session timeout, job-array/sweep env, --command, the Spot
+// replacement stop) is therefore Go's, byte for byte, not a hand-maintained copy
+// of it — which is what the previous, inline spawn-ts bootstrap was, and why it
+// had drifted (no fatal-retire, no SELinux relabel, no curl retry, an unpinned
+// spored, signature verification off by default).
 //
-// EC2 requires UserData to be base64. cloud-init on AL2023/Ubuntu also
-// transparently gunzips it, but plain base64 of the raw script is accepted too;
-// we keep it simple (base64 of text) since the browser has no gzip-to-bytes
-// helper as ergonomic as Go's. If size ever matters, swap in CompressionStream.
+// The per-launch parts spawn-ts supports (user, key, command, completion file,
+// plugins) are rendered here exactly as Go renders them; testdata/
+// stub-fixtures.v0.149.0.json holds Go's own output for the same inputs and
+// userdata.test.ts requires byte equality.
 
 import { type PluginDeclaration, serializeDeclarations } from "../core/plugins.js";
 
+/**
+ * The spawn release whose published bootstrap body and spored a spawn-ts launch
+ * installs.
+ *
+ * 0.149.0 deliberately, and it is not "the latest Go release": spored from
+ * v0.150.0 reads the launch-fixed settings (webhooks, notify-*, active-ports/
+ * -processes, idle-cpu) from a per-launch config object named by spawn:config,
+ * and IGNORES them as tags (spawn#1359, no tag fallback by owner decision).
+ * spawn-ts writes them as tags, so 0.149.0 is the newest spored that enforces
+ * what spawn-ts writes (spore-host/spawn-ts#108). The versioned path is
+ * permanent (#1412), and the release workflow publishes and reads back the
+ * body, spored, .sha256 and .sig there before the CLI is installable (#1415).
+ *
+ * Moving this pin is a contract change, not a version bump: re-generate the
+ * body and fixtures with scripts/gen-go-fixtures.sh, and check what that
+ * release's spored reads from tags.
+ */
+export const SPAWN_BOOTSTRAP_VERSION = "0.149.0";
+
+/**
+ * sha256 of `spawn bootstrap-body` at SPAWN_BOOTSTRAP_VERSION, i.e. of
+ * launcher.BootstrapBody(). Reproducible without a checkout:
+ * `go run github.com/spore-host/spawn@v0.149.0 bootstrap-body | sha256sum`.
+ * testdata/bootstrap-body.v0.149.0.sh is that output, and a test pins the hash
+ * to it, so this constant cannot silently disagree with the bytes it names.
+ */
+export const BOOTSTRAP_BODY_SHA256 =
+  "250f111bf0aec010dde1fa38aabe6c163112a634c3f64e974799ddf5b24254b2";
+
+/**
+ * The spore.host spored signing PUBLIC key (pkg/sporedinstall.SigningKeyPEM):
+ * the public half of the KMS key (ECDSA_SHA_256, P-256) the release pipeline
+ * signs spored and the bootstrap body with. Carried by the launcher, not served
+ * from the bucket, so a bucket compromise cannot forge a signature
+ * (spore-host#440).
+ */
+export const SPORED_SIGNING_KEY_PEM = `-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEOZo4nbX52lIw/vbPQdawhyXrhG+c
+AtY5UKek+Y9PGbBHyqAukxdMoE5hc28ZvbcDIRiSussHivyki5gr8/QlVA==
+-----END PUBLIC KEY-----`;
+
+/** Where the bootstrap writes the signing key (sporedinstall.SigningKeyPath). */
+const SIGNING_KEY_PATH = "/etc/spawn/spored-signing-key.pem";
+
+/** Where the stub saves the body before verifying and sourcing it. */
+const BODY_PATH = "/etc/spawn/bootstrap-body.sh";
+
+/** The completion sentinel when no completionFile is given (flag default). */
+const DEFAULT_COMPLETION_FILE = "/tmp/SPAWN_COMPLETE";
+
 export interface BootstrapOptions {
-  /** Primary login user for the instance (e.g. "ec2-user", "ubuntu"). */
+  /**
+   * Local Linux user the body creates (e.g. "ec2-user", "ubuntu"). Required, and
+   * held to Go's `security.ValidateUsername`: it lands in the shell and in
+   * /etc/sudoers.d, so it is refused rather than quoted around.
+   */
   username: string;
-  /** Optional SSH public key to authorize. Empty => SSM-only, keyless. */
+  /** SSH public key to authorize. Empty => SSM-only (or the EC2 key pair's key). */
   publicKey?: string;
-  /** Optional workload command, embedded in user-data (not the length-capped tag). */
+  /** Workload command, written to /etc/spawn/command (user-data, not the 256-char tag). */
   command?: string;
   /**
-   * Base host for the spored binary bucket. Defaults to the spore.host regional
-   * S3 scheme (`spawn-binaries-<region>.s3.amazonaws.com`), resolved at runtime
-   * from IMDS. Override only for testing/mirrors.
+   * Path the --command wrapper writes its completion record to, which spored
+   * watches. Must agree with spawn:completion-file or on-complete never fires
+   * (spawn#1131). Empty => /tmp/SPAWN_COMPLETE.
    */
-  binaryBucketPrefix?: string;
+  completionFile?: string;
   /**
-   * Idle-SSH-shell auto-logout, in ms. 0/undefined = disabled. Writes an sshd
-   * ClientAlive config + a readonly TMOUT in /etc/profile.d/. Mirrors the Go
-   * bootstrap (pkg/launcher/bootstrap.go). Disconnects idle login sessions; it
-   * does NOT stop/terminate the instance (that's the idle-instance lifecycle).
-   */
-  sessionTimeoutMs?: number;
-  /**
-   * PEM-encoded spore.host signing PUBLIC key. When set, the bootstrap verifies
-   * the downloaded spored's detached signature against this key (fail-closed)
-   * before installing — proving authenticity, not just integrity. The key is
-   * carried by the launcher (trusted), NOT served from the binary's S3 bucket,
-   * so a bucket compromise can't forge it (spore-host#440). Absent = checksum
-   * only (guards corruption), matching the Go tool's default when no key is
-   * compiled in.
+   * Override for the PEM signing public key the stub and the spored install
+   * verify against. Defaults to SPORED_SIGNING_KEY_PEM; only a key rotation
+   * needs this. Verification is not optional: the stub refuses to run a body it
+   * cannot verify, exactly as a Go release build does.
    */
   sporedSigningPublicKey?: string;
   /**
-   * Plugins to declare at launch. Written to /etc/spawn/plugins.json, which
-   * spored reads at startup (`loadPluginDeclarations`, pkg/provider/ec2.go:630).
+   * Plugins to declare at launch. Written to /etc/spawn/plugins.json before
+   * spored starts (spawn#1023), which spored reads once at startup.
    *
    * This is the ONLY portable plugin-install transport: `spawn plugin install`
    * needs an SSH tunnel to the on-instance controller, which a browser has not
-   * got. Restricted to `LAUNCH_DECLARABLE_PLUGINS` — see `core/plugins.ts` for
-   * why the other five park at waiting-for-push. Callers should run the refs
-   * through `validateDeclarations()` first so a rejection can be explained to
-   * the user rather than discovered on the instance.
+   * got. Restricted to `LAUNCH_DECLARABLE_PLUGINS` — see `core/plugins.ts`.
    */
   plugins?: PluginDeclaration[];
 }
 
-/**
- * Build the plaintext bootstrap script. Installs spored the same way the Go tool
- * does (pkg/launcher/bootstrap.go): detect arch (amd64/arm64), read the region
- * from IMDS, download `spored-linux-<arch>` from the regional S3 bucket with a
- * us-east-1 fallback and both prefixed + legacy paths, verify the SHA256, and
- * install atomically. The earlier GitHub-release URL was a fiction (404) and
- * amd64-only — see spawn-ts#17.
- */
-export function buildLinuxBootstrap(opts: BootstrapOptions): string {
-  const user = opts.username || "ec2-user";
-  const keyLine = opts.publicKey
-    ? `echo ${shellSingleQuote(opts.publicKey)} >> /home/${user}/.ssh/authorized_keys`
-    : `# no SSH key supplied — SSM-only instance`;
+/** Go's security.ShellQuote: single quotes, with ' as '\''. */
+export function shellQuote(s: string): string {
+  return `'` + s.replace(/'/g, `'\\''`) + `'`;
+}
 
-  const commandBlock = opts.command
-    ? `mkdir -p /etc/spawn
+/**
+ * Go's security.ValidateUsername. The username is interpolated into the body's
+ * useradd/sudoers lines, so anything outside the POSIX shape is refused.
+ */
+export function validateUsername(username: string): void {
+  if (username === "") throw new Error("bootstrap: username is required");
+  if (username.length > 32) {
+    throw new Error("invalid username: username exceeds maximum length of 32 characters");
+  }
+  if (!/^[a-z][a-z0-9_-]{0,31}$/.test(username)) {
+    throw new Error(
+      "invalid username: invalid username format: must start with lowercase letter and contain only lowercase letters, digits, hyphens, and underscores",
+    );
+  }
+}
+
+/** sporedinstall.KeySetupScript, comment-stripped as Go splices it in. */
+function keySetupScript(pem: string): string {
+  return `SPORED_SIG_VERIFY=1
+mkdir -p /etc/spawn
+cat > ${SIGNING_KEY_PATH} <<'EOFSPOREDPUBKEY'
+${pem}
+EOFSPOREDPUBKEY
+`;
+}
+
+/** sporedinstall.PinScript: the spored release the body installs (#1412). */
+function pinScript(version: string): string {
+  return "\nSPAWN_SPORED_VERSION=" + shellQuote(version) + "\n";
+}
+
+/**
+ * Go's fatalRetireFunc, comment-stripped. Defines spawn_fatal_retire and an
+ * EXIT trap so that ANY exit of the bootstrap before spored is running
+ * terminates the instance (via the role's self-only terminate grant), or shuts
+ * it down when it cannot: with no spored, nothing would enforce its TTL (#1274).
+ */
+const FATAL_RETIRE = `spawn_fatal_say() {
+    echo "spawn: $1" >&2
+    echo "spawn: $1" >> /dev/console 2>/dev/null || true
+    logger -p user.crit -t spawn-bootstrap "$1" 2>/dev/null || true
+}
+spawn_fatal_retire() {
+    local tok id region n=0
+    trap - EXIT
+    spawn_fatal_say "FATAL: $1 (#1274)"
+    tok=$(curl -sf --connect-timeout 5 -X PUT http://169.254.169.254/latest/api/token -H "X-aws-ec2-metadata-token-ttl-seconds: 300" 2>/dev/null || true)
+    id=$(curl -sf --connect-timeout 5 -H "X-aws-ec2-metadata-token: $tok" http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null || true)
+    region=$(curl -sf --connect-timeout 5 -H "X-aws-ec2-metadata-token: $tok" http://169.254.169.254/latest/meta-data/placement/region 2>/dev/null || true)
+    if [ -n "$id" ] && [ -n "$region" ] && command -v aws >/dev/null 2>&1; then
+        while [ "$n" -lt 3 ]; do
+            if aws ec2 terminate-instances --region "$region" --instance-ids "$id" --cli-connect-timeout 10 --cli-read-timeout 30 >/dev/null 2>&1; then
+                spawn_fatal_say "terminating $id: with no spored, nothing would enforce its TTL"
+                exit 1
+            fi
+            n=$((n + 1))
+            sleep 5
+        done
+    fi
+    spawn_fatal_say "could not terminate this instance (no aws CLI, instance ID or permission); shutting down instead, which STOPS it (spawn sets no InstanceInitiatedShutdownBehavior): its volumes still bill, it no longer runs"
+    shutdown -h now 2>/dev/null || poweroff 2>/dev/null || true
+    exit 1
+}
+SPAWN_SPORED_UP=0
+SPAWN_MAIN_PID=$$
+SPAWN_LAST_FAILED="none"
+trap 'SPAWN_LAST_FAILED="line $LINENO: $BASH_COMMAND"' ERR
+spawn_exit_guard() {
+    local rc=$?
+    [ "\${BASHPID:-$$}" = "$SPAWN_MAIN_PID" ] || return 0
+    [ "$SPAWN_SPORED_UP" = 1 ] && return 0
+    spawn_fatal_retire "the bootstrap exited (status $rc) before spored started; last failed command: $SPAWN_LAST_FAILED"
+}
+trap spawn_exit_guard EXIT
+`;
+
+/**
+ * Go's bodyStubTemplate, comment-stripped: fetch the release's body (regional
+ * bucket, then us-east-1, 4 tries each), require the expected sha256 AND a
+ * valid signature, else spawn_fatal_retire; then source it.
+ */
+function bodyStub(version: string, sha256: string): string {
+  const p = BODY_PATH;
+  return `SPAWN_BS_VERSION=${shellQuote(version)}
+SPAWN_BS_SHA256=${sha256}
+SPAWN_BS_TOKEN=$(curl -sf --connect-timeout 5 -X PUT http://169.254.169.254/latest/api/token -H "X-aws-ec2-metadata-token-ttl-seconds: 300" 2>/dev/null || true)
+SPAWN_BS_REGION=$(curl -sf --connect-timeout 5 -H "X-aws-ec2-metadata-token: $SPAWN_BS_TOKEN" http://169.254.169.254/latest/meta-data/placement/region 2>/dev/null || true)
+SPAWN_BS_OK=0
+mkdir -p /etc/spawn
+for SPAWN_BS_BASE in "https://spawn-binaries-\${SPAWN_BS_REGION:-us-east-1}.s3.amazonaws.com" "https://spawn-binaries-us-east-1.s3.amazonaws.com"; do
+    SPAWN_BS_URL="$SPAWN_BS_BASE/spawn/versions/$SPAWN_BS_VERSION/bootstrap.sh"
+    for SPAWN_BS_TRY in 1 2 3 4; do
+        rm -f ${p} ${p}.sig ${p}.der
+        if curl -fsS --connect-timeout 10 --max-time 60 -o ${p} "$SPAWN_BS_URL" &&
+            curl -fsS --connect-timeout 10 --max-time 60 -o ${p}.sig "$SPAWN_BS_URL.sig"; then
+            break
+        fi
+        [ "$SPAWN_BS_TRY" = 4 ] || sleep 2
+    done
+    if [ ! -s ${p} ] || [ ! -s ${p}.sig ]; then
+        echo "spawn: no bootstrap body or signature at $SPAWN_BS_URL" >&2
+        continue
+    fi
+    if [ "$(sha256sum ${p} | cut -d ' ' -f 1)" != "$SPAWN_BS_SHA256" ]; then
+        echo "spawn: bootstrap body at $SPAWN_BS_URL is not the one spawn $SPAWN_BS_VERSION expects (sha256)" >&2
+        continue
+    fi
+    if base64 -d < ${p}.sig > ${p}.der 2>/dev/null &&
+        openssl dgst -sha256 -verify ${SIGNING_KEY_PATH} -signature ${p}.der ${p} >/dev/null 2>&1; then
+        SPAWN_BS_OK=1
+        break
+    fi
+    echo "spawn: bootstrap body signature at $SPAWN_BS_URL.sig does not verify" >&2
+done
+rm -f ${p}.sig ${p}.der
+if [ "$SPAWN_BS_OK" != 1 ]; then
+    rm -f ${p}
+    spawn_fatal_retire "no verified bootstrap body for spawn $SPAWN_BS_VERSION; not running an unverified bootstrap, so spored is not installed and no workload starts"
+fi
+echo "Bootstrap body verified (spawn $SPAWN_BS_VERSION, sha256 $SPAWN_BS_SHA256)"
+. ${p}
+`;
+}
+
+/** Go's perLaunchFiles for the command (the flush hook is task-run only). */
+function commandBlock(command?: string): string {
+  if (!command) return "";
+  return `
+# Embedded --command workload (user-data, not the spawn:command tag; #214/#246)
+mkdir -p /etc/spawn
 cat > /etc/spawn/command <<'EOFSPAWNCMD'
-${opts.command}
+${command}
 EOFSPAWNCMD
 chmod 600 /etc/spawn/command
-`
-    : "";
-
-  // Idle-SSH-shell auto-logout (spawn:session-timeout). Mirrors the Go bootstrap:
-  // sshd ClientAlive (keepalive = 1/6 of the timeout, min 60s) disconnects idle
-  // connections, and a readonly TMOUT in /etc/profile.d/ auto-logs-out idle
-  // shells. Seconds are computed here so the script needs no duration parser.
-  const sessionBlock = buildSessionTimeoutBlock(opts.sessionTimeoutMs ?? 0);
-
-  // Optional publisher-signature verification of the spored binary. Empty when
-  // no signing key is supplied (checksum-only, the default). Runs after the
-  // SHA256 check and before the atomic install; fail-closed on any mismatch.
-  const sigVerifyBlock = buildSigVerifyBlock(opts.sporedSigningPublicKey);
-
-  // Plugin declarations for spored to load at startup. Written BEFORE the spored
-  // install/start, unlike the Go bootstrap, which appends this block after
-  // `systemctl start spored` (pkg/launcher/bootstrap.go:146). Go gets away with
-  // it because spored retries, but the ordering is a real race: spored's
-  // loadPluginDeclarations runs once at startup and silently returns nil when the
-  // file is absent, so a fast start reads no plugins and nothing reports why.
-  // Writing first removes the race and the resulting file is byte-identical.
-  const pluginsBlock = buildPluginsBlock(opts.plugins);
-
-  return `#!/bin/bash
-set -e
-
-LOCAL_USERNAME=${user}
-mkdir -p /home/${user}/.ssh && chmod 700 /home/${user}/.ssh
-${keyLine}
-chown -R ${user}:${user} /home/${user}/.ssh 2>/dev/null || true
-
-${commandBlock}${pluginsBlock}${sessionBlock}
-# Install spored — the in-instance lifecycle daemon. It reads the spawn:* tags
-# this instance was launched with (via IMDS + ec2:DescribeTags) and enforces
-# TTL/idle/cost/completion locally, so the instance self-terminates even if the
-# browser tab is gone. Requires an IAM instance profile allowing DescribeTags/
-# DescribeInstances + TerminateInstances/StopInstances on spawn:managed=true.
-
-# Detect architecture.
-ARCH=$(uname -m)
-case "$ARCH" in
-  x86_64) BINARY="spored-linux-amd64" ;;
-  aarch64) BINARY="spored-linux-arm64" ;;
-  *) echo "unsupported architecture: $ARCH" >&2; exit 1 ;;
-esac
-
-# Detect region from IMDS (v2 token first, fall back to v1, then us-east-1).
-TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" 2>/dev/null || true)
-if [ -n "$TOKEN" ]; then
-  REGION=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/region 2>/dev/null)
-else
-  REGION=$(curl -s http://169.254.169.254/latest/meta-data/placement/region 2>/dev/null)
-fi
-[ -n "$REGION" ] || REGION=us-east-1
-
-REGIONAL="https://spawn-binaries-\${REGION}.s3.amazonaws.com"
-FALLBACK="https://spawn-binaries-us-east-1.s3.amazonaws.com"
-SPORED_TMP="$(mktemp /tmp/spored.XXXXXX)"
-
-# Try regional bucket (prefixed then legacy path), then us-east-1 (same).
-if curl -f -o "$SPORED_TMP" "\${REGIONAL}/spawn/\${BINARY}" 2>/dev/null; then
-  CHECKSUM_URL="\${REGIONAL}/spawn/\${BINARY}.sha256"
-elif curl -f -o "$SPORED_TMP" "\${REGIONAL}/\${BINARY}" 2>/dev/null; then
-  CHECKSUM_URL="\${REGIONAL}/\${BINARY}.sha256"
-elif curl -f -o "$SPORED_TMP" "\${FALLBACK}/spawn/\${BINARY}" 2>/dev/null; then
-  CHECKSUM_URL="\${FALLBACK}/spawn/\${BINARY}.sha256"
-else
-  curl -f -o "$SPORED_TMP" "\${FALLBACK}/\${BINARY}" || { echo "failed to download spored" >&2; rm -f "$SPORED_TMP"; exit 1; }
-  CHECKSUM_URL="\${FALLBACK}/\${BINARY}.sha256"
-fi
-
-# Verify SHA256 (best-effort: the checksum sits beside the binary, so this
-# guards corruption, not authenticity — matches the Go bootstrap's default).
-if curl -f -s -o /tmp/spored.sha256 "$CHECKSUM_URL" 2>/dev/null; then
-  EXPECTED=$(awk '{print $1}' /tmp/spored.sha256)
-  ACTUAL=$(sha256sum "$SPORED_TMP" | awk '{print $1}')
-  if [ -n "$EXPECTED" ] && [ "$EXPECTED" != "$ACTUAL" ]; then
-    echo "spored checksum mismatch (expected $EXPECTED, got $ACTUAL)" >&2
-    rm -f "$SPORED_TMP"; exit 1
-  fi
-fi
-${sigVerifyBlock}
-# Atomic install — rename works even if an old spored is executing (#27).
-chmod +x "$SPORED_TMP"
-mv -f "$SPORED_TMP" /usr/local/bin/spored
-
-# systemd unit — kept byte-for-byte identical to the Go bootstrap's
-# (pkg/launcher/bootstrap.go). The daemon is the BARE spored invocation with no
-# subcommand; passing an unknown subcommand makes spored exit non-zero and the
-# unit crash-loops, never enforcing the TTL (spawn-ts#19). Do not diverge here.
-cat > /etc/systemd/system/spored.service <<'EOF'
-[Unit]
-Description=Spawn Agent - Instance self-monitoring
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-Environment=SPORE_DNS_SIGV4=1
-ExecStart=/usr/local/bin/spored
-Restart=on-failure
-RestartSec=10
-TimeoutStopSec=30
-StandardOutput=journal
-StandardError=journal
-NoNewPrivileges=true
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-systemctl daemon-reload
-systemctl enable spored
-systemctl start spored
 `;
 }
 
 /**
- * Bootstrap fragment writing plugin declarations to /etc/spawn/plugins.json.
- * Empty when no plugins are declared, so an instance without plugins gets a
- * byte-identical script to before this feature existed.
- *
- * The JSON is emitted by `serializeDeclarations`, which matches Go's
- * `plugin.Declaration` marshalling exactly (including `config,omitempty`), so
- * spored's decoder sees the same bytes from either writer.
- *
- * A single-quoted here-doc delimiter (EOFPLUGINS, as in the Go bootstrap) keeps
- * the JSON verbatim: no shell expansion, so a `$` inside a config value can't be
- * interpolated at write time.
+ * Go's plugin-declarations block, written before the body so spored, which
+ * reads the file once at startup, never starts without it (#1023). The JSON is
+ * `serializeDeclarations`, which matches Go's json.Marshal of
+ * []plugin.Declaration byte for byte (sorted config keys, HTML escaping).
  */
-function buildPluginsBlock(plugins?: PluginDeclaration[]): string {
+function pluginsBlock(plugins?: PluginDeclaration[]): string {
   if (!plugins || plugins.length === 0) return "";
-  const json = serializeDeclarations(plugins);
-  const n = plugins.length;
   return `
-# Plugin declarations, read at startup by spored's loadPluginDeclarations
-# (pkg/provider/ec2.go:630). This is the launch-time plugin path; there is no
-# on-instance controller here, so only plugins with no local install step work.
+# Plugin declarations, read once by spored at startup, so written before it starts (#1023)
 mkdir -p /etc/spawn
 cat > /etc/spawn/plugins.json <<'EOFPLUGINS'
-${json}
+${serializeDeclarations(plugins)}
 EOFPLUGINS
 chmod 644 /etc/spawn/plugins.json
-echo "Plugin declarations written: ${n} plugin(s)"
+echo "Plugin declarations written: ${plugins.length} plugin(s)"
 `;
 }
 
-/**
- * Bootstrap fragment that verifies the spored binary's detached signature
- * against a supplied signing PUBLIC key before install. Empty when no key is
- * given (checksum-only default). Ports the Go bootstrap's SPORED_SIG_VERIFY
- * path (pkg/launcher/bootstrap.go): download `<binary>.sig` next to the
- * checksum URL, base64-decode to DER, `openssl dgst -sha256 -verify`,
- * fail-closed on missing/invalid signature.
- */
-function buildSigVerifyBlock(publicKeyPem?: string): string {
-  if (!publicKeyPem || !publicKeyPem.trim()) return "";
-  return `
-# Publisher-signature verification (spore-host#440). The checksum above only
-# proves the download wasn't corrupted (it's served from the same bucket as the
-# binary); this proves authenticity against a key carried by the launcher, not
-# the bucket. Fail-closed.
-mkdir -p /etc/spawn
-cat > /etc/spawn/spored-signing-key.pem <<'EOFSPOREDPUBKEY'
-${publicKeyPem.trim()}
-EOFSPOREDPUBKEY
-SIG_URL="\${CHECKSUM_URL%.sha256}.sig"
-if ! curl -f -s -o /tmp/spored.sig "$SIG_URL"; then
-  echo "spored signature not found at $SIG_URL — refusing to run an unsigned binary" >&2
-  rm -f "$SPORED_TMP"; exit 1
-fi
-# The .sig is base64-encoded DER (ECDSA_SHA_256); decode to raw DER for openssl.
-base64 -d /tmp/spored.sig > /tmp/spored.sig.der 2>/dev/null || cp /tmp/spored.sig /tmp/spored.sig.der
-if openssl dgst -sha256 -verify /etc/spawn/spored-signing-key.pem -signature /tmp/spored.sig.der "$SPORED_TMP" >/dev/null 2>&1; then
-  echo "spored signature verified (spore.host)"
-else
-  echo "spored signature verification FAILED — refusing to run spored" >&2
-  rm -f "$SPORED_TMP" /tmp/spored.sig /tmp/spored.sig.der; exit 1
-fi
-rm -f /tmp/spored.sig /tmp/spored.sig.der
-`;
-}
-
-/**
- * Bootstrap fragment for idle-SSH-shell auto-logout. Empty when disabled
- * (timeoutMs <= 0). Sets sshd ClientAlive (interval = 1/6 of the timeout, min
- * 60s, ×3 count) and a readonly TMOUT for all shells. Ports the Go bootstrap's
- * session-timeout block; the seconds are precomputed so no shell parser is needed.
- */
-function buildSessionTimeoutBlock(timeoutMs: number): string {
-  if (timeoutMs <= 0) return "";
-  const seconds = Math.round(timeoutMs / 1000);
-  const sshInterval = Math.max(60, Math.floor(seconds / 6));
-  return `
-# Idle session auto-logout (spawn:session-timeout).
-if ! grep -q "^ClientAliveInterval" /etc/ssh/sshd_config; then
-  echo "ClientAliveInterval ${sshInterval}" >> /etc/ssh/sshd_config
-  echo "ClientAliveCountMax 3" >> /etc/ssh/sshd_config
-  systemctl reload sshd 2>/dev/null || service sshd reload 2>/dev/null || true
-fi
-cat > /etc/profile.d/session-timeout.sh <<'EOFTIMEOUT'
-# Automatic logout for idle shells; readonly prevents users from unsetting it.
-export TMOUT=${seconds}
-readonly TMOUT
-EOFTIMEOUT
-chmod 644 /etc/profile.d/session-timeout.sh
-
-`;
-}
-
-/** Base64-encode the bootstrap for the RunInstances UserData field. */
-export function encodeUserData(script: string): string {
-  // btoa needs Latin-1; encode UTF-8 first so non-ASCII commands survive.
-  const utf8 = new TextEncoder().encode(script);
+/** Base64 of a string's UTF-8 bytes (Go's base64.StdEncoding of []byte). */
+function base64Utf8(s: string): string {
   let bin = "";
-  for (const b of utf8) bin += String.fromCharCode(b);
+  for (const b of new TextEncoder().encode(s)) bin += String.fromCharCode(b);
   return btoa(bin);
 }
 
-function shellSingleQuote(s: string): string {
-  return `'` + s.replace(/'/g, `'\\''`) + `'`;
+/**
+ * Build the plaintext bootstrap: the stub user data a Go release build of
+ * SPAWN_BOOTSTRAP_VERSION would send for the same inputs
+ * (launcher.BuildLinuxBootstrap with InlineBody false). Throws on an invalid
+ * username, as Go does.
+ */
+export function buildLinuxBootstrap(opts: BootstrapOptions): string {
+  validateUsername(opts.username);
+  const key = opts.publicKey ? base64Utf8(opts.publicKey) : "";
+  const pem = opts.sporedSigningPublicKey?.trim() || SPORED_SIGNING_KEY_PEM;
+  const completionFile = opts.completionFile || DEFAULT_COMPLETION_FILE;
+
+  const prefix =
+    `#!/bin/bash
+set -e
+
+# User configuration
+LOCAL_USERNAME=${shellQuote(opts.username)}
+LOCAL_SSH_KEY_BASE64=${shellQuote(key)}
+SPAWN_CMD_COMPLETION_FILE=${shellQuote(completionFile)}
+` +
+    keySetupScript(pem) +
+    pinScript(SPAWN_BOOTSTRAP_VERSION) +
+    FATAL_RETIRE;
+
+  const pre = commandBlock(opts.command) + pluginsBlock(opts.plugins);
+  return prefix + pre + bodyStub(SPAWN_BOOTSTRAP_VERSION, BOOTSTRAP_BODY_SHA256);
+}
+
+/**
+ * Encode a Linux bootstrap for RunInstances UserData exactly as Go does
+ * (launcher.EncodeLinuxUserData): gzip, then base64. cloud-init gunzips it.
+ * Gzip is what makes EC2's 16 KiB limit (which counts the decoded bytes) leave
+ * room; CompressionStream is in every browser spawn-ts targets and in Node 18+.
+ */
+export async function encodeLinuxUserData(script: string): Promise<string> {
+  const stream = new Blob([new TextEncoder().encode(script)])
+    .stream()
+    .pipeThrough(new CompressionStream("gzip"));
+  const gz = new Uint8Array(await new Response(stream).arrayBuffer());
+  let bin = "";
+  for (let i = 0; i < gz.length; i += 0x8000) {
+    bin += String.fromCharCode(...gz.subarray(i, i + 0x8000));
+  }
+  return btoa(bin);
+}
+
+/**
+ * Plain base64 of a script's UTF-8 bytes, without gzip. Kept for callers that
+ * need uncompressed user data; launches use encodeLinuxUserData.
+ */
+export function encodeUserData(script: string): string {
+  return base64Utf8(script);
+}
+
+/**
+ * EC2's two user-data limits (spawn#1063, pkg/aws/userdata_limit.go): 16384
+ * bytes after base64 decoding — for gzipped Linux user data, the gzip stream —
+ * and 25600 characters of base64. The first is the one that binds.
+ */
+export const MAX_USER_DATA_BYTES = 16384;
+export const MAX_ENCODED_USER_DATA_BYTES = 25600;
+
+/** Thrown before any AWS call when user data is over an EC2 limit. */
+export class UserDataTooLargeError extends Error {
+  constructor(
+    readonly decodedBytes: number,
+    readonly encodedBytes: number,
+  ) {
+    super(
+      `user data is ${decodedBytes} bytes after encoding (${encodedBytes} as sent, base64); ` +
+        `EC2 allows ${MAX_USER_DATA_BYTES} (and ${MAX_ENCODED_USER_DATA_BYTES} base64), so RunInstances would refuse it`,
+    );
+    this.name = "UserDataTooLargeError";
+  }
+}
+
+/**
+ * Go's UserDataSize: the decoded byte count and the encoded length of
+ * already-base64 user data. Invalid base64 is measured as raw bytes.
+ */
+export function userDataSize(encoded: string): { decoded: number; encoded: number } {
+  const n = encoded.length;
+  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) {
+    return { decoded: n, encoded: n };
+  }
+  const pad = encoded.endsWith("==") ? 2 : encoded.endsWith("=") ? 1 : 0;
+  return { decoded: (n / 4) * 3 - pad, encoded: n };
+}
+
+/** Go's CheckUserDataSize: throws UserDataTooLargeError over either limit. */
+export function checkUserDataSize(encoded: string): void {
+  if (encoded === "") return;
+  const { decoded, encoded: len } = userDataSize(encoded);
+  if (decoded > MAX_USER_DATA_BYTES || len > MAX_ENCODED_USER_DATA_BYTES) {
+    throw new UserDataTooLargeError(decoded, len);
+  }
 }

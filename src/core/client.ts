@@ -27,7 +27,7 @@ import type {
 import { evaluate, computeExtension, ttlDeadline } from "./lifecycle.js";
 import { findOrphans, type Orphan } from "./orphans.js";
 import { evaluateBounds } from "./bounds.js";
-import { parseDuration, formatDuration } from "./duration.js";
+import { parseDuration, parseLifetimeDuration, formatDuration } from "./duration.js";
 import { tag } from "./tags.js";
 import { MockProvider } from "./mock.js";
 import { FanOut, type FanOutMemberStatus, type FanOutSummary } from "./fanout.js";
@@ -113,6 +113,12 @@ export interface LaunchInput {
    * missing a plugin the caller asked for and nothing to explain it.
    */
   plugins?: PluginDeclaration[];
+  /**
+   * Keep the instance if the launch fails after it was created (Go
+   * `--keep-on-error`, #1298). Default: it is terminated, because the caller
+   * sees a failure and nobody is watching an instance that bills.
+   */
+  keepOnError?: boolean;
 }
 
 export class SpawnClient {
@@ -453,15 +459,40 @@ export class SpawnClient {
     }
 
     const inst = await this.provider.launch(spec, this.now());
-    // Emitted AFTER the launch so it names a real instance, and only for a real
-    // provider — a mock launch bills nothing, so the caveat would be noise. A
-    // spored-dependent bound is not the same promise as a TTL, and a caller who
-    // isn't told assumes it is.
-    if (verdict.warn && this.provider.isReal) {
-      this.emit({ type: "warning", instance: inst.name, rule: "unbounded", message: verdict.warn });
+    // From here the instance exists. If anything below fails, launch() rejects,
+    // and a caller told "the launch failed" is not watching an instance that is
+    // billing: terminate it unless keepOnError (Go #1298, where one such
+    // instance ran 74 hours past a 4h TTL).
+    try {
+      // Emitted AFTER the launch so it names a real instance, and only for a real
+      // provider — a mock launch bills nothing, so the caveat would be noise. A
+      // spored-dependent bound is not the same promise as a TTL, and a caller who
+      // isn't told assumes it is.
+      if (verdict.warn && this.provider.isReal) {
+        this.emit({ type: "warning", instance: inst.name, rule: "unbounded", message: verdict.warn });
+      }
+      this.emit({ type: "launched", instance: inst });
+      await this.refresh();
+    } catch (err) {
+      const cause = (err as Error).message;
+      if (input.keepOnError) {
+        throw new Error(
+          `${cause}; instance ${inst.instanceId} was KEPT (keepOnError): nothing has confirmed its ` +
+            "spored is enforcing its TTL, idle timeout or cost limit, so terminate it yourself when done",
+        );
+      }
+      try {
+        await this.provider.terminate(inst.instanceId, "launch failed after the instance was created");
+      } catch (terr) {
+        throw new Error(
+          `${cause}; terminating instance ${inst.instanceId} after the failed launch ALSO failed ` +
+            `(${(terr as Error).message}): it is still running and billing, terminate it by hand`,
+        );
+      }
+      throw new Error(
+        `${cause}; instance ${inst.instanceId} was terminated because the launch failed after it was created`,
+      );
     }
-    this.emit({ type: "launched", instance: inst });
-    await this.refresh();
     return inst;
   }
 
@@ -576,8 +607,24 @@ export class SpawnClient {
   }
 
   private toSpec(input: LaunchInput): LaunchSpec {
-    const dur = (v: string | number | undefined): number =>
-      v === undefined ? 0 : typeof v === "number" ? v : parseDuration(v) ?? 0;
+    // An unparseable duration is REFUSED, not read as "none" (Go #990). The old
+    // `parseDuration(v) ?? 0` turned ttl: "1d" or "4 h" into a launch with no
+    // TTL at all, which is the one bound enforced from outside the instance.
+    // "" and "0" (and 0) still mean "not set", as LaunchInput documents.
+    const dur = (field: string, v: string | number | undefined): number => {
+      if (v === undefined || v === "" || v === "0" || v === 0) return 0;
+      if (typeof v === "number") {
+        if (!Number.isFinite(v) || v < 0) {
+          throw new Error(`refusing to launch with ${field} ${v}: a duration must be a non-negative number of ms`);
+        }
+        return v;
+      }
+      try {
+        return parseLifetimeDuration(v);
+      } catch (e) {
+        throw new Error(`refusing to launch with ${field} "${v}": ${(e as Error).message}`);
+      }
+    };
     return {
       name: input.name,
       instanceType: input.instanceType ?? "c6a.xlarge",
@@ -586,21 +633,22 @@ export class SpawnClient {
       keyPair: input.keyPair,
       dnsName: input.dnsName,
       spot: input.spot ?? false,
-      ttlMs: dur(input.ttl),
-      idleTimeoutMs: dur(input.idleTimeout),
+      ttlMs: dur("ttl", input.ttl),
+      idleTimeoutMs: dur("idleTimeout", input.idleTimeout),
       hibernateOnIdle: input.hibernateOnIdle ?? false,
       idleCpuPercent: input.idleCpuPercent ?? 0,
       costLimit: input.costLimit ?? 0,
       onComplete: input.onComplete ?? "",
       completionFile: input.completionFile ?? "",
-      completionDelayMs: dur(input.completionDelay),
+      completionDelayMs: dur("completionDelay", input.completionDelay),
       pricePerHour: input.pricePerHour ?? 0,
-      sessionTimeoutMs: dur(input.sessionTimeout),
+      sessionTimeoutMs: dur("sessionTimeout", input.sessionTimeout),
       sweep: input.sweep,
       jobArray: input.jobArray,
       mpi: input.mpi,
       hooks: input.hooks,
       plugins: input.plugins,
+      keepOnError: input.keepOnError,
     };
   }
 }

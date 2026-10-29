@@ -17,6 +17,8 @@ import {
   AWS_TAG_LIMIT,
   LIB_VERSION,
   buildIdentityTags,
+  checkTagLimit,
+  TagLimitError,
 } from "./tags.js";
 import type { LaunchSpec, SweepMembership, JobArrayMembership, LifecycleHooks } from "./types.js";
 
@@ -396,4 +398,91 @@ describe("base identity tags", () => {
     // absent and "linux" alike today, but wire-compatibility means stating it.
     expect(buildLaunchTags(baseSpec(), 0)[tag("os")]).toBe("linux");
   });
+});
+
+describe("checkTagLimit (Go #1336)", () => {
+  const nTags = (n: number, extra: Record<string, string> = {}) => {
+    const t: Record<string, string> = { ...extra };
+    for (let i = 0; Object.keys(t).length < n; i++) t[`spawn:x-${i}`] = "v";
+    return t;
+  };
+
+  it("passes exactly AWS_TAG_LIMIT tags", () => {
+    expect(() => checkTagLimit(nTags(AWS_TAG_LIMIT))).not.toThrow();
+  });
+
+  it("refuses one more, with the count, the limit and how many to drop", () => {
+    let err: unknown;
+    try {
+      checkTagLimit(nTags(AWS_TAG_LIMIT + 2));
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(TagLimitError);
+    expect((err as TagLimitError).count).toBe(52);
+    expect((err as Error).message).toMatch(
+      /^refusing to launch: the instance would carry 52 tags and AWS allows 50 per resource, so RunInstances would reject it \(#1336\)\. Drop at least 2 of: /,
+    );
+  });
+
+  it("names the spored setting that added a tag", () => {
+    expect(() => checkTagLimit(nTags(51, { "spawn:idle-cpu": "5" }))).toThrow(
+      "the optional spored settings --idle-cpu (spawn:idle-cpu)",
+    );
+  });
+
+  it("a maximal spawn-ts launch still fits (sweep parameters are budgeted, not refused)", () => {
+    const params: Record<string, string> = {};
+    for (let i = 0; i < 80; i++) params[`p${String(i).padStart(2, "0")}`] = String(i);
+    const t = buildLaunchTags(
+      {
+        ...baseSpec({ id: "s", name: "s", index: 0, size: 1, parameters: params }),
+        spot: true,
+        idleTimeoutMs: 3600_000,
+        hibernateOnIdle: true,
+        idleCpuPercent: 5,
+        costLimit: 10,
+        onComplete: "terminate",
+        completionFile: "/tmp/DONE",
+        completionDelayMs: 60_000,
+        sessionTimeoutMs: 1800_000,
+        hooks: {
+          preStop: "x", preStopTimeoutMs: 1000, spotWebhookUrl: "u", webhookCorrelation: "c",
+          webhookTimeoutMs: 1000, notifyUrl: "n", notifyPlatform: "slack", notifyCommand: "c",
+          activeProcesses: "p", activePorts: "1",
+        },
+        jobArray: { id: "a", name: "a", index: 0, size: 1 },
+        mpi: { enabled: true, processesPerNode: 4 },
+      },
+      0,
+      { accountId: "123456789012", userArn: "arn:aws:iam::123456789012:user/u", accountName: "acct" },
+    );
+    t[tag("local-username")] = "ec2-user";
+    expect(() => checkTagLimit(t)).not.toThrow();
+    expect(Object.keys(t).length).toBe(AWS_TAG_LIMIT);
+  });
+});
+
+describe("spawn:spot-request-type (Go #922)", () => {
+  it("is one-time on a Spot launch, since spawn-ts only makes one-time requests", () => {
+    expect(buildLaunchTags({ ...baseSpec(), spot: true }, 0)[tag("spot-request-type")]).toBe("one-time");
+  });
+  it("is absent on an on-demand launch", () => {
+    expect(buildLaunchTags({ ...baseSpec(), spot: false }, 0)[tag("spot-request-type")]).toBeUndefined();
+  });
+});
+
+describe("idle CPU threshold (Go validateIdleCPU, #1308)", () => {
+  for (const bad of [-1, 100.5, Number.NaN]) {
+    it(`refuses ${bad}`, () => {
+      expect(() => buildLaunchTags({ ...baseSpec(), idleTimeoutMs: 3600_000, idleCpuPercent: bad }, 0)).toThrow(
+        "invalid idle CPU threshold",
+      );
+    });
+  }
+  for (const ok of [0, 5, 100]) {
+    it(`accepts ${ok}`, () => {
+      expect(() => buildLaunchTags({ ...baseSpec(), idleTimeoutMs: 3600_000, idleCpuPercent: ok }, 0)).not.toThrow();
+    });
+  }
 });

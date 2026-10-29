@@ -24,6 +24,7 @@
 // user nothing is deployed when five things are.
 
 import type { ManagedInstance } from "./types.js";
+import { goMarshal, goStruct } from "./gojson.js";
 
 /** Tag key prefix for per-plugin provenance. Mirrors the Go tool's literal. */
 export const PLUGIN_TAG_PREFIX = "spore:plugin:";
@@ -331,9 +332,19 @@ export function validateDeclarations(
  * payload keeps the two writers comparable when debugging an instance.
  */
 export function serializeDeclarations(declarations: PluginDeclaration[]): string {
-  return JSON.stringify(
+  // goMarshal, not JSON.stringify: Go sorts the config map's keys and escapes
+  // <, > and & (json.Marshal's HTML escaping), so JSON.stringify produced
+  // different bytes for a config with two keys out of order or a URL with `&`.
+  return goMarshal(
     declarations.map((d) =>
-      d.config && Object.keys(d.config).length > 0 ? { ref: d.ref, config: d.config } : { ref: d.ref },
+      goStruct(
+        d.config && Object.keys(d.config).length > 0
+          ? [
+              ["ref", d.ref],
+              ["config", d.config],
+            ]
+          : [["ref", d.ref]],
+      ),
     ),
   );
 }

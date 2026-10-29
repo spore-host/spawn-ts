@@ -26,8 +26,9 @@ import type {
   ManagedInstance,
 } from "../core/types.js";
 import { validateDeclarations } from "../core/plugins.js";
-import { buildLaunchTags, decodeConfigTags, decodeSweepTags, decodeJobArrayTags, decodeMpiTags, decodeHookTags, isManaged, tag, type LaunchIdentity } from "../core/tags.js";
-import { buildLinuxBootstrap, encodeUserData } from "./userdata.js";
+import { buildLaunchTags, checkTagLimit, decodeConfigTags, decodeSweepTags, decodeJobArrayTags, decodeMpiTags, decodeHookTags, isManaged, tag, type LaunchIdentity } from "../core/tags.js";
+import { checkNestedSpawnTtl, checkSpotStoppable } from "../core/bounds.js";
+import { buildLinuxBootstrap, checkUserDataSize, encodeLinuxUserData } from "./userdata.js";
 import { lookupElasticIp } from "./eip.js";
 import type { ElasticIpLookup } from "../core/notices.js";
 
@@ -63,6 +64,22 @@ export interface EC2ProviderOptions {
    * provider resolves it once via GetCallerIdentity on first launch.
    */
   identity?: LaunchIdentity;
+}
+
+/**
+ * Stand-ins for what resolveIdentity returns, used to count tags before any AWS
+ * call (Go's preflight values, pkg/aws/tag_limit.go). An account name is
+ * assumed, because the count must cover the most the lookup can add.
+ */
+const PREFLIGHT_IDENTITY: LaunchIdentity = {
+  accountId: "000000000000",
+  userArn: "arn:aws:iam::000000000000:user/preflight",
+  accountName: "preflight",
+};
+
+function withUsername(tags: Record<string, string>, username: string): Record<string, string> {
+  tags[tag("local-username")] = username;
+  return tags;
 }
 
 export class EC2Provider implements Provider {
@@ -135,23 +152,30 @@ export class EC2Provider implements Provider {
   }
 
   async launch(spec: LaunchSpec, launchTimeMs: number): Promise<ManagedInstance> {
-    const identity = await this.resolveIdentity();
-    const tags = buildLaunchTags(spec, launchTimeMs, identity);
+    // Everything that can refuse a launch runs BEFORE the first AWS call, as in
+    // Go's Client.Launch: nothing is created (or even asked) for a launch that
+    // RunInstances would reject or that must not happen.
 
-    // The tag must name the user userdata actually creates, so resolve once and
-    // use the same value for both — otherwise `spawn connect` SSHes to a user
-    // that doesn't exist. Set before tagList is snapshotted below.
+    // A nested-spawn profile can launch more instances; it needs a TTL (#1375).
+    const nested = checkNestedSpawnTtl("instance profile", this.opts.iamInstanceProfile, spec.ttlMs);
+    if (nested) throw new Error(nested);
+    // A one-time Spot instance cannot be stopped (#922/#1330).
+    const spotStop = checkSpotStoppable(spec);
+    if (spotStop) throw new Error(spotStop);
+
+    // The tag must name the user the bootstrap actually creates, so resolve once
+    // and use the same value for both — otherwise `spawn connect` SSHes to a user
+    // that doesn't exist.
     const localUsername = spec.localUsername ?? this.opts.username ?? "ec2-user";
-    tags[tag("local-username")] = localUsername;
 
-    const tagList: AwsTag[] = Object.entries(tags).map(([Key, Value]) => ({ Key, Value }));
-
-    const userData = encodeUserData(
+    // EC2 refuses user data over 16 KiB (decoded) with an HTTP 400 (#1063).
+    const userData = await encodeLinuxUserData(
       buildLinuxBootstrap({
         username: localUsername,
         publicKey: this.opts.publicKey,
-        command: spec.onComplete ? undefined : undefined, // workload wiring is a later feature
-        sessionTimeoutMs: spec.sessionTimeoutMs,
+        // The --command wrapper writes its completion record to the file spored
+        // watches, so the two must agree (#1131).
+        completionFile: spec.completionFile || undefined,
         sporedSigningPublicKey: this.opts.sporedSigningPublicKey,
         // Only the accepted declarations reach user-data. Rejections are dropped
         // here rather than thrown, because failing the whole launch over one
@@ -162,6 +186,16 @@ export class EC2Provider implements Provider {
         plugins: spec.plugins ? validateDeclarations(spec.plugins).accepted : undefined,
       }),
     );
+    checkUserDataSize(userData);
+
+    // AWS's 50-tag limit (#1336), counted with stand-ins for what the identity
+    // lookup adds (Go's ValidateTagCount), so it refuses before that call too.
+    checkTagLimit(withUsername(buildLaunchTags(spec, launchTimeMs, PREFLIGHT_IDENTITY), localUsername));
+
+    const identity = await this.resolveIdentity();
+    const tags = withUsername(buildLaunchTags(spec, launchTimeMs, identity), localUsername);
+    checkTagLimit(tags);
+    const tagList: AwsTag[] = Object.entries(tags).map(([Key, Value]) => ({ Key, Value }));
 
     // Real AWS requires an AMI; resolve the latest AL2023 for the instance's
     // architecture when the caller didn't supply one. (substrate synthesizes an
@@ -191,14 +225,49 @@ export class EC2Provider implements Provider {
     );
 
     const awsInst = res.Instances?.[0];
-    if (!awsInst?.InstanceId) throw new Error("RunInstances returned no instance");
-    // Trust the tags we just sent rather than the ones echoed back: they're
-    // authoritative and drive all lifecycle-config decoding, so this is correct
-    // regardless of backend and avoids a re-describe round-trip. (Real EC2 echoes
-    // launch-time tags in the RunInstances response; substrate <=v0.72.0 omitted
-    // them — fixed in v0.73.0, substrate#351 — but relying on the echo would be
-    // fragile either way.)
-    return this.toManaged(awsInst, spec.region, tags);
+    if (!awsInst?.InstanceId) {
+      // Nothing to terminate: without an id there is no instance this launch
+      // can name. Say so, rather than implying nothing was created.
+      throw new Error(
+        "RunInstances returned no instance id; if an instance was created, it cannot be identified from this response " +
+          "(look for spawn:managed=true instances named " + JSON.stringify(spec.name) + ")",
+      );
+    }
+    try {
+      // Trust the tags we just sent rather than the ones echoed back: they're
+      // authoritative and drive all lifecycle-config decoding, so this is correct
+      // regardless of backend and avoids a re-describe round-trip. (Real EC2 echoes
+      // launch-time tags in the RunInstances response; substrate <=v0.72.0 omitted
+      // them — fixed in v0.73.0, substrate#351 — but relying on the echo would be
+      // fragile either way.)
+      return this.toManaged(awsInst, spec.region, tags);
+    } catch (err) {
+      throw await this.retireAfterFailedLaunch(awsInst.InstanceId, spec, err as Error);
+    }
+  }
+
+  /**
+   * The launch failed after RunInstances created `instanceId` (Go #1298):
+   * terminate it unless the caller asked to keep it, and return the error to
+   * throw, which says which happened. The caller sees a failed launch, so an
+   * instance kept by default would bill with nobody watching it.
+   */
+  private async retireAfterFailedLaunch(instanceId: string, spec: Pick<LaunchSpec, "keepOnError">, cause: Error): Promise<Error> {
+    if (spec.keepOnError) {
+      return new Error(
+        `${cause.message}; instance ${instanceId} was KEPT (keepOnError): nothing has confirmed its ` +
+          "spored is enforcing its TTL, idle timeout or cost limit, so terminate it yourself when done",
+      );
+    }
+    try {
+      await this.client.send(new TerminateInstancesCommand({ InstanceIds: [instanceId] }));
+    } catch (terr) {
+      return new Error(
+        `${cause.message}; terminating instance ${instanceId} after the failed launch ALSO failed ` +
+          `(${(terr as Error).message}): it is still running and billing, terminate it by hand`,
+      );
+    }
+    return new Error(`${cause.message}; instance ${instanceId} was terminated because the launch failed after it was created`);
   }
 
   async list(includeTerminated = false): Promise<ManagedInstance[]> {

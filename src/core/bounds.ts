@@ -118,3 +118,75 @@ export function evaluateBounds(
   }
   return verdict;
 }
+
+/** Go's NestedSpawnRolePrefix (pkg/aws/nested_spawn.go). */
+export const NESTED_SPAWN_ROLE_PREFIX = "spawn-instance-nested-";
+
+/** Every nested-spawn refusal's reason (Go ErrNestedSpawnNeedsTTL). */
+export const NESTED_SPAWN_NEEDS_TTL = "an instance that can launch other instances must have a hard lifetime";
+
+/**
+ * Is `profile` one of the `spawn-instance-nested-*` profiles `spawn launch
+ * --nested-spawn` creates? Those roles may call RunInstances and pass roles, so
+ * an instance carrying one can start more instances.
+ *
+ * Accepts a profile name or ARN: spawn-ts takes either (EC2ProviderOptions.
+ * iamInstanceProfile), so the ARN's last path segment is checked too. Go's
+ * IsNestedSpawnRole checks the string's prefix only, because Go is only ever
+ * handed a name; checking the ARN form is the same rule, not a wider one.
+ */
+export function isNestedSpawnProfile(profile: string | undefined): boolean {
+  if (!profile) return false;
+  const name = profile.startsWith("arn:") ? profile.slice(profile.lastIndexOf("/") + 1) : profile;
+  return name.startsWith(NESTED_SPAWN_ROLE_PREFIX);
+}
+
+/**
+ * Go's CheckNestedSpawnTTL (#1375): refuse a nested-spawn profile with no TTL,
+ * before any AWS call. A TTL specifically, not just any bound: an idle timeout
+ * stops rather than terminates by default, and a head node busy dispatching may
+ * never be idle. Returns the refusal, or undefined.
+ */
+export function checkNestedSpawnTtl(source: string, profile: string | undefined, ttlMs: number): string | undefined {
+  if (!isNestedSpawnProfile(profile) || ttlMs > 0) return undefined;
+  return (
+    `${source} "${profile}" is a nested-spawn role (${NESTED_SPAWN_ROLE_PREFIX}*), which, ` +
+    `like --nested-spawn, requires --ttl: ${NESTED_SPAWN_NEEDS_TTL}`
+  );
+}
+
+/**
+ * Go's spotrequest.NeedsStoppable: does this lifecycle ask EC2 to stop or
+ * hibernate the instance? An idle timeout does (its action is stop, or
+ * hibernate; never terminate in spawn-ts), and so does on-complete stop or
+ * hibernate.
+ */
+export function needsStoppable(
+  spec: Pick<LaunchSpec, "idleTimeoutMs" | "onComplete">,
+): boolean {
+  return spec.idleTimeoutMs > 0 || spec.onComplete === "stop" || spec.onComplete === "hibernate";
+}
+
+/**
+ * Refuse a Spot launch whose lifecycle stops the instance (Go #922/#1330).
+ *
+ * EC2 cannot stop an instance from a one-time Spot request, and one-time is the
+ * only kind spawn-ts makes. spored's stop then fails and is retried with backoff
+ * (pkg/agent stopWithBackoff: "a one-time Spot instance cannot be stopped"), so
+ * the instance keeps running until its TTL, and with only an idle timeout as its
+ * bound, indefinitely. Go's foreground launch makes such a request persistent
+ * instead; that needs the request cancelled whenever the instance is terminated,
+ * or EC2 launches a replacement, which is why Go's detached sweep refuses these
+ * members rather than doing so, and why spawn-ts does the same.
+ */
+export function checkSpotStoppable(
+  spec: Pick<LaunchSpec, "spot" | "idleTimeoutMs" | "onComplete">,
+): string | undefined {
+  if (!spec.spot || !needsStoppable(spec)) return undefined;
+  return (
+    "refusing a Spot launch whose lifecycle stops the instance (an idle timeout, or on-complete " +
+    "stop/hibernate): spawn-ts makes one-time Spot requests, which EC2 cannot stop, so the stop would " +
+    "fail and the instance would keep billing. Give it a ttl and no idle timeout, and on-complete " +
+    "terminate if it has one, or launch on-demand"
+  );
+}

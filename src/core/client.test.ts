@@ -298,3 +298,71 @@ describe("SpawnClient end-to-end", () => {
     });
   });
 });
+
+describe("launch refuses an unparseable duration instead of dropping it (Go #990)", () => {
+  for (const [field, value] of [
+    ["ttl", "4 h"],
+    ["ttl", "-1h"],
+    ["ttl", "1w"],
+    ["idleTimeout", "soon"],
+    ["completionDelay", "5"],
+    ["sessionTimeout", "+30m"],
+  ] as const) {
+    it(`refuses ${field}: ${JSON.stringify(value)}`, async () => {
+      const c = client();
+      await expect(c.launch({ name: "x", [field]: value })).rejects.toThrow(
+        `refusing to launch with ${field} "${value}"`,
+      );
+      expect(await c.list()).toHaveLength(0);
+    });
+  }
+
+  it("accepts Go's day unit, and treats \"\"/\"0\"/0 as unset", async () => {
+    const c = client();
+    const inst = await c.launch({ name: "d", ttl: "1d" });
+    expect(inst.ttlMs).toBe(24 * 3600_000);
+    for (const ttl of ["", "0", 0] as const) {
+      const i = await c.launch({ name: `z${String(ttl)}`, ttl });
+      expect(i.ttlMs).toBe(0);
+    }
+  });
+});
+
+describe("launch terminates its instance when it fails after the instance exists (Go #1298)", () => {
+  function failingRefresh(keep?: boolean) {
+    const provider = new MockProvider();
+    const c = new SpawnClient({ provider, startMs: T0, clock: 1 });
+    // The instance is created; the list that follows it fails.
+    const realList = provider.list.bind(provider);
+    let calls = 0;
+    provider.list = async (all?: boolean) => {
+      if (calls++ === 0) throw new Error("DescribeInstances throttled");
+      return realList(all);
+    };
+    return { c, provider, launch: () => c.launch({ name: "j", ttl: "1h", keepOnError: keep }), realList };
+  }
+
+  it("terminates by default and says so", async () => {
+    const { launch, realList } = failingRefresh();
+    await expect(launch()).rejects.toThrow(/DescribeInstances throttled; instance .* was terminated/);
+    const all = await realList(true);
+    expect(all).toHaveLength(1);
+    expect(all[0].state).toBe("terminated");
+  });
+
+  it("keeps it with keepOnError, and warns that nothing confirmed spored", async () => {
+    const { launch, realList } = failingRefresh(true);
+    await expect(launch()).rejects.toThrow(/was KEPT \(keepOnError\)/);
+    expect((await realList(true))[0].state).not.toBe("terminated");
+  });
+
+  it("also covers a listener that throws on the launched event", async () => {
+    const provider = new MockProvider();
+    const c = new SpawnClient({ provider, startMs: T0, clock: 1 });
+    c.on((e) => {
+      if (e.type === "launched") throw new Error("listener blew up");
+    });
+    await expect(c.launch({ name: "l", ttl: "1h" })).rejects.toThrow(/listener blew up; instance .* was terminated/);
+    expect((await provider.list(true))[0].state).toBe("terminated");
+  });
+});

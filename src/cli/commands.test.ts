@@ -979,3 +979,22 @@ describe("CLI on-idle + lifecycle hooks", () => {
     });
   });
 });
+
+describe("launch duration flags use Go's parser (#990)", () => {
+  for (const bad of ["-1h", "4", "1w", "0"]) {
+    it(`refuses --ttl=${bad} instead of launching without a TTL`, async () => {
+      const c = ctx();
+      const r = await runCommand(`launch job --ttl=${bad}`, c);
+      expect(r.error).toBeTruthy();
+      expect(r.lines.join("\n")).toContain(`invalid --ttl`);
+      expect(await c.provider.list(true)).toHaveLength(0);
+    });
+  }
+
+  it("accepts --ttl 1d", async () => {
+    const c = ctx();
+    const r = await runCommand("launch job --ttl 1d", c);
+    expect(r.error).toBeFalsy();
+    expect((await c.provider.list())[0].ttlMs).toBe(24 * 3600_000);
+  });
+});

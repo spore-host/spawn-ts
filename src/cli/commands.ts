@@ -9,7 +9,7 @@ import type { LaunchSpec, ManagedInstance, LifecycleHooks } from "../core/types.
 import type { ParamSpec, ParamSet } from "../core/params.js";
 import { parseGridShorthand } from "../core/params.js";
 import { parseQueueConfig } from "../core/queue.js";
-import { parseDuration, formatDuration, humanRemaining } from "../core/duration.js";
+import { parseDuration, parseLifetimeDuration, formatDuration, humanRemaining } from "../core/duration.js";
 import { accumulatedCost, computeExtension, ttlDeadline } from "../core/lifecycle.js";
 import { evaluateBounds } from "../core/bounds.js";
 import { statusNotices, type ElasticIpLookup } from "../core/notices.js";
@@ -83,6 +83,9 @@ const BOOLEAN_FLAGS = new Set([
   // (same shape as the --no-timeout bug above). Note --mpi-processes-per-node
   // deliberately stays a value flag; only the bare toggle is registered here.
   "mpi",
+  // Go's --keep-on-error (#1298): keep an instance whose launch failed after
+  // RunInstances, instead of terminating it.
+  "keep-on-error",
 ]);
 
 /** Entry point: parse a raw line and dispatch. */
@@ -156,6 +159,8 @@ function help(): CmdResult {
     "launch flags: --instance-type --region --ttl --idle-timeout --on-idle stop|hibernate",
     "              --cost-limit --price-per-hour --on-complete --spot --ami --key",
     "              --session-timeout (idle-SSH-shell auto-logout, e.g. 30m)",
+    "              --keep-on-error (keep an instance whose launch failed after it was created;",
+    "              by default it is terminated)",
     "  hooks (run by spored on the instance): --pre-stop <cmd> --pre-stop-timeout",
     "              --spot-webhook-url --webhook-correlation --notify-url --notify-platform",
     "              --active-processes <names>",
@@ -178,7 +183,7 @@ function help(): CmdResult {
     "                        array is recognisable as MPI — tags only, no collective",
     "                        launch (see docs/execution-shapes.md)",
     "",
-    "durations use Go form: 4h, 90m, 1h30m, 45s",
+    "durations use Go form: 4h, 90m, 1h30m, 45s, 1d",
   );
 }
 
@@ -265,6 +270,7 @@ async function launch(p: ParsedArgs, ctx: ShellCtx): Promise<CmdResult> {
     sessionTimeoutMs: session.ms,
     hooks: hasHooks ? hooks : undefined,
     plugins: plugins.length ? plugins : undefined,
+    keepOnError: flagBool(p.flags, "keep-on-error"),
   };
 
   // Cost-safety guard. This path reaches the provider directly rather than going
@@ -873,9 +879,17 @@ function numFlag(
 function durFlag(p: ParsedArgs, name: string): { ms: number; error?: string } {
   const raw = flagStr(p.flags, name);
   if (!raw) return { ms: 0 };
-  const ms = parseDuration(raw);
-  if (ms === null) return { ms: 0, error: `invalid --${name} duration "${raw}"` };
-  return { ms };
+  // Go's launch-flag parser (pkg/ttl, #990): accepts `1d`, refuses a signed or
+  // unit-less value. parseDuration took "-5m", which then read as "no TTL".
+  try {
+    const ms = parseLifetimeDuration(raw);
+    if (name === "ttl" && ms <= 0) {
+      return { ms: 0, error: `invalid --ttl "${raw}": must be greater than zero` };
+    }
+    return { ms };
+  } catch (e) {
+    return { ms: 0, error: `invalid --${name} duration "${raw}": ${(e as Error).message}` };
+  }
 }
 
 type Resolved =

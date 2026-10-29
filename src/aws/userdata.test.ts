@@ -1,160 +1,188 @@
-// Unit tests for the EC2 bootstrap user-data builder. These pin the shape of
-// the script that makes spawn-ts's self-termination real (installs spored) and
-// the base64 encoding EC2's UserData field requires.
+// Unit tests for the EC2 bootstrap user-data builder.
+//
+// The load-bearing ones compare against Go's own output. testdata/
+// stub-fixtures.v0.149.0.json is launcher.BuildLinuxBootstrap from spawn
+// v0.149.0, rendered as a release build would (stub, not inline body) for each
+// input set; testdata/bootstrap-body.v0.149.0.sh is `spawn bootstrap-body` at the
+// same tag. Both come from scripts/gen-go-fixtures.sh, so the two
+// implementations cannot drift without a test going red.
 
 import { describe, it, expect } from "vitest";
-import { buildLinuxBootstrap, encodeUserData } from "./userdata.js";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { gunzipSync } from "node:zlib";
+import {
+  BOOTSTRAP_BODY_SHA256,
+  MAX_ENCODED_USER_DATA_BYTES,
+  MAX_USER_DATA_BYTES,
+  SPAWN_BOOTSTRAP_VERSION,
+  SPORED_SIGNING_KEY_PEM,
+  UserDataTooLargeError,
+  buildLinuxBootstrap,
+  checkUserDataSize,
+  encodeLinuxUserData,
+  encodeUserData,
+  userDataSize,
+} from "./userdata.js";
 
-describe("buildLinuxBootstrap", () => {
-  it("installs and enables spored via systemd, matching the Go unit", () => {
+const here = new URL("./testdata/", import.meta.url);
+
+interface StubFixture {
+  name: string;
+  username: string;
+  publicKey: string;
+  command: string;
+  completionFile: string;
+  plugins: { ref: string; config?: Record<string, string> }[] | null;
+  script: string;
+  decodedBytes: number;
+}
+
+const fixtures: StubFixture[] = JSON.parse(
+  readFileSync(new URL("stub-fixtures.v0.149.0.json", here), "utf8"),
+);
+
+describe("buildLinuxBootstrap matches Go's release-build stub (v0.149.0)", () => {
+  it("has fixtures to compare against", () => {
+    expect(fixtures.length).toBeGreaterThanOrEqual(5);
+  });
+
+  for (const f of fixtures) {
+    it(`renders the same bytes as Go: ${f.name}`, () => {
+      const s = buildLinuxBootstrap({
+        username: f.username,
+        publicKey: f.publicKey || undefined,
+        command: f.command || undefined,
+        completionFile: f.completionFile || undefined,
+        plugins: f.plugins ?? undefined,
+      });
+      expect(s).toBe(f.script);
+    });
+  }
+});
+
+describe("the pinned bootstrap body", () => {
+  it("BOOTSTRAP_BODY_SHA256 is the sha256 of `spawn bootstrap-body` at the pinned release", () => {
+    const body = readFileSync(new URL("bootstrap-body.v0.149.0.sh", here));
+    expect(createHash("sha256").update(body).digest("hex")).toBe(BOOTSTRAP_BODY_SHA256);
+  });
+
+  it("pins spored to the same release the body comes from (#1412), never latest", () => {
     const s = buildLinuxBootstrap({ username: "ec2-user" });
-    expect(s).toContain("/usr/local/bin/spored");
-    // The daemon is the BARE `spored` invocation — never `spored run` (that
-    // unknown subcommand crash-looped the unit, spawn-ts#19). Match Go exactly.
-    expect(s).toContain("ExecStart=/usr/local/bin/spored\n");
-    expect(s).not.toContain("spored run");
-    expect(s).toContain("Environment=SPORE_DNS_SIGV4=1");
-    expect(s).toContain("Restart=on-failure");
-    expect(s).toContain("systemctl enable spored");
-    expect(s).toContain("LOCAL_USERNAME=ec2-user");
+    expect(s).toContain(`SPAWN_SPORED_VERSION='${SPAWN_BOOTSTRAP_VERSION}'`);
+    expect(s).toContain(`SPAWN_BS_VERSION='${SPAWN_BOOTSTRAP_VERSION}'`);
+    // The body installs from spawn/versions/<v>/ when the pin is set; the
+    // unversioned path is only its dev-build branch.
+    const body = readFileSync(new URL("bootstrap-body.v0.149.0.sh", here), "utf8");
+    expect(body).toContain('"$2/spawn/versions/$v" "$3/spawn/versions/$v"');
   });
 
-  it("defaults the username to ec2-user when blank", () => {
-    expect(buildLinuxBootstrap({ username: "" })).toContain("LOCAL_USERNAME=ec2-user");
+  it("pins 0.149.0: the last spored that reads the hook settings spawn-ts writes as tags (#108)", () => {
+    // spored v0.150.0 reads active-ports/-processes, webhooks and notify-* only
+    // from the spawn:config object (spawn#1359). Moving the pin without moving
+    // those settings out of tags silently disables them.
+    expect(SPAWN_BOOTSTRAP_VERSION).toBe("0.149.0");
   });
 
-  it("authorizes an SSH key when one is supplied, single-quote-escaped", () => {
-    const s = buildLinuxBootstrap({ username: "ubuntu", publicKey: "ssh-ed25519 AAAA it's-mine" });
-    expect(s).toContain("authorized_keys");
-    expect(s).toContain("/home/ubuntu/.ssh");
-    // The apostrophe in the key is escaped for the single-quoted shell string.
-    expect(s).toContain(`'\\''`);
-  });
-
-  it("falls back to an SSM-only comment without a key", () => {
-    expect(buildLinuxBootstrap({ username: "ec2-user" })).toContain("SSM-only");
-  });
-
-  it("embeds a workload command in a heredoc when provided", () => {
-    const s = buildLinuxBootstrap({ username: "ec2-user", command: "python train.py" });
-    expect(s).toContain("/etc/spawn/command");
-    expect(s).toContain("python train.py");
-    expect(s).toContain("chmod 600 /etc/spawn/command");
-  });
-
-  it("injects an idle-session-timeout block only when set", () => {
-    expect(buildLinuxBootstrap({ username: "ec2-user" })).not.toContain("TMOUT");
-    // 30m → TMOUT=1800, ClientAliveInterval = 1800/6 = 300s.
-    const s = buildLinuxBootstrap({ username: "ec2-user", sessionTimeoutMs: 30 * 60_000 });
-    expect(s).toContain("export TMOUT=1800");
-    expect(s).toContain("readonly TMOUT");
-    expect(s).toContain("ClientAliveInterval 300");
-    expect(s).toContain("ClientAliveCountMax 3");
-    expect(s).toContain("/etc/profile.d/session-timeout.sh");
-  });
-
-  it("floors the ssh keepalive interval at 60s for short timeouts", () => {
-    // 2m → 120/6 = 20 → floored to 60.
-    const s = buildLinuxBootstrap({ username: "ec2-user", sessionTimeoutMs: 2 * 60_000 });
-    expect(s).toContain("ClientAliveInterval 60");
-    expect(s).toContain("export TMOUT=120");
-  });
-
-  it("installs spored from the regional S3 bucket for the detected arch", () => {
+  it("always verifies with the spore.host key, as a Go release build does", () => {
     const s = buildLinuxBootstrap({ username: "ec2-user" });
-    // Arch detection covers both amd64 and arm64 (the old script was amd64-only).
-    expect(s).toContain("spored-linux-amd64");
-    expect(s).toContain("spored-linux-arm64");
-    expect(s).toContain('ARCH=$(uname -m)');
-    // Real install path: regional S3 bucket resolved from IMDS, us-east-1 fallback.
-    expect(s).toContain("spawn-binaries-");
-    expect(s).toContain(".s3.amazonaws.com");
-    expect(s).toContain("spawn-binaries-us-east-1.s3.amazonaws.com");
-    // Reads the region from IMDS.
-    expect(s).toContain("169.254.169.254/latest/meta-data/placement/region");
-    // Verifies a checksum and installs atomically (rename, not in-place write).
-    expect(s).toContain("sha256sum");
-    expect(s).toContain("mv -f");
-    // The old fictional GitHub-release URL is gone (spawn-ts#17).
-    expect(s).not.toContain("releases/latest/download");
-    expect(s).not.toContain("github.com/spore-host/spawn/releases");
+    expect(s).toContain("SPORED_SIG_VERIFY=1");
+    expect(s).toContain(SPORED_SIGNING_KEY_PEM);
+    expect(s).toContain("openssl dgst -sha256 -verify /etc/spawn/spored-signing-key.pem");
   });
 
-  it("omits signature verification by default (checksum only)", () => {
-    const s = buildLinuxBootstrap({ username: "ec2-user" });
-    expect(s).not.toContain("spored-signing-key.pem");
-    expect(s).not.toContain("openssl dgst");
-    expect(s).toContain("sha256sum"); // checksum still present
-  });
-
-  it("adds a fail-closed signature-verify block when a signing key is supplied", () => {
+  it("uses an override key only when a non-blank one is supplied", () => {
     const pem = "-----BEGIN PUBLIC KEY-----\nMFkwEwYHtestkey==\n-----END PUBLIC KEY-----";
-    const s = buildLinuxBootstrap({ username: "ec2-user", sporedSigningPublicKey: pem });
-    expect(s).toContain("/etc/spawn/spored-signing-key.pem");
-    expect(s).toContain("MFkwEwYHtestkey==");
-    expect(s).toContain('SIG_URL="${CHECKSUM_URL%.sha256}.sig"');
-    expect(s).toContain("openssl dgst -sha256 -verify");
-    // Fail-closed: refuses on a missing sig and on a bad sig.
-    expect(s).toContain("refusing to run an unsigned binary");
-    expect(s).toContain("signature verification FAILED");
-    // Runs before the atomic install (verify then mv).
-    expect(s.indexOf("openssl dgst")).toBeLessThan(s.indexOf("/usr/local/bin/spored"));
+    expect(buildLinuxBootstrap({ username: "ec2-user", sporedSigningPublicKey: pem })).toContain(
+      "MFkwEwYHtestkey==",
+    );
+    expect(buildLinuxBootstrap({ username: "ec2-user", sporedSigningPublicKey: "  " })).toContain(
+      SPORED_SIGNING_KEY_PEM,
+    );
   });
 
-  it("treats a blank signing key as disabled", () => {
-    expect(buildLinuxBootstrap({ username: "ec2-user", sporedSigningPublicKey: "   " })).not.toContain(
-      "spored-signing-key.pem",
-    );
+  it("retires the instance on any exit before spored is up (#1274)", () => {
+    const s = buildLinuxBootstrap({ username: "ec2-user" });
+    expect(s).toContain("trap spawn_exit_guard EXIT");
+    expect(s.indexOf("spawn_fatal_retire()")).toBeLessThan(s.indexOf("SPAWN_BS_VERSION="));
+  });
+
+  it("writes plugins before the body that starts spored (#1023)", () => {
+    const s = buildLinuxBootstrap({ username: "ec2-user", plugins: [{ ref: "docker" }] });
+    expect(s.indexOf("/etc/spawn/plugins.json")).toBeLessThan(s.indexOf(". /etc/spawn/bootstrap-body.sh"));
   });
 });
 
-describe("buildLinuxBootstrap plugin declarations", () => {
-  it("emits nothing when no plugins are declared", () => {
-    // An instance without plugins must get a byte-identical script to before
-    // this feature existed.
-    const s = buildLinuxBootstrap({ username: "ec2-user" });
-    expect(s).not.toContain("plugins.json");
-    expect(buildLinuxBootstrap({ username: "ec2-user", plugins: [] })).not.toContain("plugins.json");
-  });
-
-  it("writes /etc/spawn/plugins.json in the format spored reads", () => {
-    const s = buildLinuxBootstrap({
-      username: "ec2-user",
-      plugins: [{ ref: "jupyterlab@v1.0.0" }, { ref: "mountpoint-s3", config: { bucket: "b" } }],
+describe("buildLinuxBootstrap refusals (Go security.ValidateUsername)", () => {
+  for (const bad of ["", "Root", "1user", "a b", "x;rm -rf /", "a".repeat(33), "$(id)"]) {
+    it(`refuses username ${JSON.stringify(bad)}`, () => {
+      expect(() => buildLinuxBootstrap({ username: bad })).toThrow(/username/);
     });
-    expect(s).toContain("cat > /etc/spawn/plugins.json <<'EOFPLUGINS'");
-    expect(s).toContain('[{"ref":"jupyterlab@v1.0.0"},{"ref":"mountpoint-s3","config":{"bucket":"b"}}]');
-    expect(s).toContain("chmod 644 /etc/spawn/plugins.json");
-    expect(s).toContain("Plugin declarations written: 2 plugin(s)");
-  });
-
-  it("writes the declarations BEFORE spored starts", () => {
-    // The Go bootstrap appends this block after `systemctl start spored`
-    // (pkg/launcher/bootstrap.go:146). spored's loadPluginDeclarations runs once
-    // at startup and silently returns nil when the file is absent, so that
-    // ordering is a race that would look like "the plugin just didn't install".
-    const s = buildLinuxBootstrap({ username: "ec2-user", plugins: [{ ref: "docker" }] });
-    expect(s.indexOf("/etc/spawn/plugins.json")).toBeLessThan(s.indexOf("systemctl start spored"));
-  });
-
-  it("uses a quoted here-doc so a '$' in a config value is not expanded", () => {
-    const s = buildLinuxBootstrap({
-      username: "ec2-user",
-      plugins: [{ ref: "code-server", config: { password: "$SECRET" } }],
+  }
+  for (const good of ["ec2-user", "ubuntu", "a", "u_1-x", "a".repeat(32)]) {
+    it(`accepts username ${JSON.stringify(good)}`, () => {
+      expect(() => buildLinuxBootstrap({ username: good })).not.toThrow();
     });
-    expect(s).toContain("<<'EOFPLUGINS'");
-    expect(s).toContain('"password":"$SECRET"');
+  }
+});
+
+describe("encodeLinuxUserData", () => {
+  it("is gzip then base64, and round-trips (UTF-8 safe)", async () => {
+    const script = "#!/bin/bash\necho 'héllo → wörld'\n";
+    const encoded = await encodeLinuxUserData(script);
+    expect(encoded).toMatch(/^[A-Za-z0-9+/]+=*$/);
+    const gz = Buffer.from(encoded, "base64");
+    expect([gz[0], gz[1]]).toEqual([0x1f, 0x8b]);
+    expect(gunzipSync(gz).toString("utf8")).toBe(script);
+  });
+
+  it("keeps every Go fixture well under EC2's limit, as Go's gzip does", async () => {
+    for (const f of fixtures) {
+      const { decoded } = userDataSize(await encodeLinuxUserData(f.script));
+      // Different deflate implementations, same order of magnitude.
+      expect(Math.abs(decoded - f.decodedBytes)).toBeLessThan(200);
+      expect(decoded).toBeLessThan(MAX_USER_DATA_BYTES / 4);
+    }
   });
 });
 
 describe("encodeUserData", () => {
-  it("round-trips through base64 (UTF-8 safe)", () => {
+  it("round-trips through plain base64 (UTF-8 safe)", () => {
     const script = "#!/bin/bash\necho 'héllo → wörld'";
-    const encoded = encodeUserData(script);
-    // Valid base64.
-    expect(encoded).toMatch(/^[A-Za-z0-9+/]+=*$/);
-    // Decodes back to the original UTF-8 text.
-    const bytes = Uint8Array.from(atob(encoded), (c) => c.charCodeAt(0));
+    const bytes = Uint8Array.from(atob(encodeUserData(script)), (c) => c.charCodeAt(0));
     expect(new TextDecoder().decode(bytes)).toBe(script);
+  });
+});
+
+describe("checkUserDataSize (spawn#1063, TestCheckUserDataSizeLimits)", () => {
+  const enc = (n: number) => Buffer.alloc(n).toString("base64");
+  const cases: { name: string; input: string; tooBig: boolean; decoded: number }[] = [
+    { name: "empty", input: "", tooBig: false, decoded: 0 },
+    { name: "exactly 16384 decoded", input: enc(MAX_USER_DATA_BYTES), tooBig: false, decoded: MAX_USER_DATA_BYTES },
+    { name: "16385 decoded", input: enc(MAX_USER_DATA_BYTES + 1), tooBig: true, decoded: MAX_USER_DATA_BYTES + 1 },
+    {
+      name: "not base64, over the encoded limit",
+      input: "!".repeat(MAX_ENCODED_USER_DATA_BYTES + 1),
+      tooBig: true,
+      decoded: MAX_ENCODED_USER_DATA_BYTES + 1,
+    },
+  ];
+  for (const tc of cases) {
+    it(tc.name, () => {
+      let err: unknown;
+      try {
+        checkUserDataSize(tc.input);
+      } catch (e) {
+        err = e;
+      }
+      expect(err instanceof UserDataTooLargeError).toBe(tc.tooBig);
+      if (tc.tooBig) expect((err as UserDataTooLargeError).decodedBytes).toBe(tc.decoded);
+    });
+  }
+
+  it("measures decoded bytes with padding", () => {
+    for (const n of [0, 1, 2, 3, 4, 5, 100]) {
+      expect(userDataSize(enc(n)).decoded).toBe(n);
+    }
   });
 });
