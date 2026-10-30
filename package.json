@@ -1,6 +1,6 @@
 {
   "name": "@spore-host/spawn-ts",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "type": "module",
   "description": "Browser-native spawn: launch and self-terminate AWS EC2 instances, entirely from a web page.",
   "keywords": [
@@ -36,7 +36,7 @@
     "./ui": { "types": "./dist/ui/index.d.ts", "import": "./dist/ui/index.js" },
     "./ui/style.css": "./dist/ui/dashboard.css"
   },
-  "files": ["dist"],
+  "files": ["dist", "NOTICE"],
   "sideEffects": ["**/*.css"],
   "scripts": {
     "dev": "vite",

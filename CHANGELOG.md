@@ -18,6 +18,29 @@ version strings agree.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.8.0] — 2026-10-29
+
+Go parity with spawn **v0.150.0**: a real launch now sends Go's release-build
+bootstrap pinned to that release, with its signed body and `spored`, and writes
+the per-launch config object that spored 0.150.0 reads. MINOR, not PATCH, because
+for an existing caller:
+
+- **`launch` refuses specs it used to accept**, before any AWS call: an
+  unparseable or non-positive TTL (`"4 h"`, `"-1h"`, `--ttl 0`; these used to
+  launch with no TTL at all), a Spot launch whose lifecycle stops the instance
+  (EC2 cannot stop a one-time request), user data over 16 KiB, a tag set that
+  does not fit in 50 once spored's own tags are counted, an idle CPU threshold
+  outside 0-100, and a `spawn-instance-nested-*` profile without a TTL.
+- **A launch that fails after the instance exists now terminates it** by
+  default. Pass `keepOnError` / `--keep-on-error` to keep it.
+- **The nine launch-fixed spored settings are no longer tags** (the webhooks,
+  `notify*`, `activeProcesses`, `activePorts`, `idleCpuPercent`). They are in the
+  launch config object (`spawn:config`), so `list()`/`get()` of a real instance
+  no longer report them. Instances run spored 0.150.0, which reads them only
+  from the object.
+
 ### Changed
 
 - **Real launches write the launch config object and install spored 0.150.0**
@@ -52,26 +75,26 @@ version strings agree.
   the object and adds no tag.
 
 - **A real launch now sends Go spawn's release-build bootstrap, pinned to spawn
-  v0.149.0** (#108; Go spawn#1274, spawn#1412). The user data used to be a
+  v0.150.0** (#108, #110; Go spawn#1274, spawn#1412). The user data used to be a
   hand-written copy of an August Go bootstrap: it installed the unversioned
   latest `spored` (so the spored on a spawn-ts instance changed under it with
   every Go release), skipped signature verification unless a key was passed,
   had no recovery when the install failed, and had drifted from Go in a dozen
   other ways (no SELinux relabel, no curl retry for EL8, no Spot-replacement
-  check, the session timeout written inline). It is now the stub a Go v0.149.0
+  check, the session timeout written inline). It is now the stub a Go v0.150.0
   release build sends: it fetches that release's published bootstrap body,
   refuses it unless its sha256 is the pinned one and its signature verifies
   against the spore.host key, and runs it; the body installs `spored` from
-  `spawn/versions/0.149.0/`, and any exit before `spored` is running
+  `spawn/versions/0.150.0/`, and any exit before `spored` is running
   terminates the instance (`spawn_fatal_retire`), because nothing would
   enforce its TTL. `src/aws/userdata.test.ts` requires the script to be
   byte-identical to Go's for the same inputs; the fixtures come from the
   published module via `scripts/gen-go-fixtures.sh`.
-  - **Why 0.149.0, not the newest Go release:** spored v0.150.0 (spawn#1359)
-    reads `activePorts`, `activeProcesses`, the webhooks and `notify*` only from
-    a per-launch config object and ignores them as tags. spawn-ts writes them as
-    tags, so 0.149.0 is the newest spored that enforces what spawn-ts writes.
-    The versioned path is permanent, unlike the unversioned latest.
+  - The pin and the launch config object (entry above) move together: spored
+    from v0.150.0 ignores those settings as tags, and an older spored ignores
+    the object. The pin was 0.149.0 on `main` until the object landed (#111,
+    #112); no release shipped it. The versioned path is permanent, unlike the
+    unversioned latest.
   - User data is gzip + base64, as Go sends it (1.8 KB for a bare launch).
   - `EC2ProviderOptions.sporedSigningPublicKey` is now an override for a key
     rotation. Absent means the spore.host key, not "checksum only": signature
@@ -94,8 +117,18 @@ version strings agree.
   landing — TypeScript 7 needs a deliberate migration, not a version bump. The
   toolchain is capped at 5.x until that happens, so CI stops being red on an
   upgrade nobody scheduled.
+- **`LIB_VERSION` is exported from the package root** (#70). It is stamped into
+  `spawn:version` on every launch, but was readable only from the tag on an
+  already-launched instance — so a consumer could not report which library version
+  it was running until after it had launched something.
+- `repository.url` is `git+https://…`, the form npm was silently normalising it to
+  on every publish (so published metadata no longer differs from the repo's).
 
 ### Fixed
+- **The published package now includes `NOTICE`**, as Apache-2.0 §4(d)
+  requires. npm always packs LICENSE and README but NOTICE only when `"files"`
+  names it, so every release through 0.7.0 shipped without it (same fix as
+  truffle-ts#87 and lagotto-ts). A test in `src/ci-hygiene.test.ts` keeps it in.
 - **A launch that fails after the instance was created now terminates it**,
   unless `keepOnError` / `--keep-on-error` (Go spawn#1298). `SpawnClient.launch`
   rejected (a listener threw, the follow-up list failed) while the instance kept
@@ -183,14 +216,6 @@ version strings agree.
 - **A README entry-point table** — all ten subpaths, what each holds, and which work
   under plain Node, with `./ssm` named as the xterm-free alternative to `./terminal`.
   The README also still advertised the pre-library `"spawn-ts"` import name.
-
-### Changed
-- **`LIB_VERSION` is exported from the package root** (#70). It is stamped into
-  `spawn:version` on every launch, but was readable only from the tag on an
-  already-launched instance — so a consumer could not report which library version
-  it was running until after it had launched something.
-- `repository.url` is `git+https://…`, the form npm was silently normalising it to
-  on every publish (so published metadata no longer differs from the repo's).
 
 ## [0.7.0] — 2026-08-01
 
@@ -646,7 +671,8 @@ First release as a **published library**. Documented retroactively (see 0.6.1).
 - **Tests** — lifecycle, client end-to-end, CLI, and live integration tests
   against a substrate emulator (auto-skip when unreachable).
 
-[Unreleased]: https://github.com/spore-host/spawn-ts/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/spore-host/spawn-ts/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/spore-host/spawn-ts/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/spore-host/spawn-ts/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/spore-host/spawn-ts/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/spore-host/spawn-ts/compare/v0.5.0...v0.6.0
