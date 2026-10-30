@@ -20,6 +20,33 @@ version strings agree.
 
 Nothing yet.
 
+## [0.8.1] — 2026-10-29
+
+Compatibility with truffle-ts 0.6.0. No public API changes.
+
+### Changed
+
+- **`@spore-host/truffle-ts` now accepts `^0.5.0 || ^0.6.0`** (was `^0.5.0`).
+  An app on truffle-ts 0.6 used to get a second copy bundled for the Dashboard's
+  instance picker. Development and CI use 0.6.0, and the full suite also passes
+  against 0.5.0. The picker shows what each version returns: 0.6 ranks size
+  queries closest fit first and matches an exact type (`r8g.2xlarge`) or bare
+  family (`g5`) as itself.
+
+### Fixed
+
+- **The Dashboard's instance picker explains a query it can't read.** From
+  truffle-ts 0.6, a query made only of unknown words (`zzqx`) throws
+  `UnrecognizedQueryError` instead of returning every type. The picker now shows
+  the error and its hint on separate rows, in place of any earlier
+  matches, and never lists types for it. A parse error such as
+  `intel graviton` renders the same way.
+- **Picking an unpriced type kept the previous type's `$/hr`**, and that price
+  then went with the new type into the launch. Picking a type
+  truffle-ts has no price for (`p5e.48xlarge` in both 0.5 and 0.6) now clears
+  it. truffle-ts 0.6 no longer estimates prices for types it doesn't know, so
+  this can happen more often.
+
 ## [0.8.0] — 2026-10-29
 
 Go parity with spawn **v0.150.0**: a real launch now sends Go's release-build
@@ -671,7 +698,8 @@ First release as a **published library**. Documented retroactively (see 0.6.1).
 - **Tests** — lifecycle, client end-to-end, CLI, and live integration tests
   against a substrate emulator (auto-skip when unreachable).
 
-[Unreleased]: https://github.com/spore-host/spawn-ts/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/spore-host/spawn-ts/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/spore-host/spawn-ts/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/spore-host/spawn-ts/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/spore-host/spawn-ts/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/spore-host/spawn-ts/compare/v0.6.0...v0.6.1

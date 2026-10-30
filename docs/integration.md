@@ -29,7 +29,11 @@ the instance's spored daemon         →  enforces TTL/idle/cost/completion,
 
 In the dashboard this is literally a picker: type a query, truffle-ts returns
 the matches, and choosing one fills spawn-ts's instance-type field and its
-estimated `$/hr`. See the launch form's "find instance" input.
+estimated `$/hr`. A type truffle-ts has no price for clears `$/hr` rather than
+keeping the last pick's. A query truffle-ts can't read (from truffle-ts 0.6, one
+made only of unknown words) shows its error and hint instead of matches.
+See the launch form's "find instance" input. spawn-ts accepts truffle-ts
+`^0.5.0 || ^0.6.0`, so an app already on either shares one copy with it.
 
 ## The load-bearing boundary: tag-emit vs execution
 

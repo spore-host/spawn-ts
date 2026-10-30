@@ -318,12 +318,30 @@ export class Dashboard {
           `<span class="tm-price">${price}</span>`;
         btn.addEventListener("click", () => {
           typeInput.value = i.instanceType;
-          if (i.onDemandPrice) priceInput.value = String(i.onDemandPrice);
+          // An unpriced type clears $/hr rather than leaving the previous pick's
+          // price attributed to it (truffle-ts 0.6 prices no type it doesn't know).
+          priceInput.value = i.onDemandPrice ? String(i.onDemandPrice) : "";
           matchesEl.hidden = true;
           q.value = "";
         });
         matchesEl.appendChild(btn);
       }
+      matchesEl.hidden = false;
+    };
+
+    // A query truffle can't read: a parse error ("conflicting architectures"),
+    // or, from truffle-ts 0.6, an UnrecognizedQueryError for a query made only of
+    // unknown words (0.5 returned every type for those). Its message is a line
+    // naming the unknown words plus a line of suggestions; each gets its own row
+    // so the hint doesn't run into the error. Matched on `name`, not instanceof:
+    // 0.5 has no such export, and the range still admits 0.5.
+    const renderError = (err: unknown) => {
+      const e = err as Error;
+      const lines = String(e?.message ?? err).split("\n").map((l) => l.trim()).filter(Boolean);
+      const cls = e?.name === "UnrecognizedQueryError" ? "truffle-empty truffle-unrecognized" : "truffle-empty";
+      matchesEl.innerHTML = lines
+        .map((l, n) => `<div class="${cls}${n > 0 ? " truffle-hint" : ""}">${escapeHtml(l)}</div>`)
+        .join("");
       matchesEl.hidden = false;
     };
 
@@ -340,8 +358,7 @@ export class Dashboard {
         render(results);
       } catch (err) {
         if (mine !== seq) return;
-        matchesEl.innerHTML = `<div class="truffle-empty">${escapeHtml((err as Error).message)}</div>`;
-        matchesEl.hidden = false;
+        renderError(err);
       }
     };
 

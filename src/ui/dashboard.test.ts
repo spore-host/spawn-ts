@@ -9,6 +9,8 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { Dashboard } from "./dashboard.js";
 import { SpawnClient } from "../core/client.js";
 import { MockProvider } from "../core/mock.js";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 const T0 = Date.UTC(2026, 6, 20, 12, 0, 0);
 
@@ -347,6 +349,21 @@ describe("Dashboard queue form", () => {
   });
 });
 
+// package.json admits truffle-ts ^0.5.0 || ^0.6.0, and the picker's output for
+// some queries differs between them. The cases below assert each line's own
+// behaviour against whichever version is installed (0.6 from the lockfile; run
+// with 0.5.0 installed to check the lower bound), so neither can drift unseen.
+const TRUFFLE_VERSION = (
+  JSON.parse(
+    readFileSync(
+      // cwd, not import.meta.url: under happy-dom the latter is not a file: URL.
+      join(process.cwd(), "node_modules/@spore-host/truffle-ts/package.json"),
+      "utf8",
+    ),
+  ) as { version: string }
+).version;
+const TRUFFLE_06 = !TRUFFLE_VERSION.startsWith("0.5.");
+
 function trufflePicker(dash: Dashboard) {
   const form = dash.el.querySelector<HTMLFormElement>(".launch-form")!;
   return {
@@ -422,6 +439,68 @@ describe("Dashboard truffle instance picker", () => {
     expect(p.matches.hidden).toBe(false);
     await typeQuery(p.q, "");
     expect(p.matches.hidden).toBe(true);
+  });
+
+  // truffle-ts 0.6: a query of only unknown words throws UnrecognizedQueryError
+  // (0.5 returned all 231 bundled types, so the dropdown filled with 8 arbitrary
+  // matches). The picker must say what it didn't understand, not crash or list
+  // types. Runs the real truffle-ts, so it fails against 0.5.x.
+  it(`explains an unrecognised query instead of listing types (truffle-ts ${TRUFFLE_VERSION})`, async () => {
+    const { dash } = setup();
+    const p = trufflePicker(dash);
+    await typeQuery(p.q, "zzqx");
+    expect(p.matches.hidden).toBe(false);
+    if (!TRUFFLE_06) {
+      // 0.5 reads unknown words as no constraint and returns every type.
+      expect(p.matches.querySelectorAll(".truffle-match")).toHaveLength(8);
+      return;
+    }
+    expect(p.matches.querySelectorAll(".truffle-match")).toHaveLength(0);
+    const rows = [...p.matches.querySelectorAll(".truffle-unrecognized")].map((e) => e.textContent!);
+    expect(rows.length).toBeGreaterThanOrEqual(2); // the error, then its hint on its own row
+    expect(rows[0]).toContain("no recognised search terms");
+    expect(rows[0]).toContain('"zzqx"');
+    expect(rows.slice(1).join(" ")).toMatch(/^Try /);
+  });
+
+  it("an unrecognised query after a good one replaces the old matches", async () => {
+    if (!TRUFFLE_06) return; // 0.5 lists every type for "foo bar"; covered above
+    const { dash } = setup();
+    const p = trufflePicker(dash);
+    await typeQuery(p.q, "h100");
+    expect(p.matches.querySelectorAll(".truffle-match").length).toBeGreaterThan(0);
+    await typeQuery(p.q, "foo bar");
+    expect(p.matches.querySelectorAll(".truffle-match")).toHaveLength(0);
+    expect(p.matches.textContent).toContain('"foo", "bar"');
+  });
+
+  it(`an exact instance type query lists that type (truffle-ts ${TRUFFLE_VERSION})`, async () => {
+    const { dash } = setup();
+    const p = trufflePicker(dash);
+    await typeQuery(p.q, "r8g.2xlarge");
+    const types = [...p.matches.querySelectorAll(".tm-type")].map((e) => e.textContent);
+    // 0.6 matches the type itself; 0.5 read it as an unknown word (every type).
+    if (TRUFFLE_06) expect(types).toEqual(["r8g.2xlarge"]);
+    else expect(types).toHaveLength(8);
+  });
+
+  // Some bundled types have no price (p5e.48xlarge in 0.5 and 0.6; 0.6 prices no
+  // type it doesn't know rather than estimating). Picking one must not leave the
+  // previous pick's $/hr attributed to it.
+  it("picking an unpriced type clears $/hr instead of keeping the last price", async () => {
+    const { dash } = setup();
+    const p = trufflePicker(dash);
+    await typeQuery(p.q, "h100");
+    p.matches.querySelector<HTMLButtonElement>(".truffle-match")!.click();
+    expect(Number(p.priceInput.value)).toBeGreaterThan(0);
+    await typeQuery(p.q, "p5e*"); // a glob: an exact type only matches itself from 0.6
+    const btn = [...p.matches.querySelectorAll<HTMLButtonElement>(".truffle-match")].find(
+      (b) => b.querySelector(".tm-type")!.textContent === "p5e.48xlarge",
+    )!;
+    expect(btn.querySelector(".tm-price")!.textContent).toBe("—");
+    btn.click();
+    expect(p.typeInput.value).toBe("p5e.48xlarge");
+    expect(p.priceInput.value).toBe("");
   });
 
   it("supports a glob pattern query (truffle-ts 0.2.0)", async () => {

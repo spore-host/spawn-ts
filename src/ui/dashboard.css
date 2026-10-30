@@ -185,6 +185,7 @@
 .tm-spec { grid-area: spec; color: var(--muted); font-size: 11px; }
 .tm-price { grid-area: price; align-self: center; color: var(--yellow); font-size: 11px; white-space: nowrap; }
 .truffle-empty { padding: 8px 10px; color: var(--muted); font-size: 11px; }
+.truffle-empty.truffle-hint { padding-top: 0; }
 
 /* Parameter sweep: reuse the launch-form grid + button styling, add a progress card. */
 .sweep-form { display: block; }
