@@ -101,8 +101,12 @@ spore_install_spored_from_buckets() {
     if [ -n "$v" ]; then
         echo "Installing spored $v, the version of the spawn that rendered this script"
         spore_install_verified_spored "$1" "$2/spawn/versions/$v" "$3/spawn/versions/$v"
-    else
-        spore_install_verified_spored "$1" "$2/spawn" "$2" "$3/spawn" "$3"
+    elif ! spore_install_verified_spored "$1" "$2/spawn/current" "$3/spawn/current"; then
+        if [ "${SPAWN_SPORED_READS_LAUNCH_CONFIG:-}" = 1 ]; then
+            echo "no spawn/current/ spored; 0.149.0 ignores launch configs (#1419)" >&2
+            return 1
+        fi
+        spore_install_verified_spored "$1" "$2/spawn" "$3/spawn"
     fi
 }
 spawn_is_spot_replacement() {
@@ -165,29 +169,14 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# SigV4-sign DNS registration requests (#173). This is now REQUIRED, not
-# anticipatory: the DNS Function URL is AuthType: AWS_IAM (verified against the
-# live function 2026-10-11), so an unsigned request is rejected at the URL and the
-# instance never registers. The comment here said the URL "is still AuthType:
-# NONE, which ignores the signature" long after the cutover landed, which reads as
-# though this variable were optional — it is load-bearing.
-#
-# The staged rollout it describes did work as intended: signing shipped first so a
-# fleet was already signing before the flip, and old non-signing instances aged
-# out under their TTLs ("everything dies").
 Environment=SPORE_DNS_SIGV4=1
 ExecStart=/usr/local/bin/spored
-# on-failure (not always) prevents restart attempts during graceful shutdown
 Restart=on-failure
 RestartSec=10
-# Give spored time to deregister DNS and clean up before SIGKILL
 TimeoutStopSec=30
 StandardOutput=journal
 StandardError=journal
 NoNewPrivileges=true
-# Do NOT set PrivateTmp=true: spored must see the host /tmp/SPAWN_COMPLETE
-# completion file written by users / spawn connect / nf-spawn. PrivateTmp
-# isolates the daemon's /tmp and silently breaks --on-complete/--pre-stop (#66).
 
 [Install]
 WantedBy=multi-user.target
@@ -372,22 +361,6 @@ if [ "$WORKFLOW_COMMAND" != "None" ] && [ -n "$WORKFLOW_COMMAND" ]; then
     cat > /tmp/spawn-command.sh <<'EOFCMD'
 #!/bin/bash
 set -e
-# errexit is ON here, and 'set -uo pipefail' does NOT clear it (#707) — so a
-# script opening with that line, believing it chose its own error policy, is
-# actually running -e -u -o pipefail. The two usual casualties are a SIGPIPE'd
-# pipeline under pipefail ('... | head -n N' returns 141) and 'wait \$pid' on a
-# failed background job, a pattern for CAPTURING a failure that -e destroys. It
-# cost four r8gd.8xlarge runs and three misdiagnoses to find, because nothing
-# said so. Fail-fast stays (running on after a broken step to TTL is worse).
-#
-# The notice that says so is NOT printed here. It used to be — two lines at the
-# top of every /var/log/spawn-command.log, which is the file users actually
-# read, on every member of every array, whether or not anything failed (#897).
-# It is now written by the root-side caller, into the command log only when the
-# command exits non-zero (the only case in which errexit can have cut a run
-# short), and announced once per boot in cloud-init-output.log. Nothing in this
-# script may write /var/log: it runs as $LOCAL_USERNAME via su, which cannot,
-# and under set -e a failed write kills the command before it starts.
 [ -f /etc/profile.d/spawn-params.sh ] && source /etc/profile.d/spawn-params.sh
 EOFCMD
     if [ -s /etc/spawn/command ]; then

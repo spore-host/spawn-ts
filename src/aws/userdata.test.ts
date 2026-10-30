@@ -1,9 +1,9 @@
 // Unit tests for the EC2 bootstrap user-data builder.
 //
 // The load-bearing ones compare against Go's own output. testdata/
-// stub-fixtures.v0.149.0.json is launcher.BuildLinuxBootstrap from spawn
-// v0.149.0, rendered as a release build would (stub, not inline body) for each
-// input set; testdata/bootstrap-body.v0.149.0.sh is `spawn bootstrap-body` at the
+// stub-fixtures.v0.150.0.json is launcher.BuildLinuxBootstrap from spawn
+// v0.150.0, rendered as a release build would (stub, not inline body) for each
+// input set; testdata/bootstrap-body.v0.150.0.sh is `spawn bootstrap-body` at the
 // same tag. Both come from scripts/gen-go-fixtures.sh, so the two
 // implementations cannot drift without a test going red.
 
@@ -24,6 +24,7 @@ import {
   encodeUserData,
   userDataSize,
 } from "./userdata.js";
+import { LAUNCH_CONFIG_FIRST_SPORED_VERSION } from "../core/launchconfig.js";
 
 const here = new URL("./testdata/", import.meta.url);
 
@@ -34,15 +35,18 @@ interface StubFixture {
   command: string;
   completionFile: string;
   plugins: { ref: string; config?: Record<string, string> }[] | null;
+  settings: Record<string, string> | null;
+  object: string;
+  sha256: string;
   script: string;
   decodedBytes: number;
 }
 
 const fixtures: StubFixture[] = JSON.parse(
-  readFileSync(new URL("stub-fixtures.v0.149.0.json", here), "utf8"),
+  readFileSync(new URL("stub-fixtures.v0.150.0.json", here), "utf8"),
 );
 
-describe("buildLinuxBootstrap matches Go's release-build stub (v0.149.0)", () => {
+describe("buildLinuxBootstrap matches Go's release-build stub (v0.150.0)", () => {
   it("has fixtures to compare against", () => {
     expect(fixtures.length).toBeGreaterThanOrEqual(5);
   });
@@ -55,6 +59,7 @@ describe("buildLinuxBootstrap matches Go's release-build stub (v0.149.0)", () =>
         command: f.command || undefined,
         completionFile: f.completionFile || undefined,
         plugins: f.plugins ?? undefined,
+        launchConfig: f.object || undefined,
       });
       expect(s).toBe(f.script);
     });
@@ -63,7 +68,7 @@ describe("buildLinuxBootstrap matches Go's release-build stub (v0.149.0)", () =>
 
 describe("the pinned bootstrap body", () => {
   it("BOOTSTRAP_BODY_SHA256 is the sha256 of `spawn bootstrap-body` at the pinned release", () => {
-    const body = readFileSync(new URL("bootstrap-body.v0.149.0.sh", here));
+    const body = readFileSync(new URL("bootstrap-body.v0.150.0.sh", here));
     expect(createHash("sha256").update(body).digest("hex")).toBe(BOOTSTRAP_BODY_SHA256);
   });
 
@@ -73,15 +78,22 @@ describe("the pinned bootstrap body", () => {
     expect(s).toContain(`SPAWN_BS_VERSION='${SPAWN_BOOTSTRAP_VERSION}'`);
     // The body installs from spawn/versions/<v>/ when the pin is set; the
     // unversioned path is only its dev-build branch.
-    const body = readFileSync(new URL("bootstrap-body.v0.149.0.sh", here), "utf8");
+    const body = readFileSync(new URL("bootstrap-body.v0.150.0.sh", here), "utf8");
     expect(body).toContain('"$2/spawn/versions/$v" "$3/spawn/versions/$v"');
   });
 
-  it("pins 0.149.0: the last spored that reads the hook settings spawn-ts writes as tags (#108)", () => {
-    // spored v0.150.0 reads active-ports/-processes, webhooks and notify-* only
-    // from the spawn:config object (spawn#1359). Moving the pin without moving
-    // those settings out of tags silently disables them.
-    expect(SPAWN_BOOTSTRAP_VERSION).toBe("0.149.0");
+  it("pins 0.150.0: the first spored that reads the launch config object spawn-ts writes (#110)", () => {
+    // The pin and the object move together: spored < 0.150.0 ignores the
+    // object, and spored >= 0.150.0 ignores the moved tags (spawn#1359).
+    expect(SPAWN_BOOTSTRAP_VERSION).toBe(LAUNCH_CONFIG_FIRST_SPORED_VERSION);
+  });
+
+  it("seeds the object before the body starts spored, 0600, only when there is one", () => {
+    const seeded = fixtures.find((f) => f.object)!;
+    const s = buildLinuxBootstrap({ username: "ec2-user", launchConfig: seeded.object });
+    expect(s).toContain("| base64 -d > /etc/spawn/launch-config.json\nchmod 600 /etc/spawn/launch-config.json");
+    expect(s.indexOf("/etc/spawn/launch-config.json")).toBeLessThan(s.indexOf(". /etc/spawn/bootstrap-body.sh"));
+    expect(buildLinuxBootstrap({ username: "ec2-user" })).not.toContain("launch-config.json");
   });
 
   it("always verifies with the spore.host key, as a Go release build does", () => {

@@ -13,6 +13,7 @@ import type {
 } from "./types.js";
 import { formatDuration, parseDuration } from "./duration.js";
 import { encodeAccountId } from "../dns/dns-name.js";
+import { isLaunchConfigSetting, LAUNCH_CONFIG_TAG } from "./launchconfig.js";
 
 /**
  * Value written to spawn:version. Read by Go's pkg/aws/ami_mgmt.go:170.
@@ -82,6 +83,24 @@ function paramTagBudget(alreadyUsed: number): number {
   return Math.max(0, AWS_TAG_LIMIT - alreadyUsed);
 }
 
+/**
+ * How many tags RunInstances gets for a launch whose buildLaunchTags map (so
+ * far) is `tags`. The launch config object's settings leave the tags, and the
+ * object, when it has a non-empty setting, takes one spawn:config tag instead
+ * (EC2Provider, spawn-ts #110; Go's buildTags never tags the settings).
+ * spawn:local-username, which EC2Provider always adds, is counted if absent.
+ */
+function launchTagCount(tags: Record<string, string>): number {
+  let n = 0;
+  let object = false;
+  for (const [k, v] of Object.entries(tags)) {
+    if (k.startsWith("spawn:") && isLaunchConfigSetting(k)) object ||= v !== "";
+    else n++;
+  }
+  if (!(tag("local-username") in tags)) n++;
+  return object && !(LAUNCH_CONFIG_TAG in tags) ? n + 1 : n;
+}
+
 /** RFC3339 (what Go's time.Format(time.RFC3339) produces; JS toISOString is compatible). */
 function rfc3339(ms: number): string {
   return new Date(ms).toISOString();
@@ -120,9 +139,14 @@ export interface LaunchIdentity {
  * only surfaces when someone tries to clean up. `spawn cleanup --only-mine`
  * skips it too (pkg/aws/cleanup.go:93).
  *
- * created-by is deliberately "spawn-ts", not Go's "spawn": no reader compares the
- * value for equality, and an operator benefits from knowing which launcher
- * produced an instance.
+ * created-by is deliberately "spawn-ts", not Go's "spawn", and the value is now
+ * part of the contract: keep it stable. `spawn upgrade-spored` compares it for
+ * equality (cmd/upgrade_spored.go tagsReadingSpored, spawn#1423, v0.150.0): it
+ * reads spawn:version as a spored version only when created-by == "spawn".
+ * spawn-ts writes its own library version there (no spored has that version),
+ * so writing "spawn" would point the upgrade at a spored that does not exist;
+ * with "spawn-ts" it falls back to spawn:spored-version. It also tells an
+ * operator which launcher produced an instance.
  */
 export function buildIdentityTags(id: LaunchIdentity): Record<string, string> {
   const tags: Record<string, string> = {
@@ -219,10 +243,11 @@ export function buildLaunchTags(
   // rather than pushing the total past AWS_TAG_LIMIT after it was computed.
   if (spec.mpi) Object.assign(tags, buildMpiTags(spec.mpi));
   // Sweep last, so its parameter tags can be capped against what the rest of the
-  // launch actually consumed. The caller adds spawn:local-username too, so leave
-  // one slot for it.
+  // launch actually consumed (Go buildTags section 8, launchTagLimit): the tags
+  // RunInstances will get, plus the slots kept for spored's own (tagReserve,
+  // #1355).
   if (spec.sweep) {
-    Object.assign(tags, buildSweepTags(spec.sweep, Object.keys(tags).length + 1));
+    Object.assign(tags, buildSweepTags(spec.sweep, launchTagCount(tags) + tagReserve(tags).length));
   }
   return tags;
 }
@@ -471,53 +496,159 @@ export function decodeHookTags(tags: Record<string, string>): LifecycleHooks | u
 }
 
 /**
- * The spored settings that each add a tag, and the spawn-ts input that sets
- * them, for the #1336 refusal's "what can be dropped" list. Go's map
- * (pkg/aws/tag_limit.go sporedSettingFlags) also lists the metrics and tracing
- * settings; spawn-ts writes neither.
+ * The spored settings that each add a tag, and the flag that sets them, for the
+ * #1336 refusal's "what can be dropped" list. Go's map, verbatim
+ * (pkg/aws/tag_limit.go sporedSettingFlags, v0.150.0). The other spored
+ * settings, --idle-cpu among them, are in the launch config object since
+ * spawn v0.150.0 (#1359, spawn-ts #110) and take no tag, so they are not on it.
+ * spawn-ts does not write spawn:metrics-enabled today; the entry is Go's, so the
+ * refusal names it the same way if it ever does.
  */
 const SPORED_SETTING_FLAGS: Record<string, string> = {
-  "spawn:idle-cpu": "--idle-cpu",
+  "spawn:metrics-enabled": "--metrics",
 };
+
+/**
+ * One tag written on an instance after RunInstances (Go postLaunchTag,
+ * pkg/aws/post_launch_tags.go, #1355).
+ *
+ * `applies` is when a spawn-ts launch can get the tag: "always" (Go: every
+ * instance), "dns" (a launch with spawn:dns-name, so spored registers DNS),
+ * "spot" (a Spot launch), "never" (Go writes it only for what spawn-ts does
+ * not launch: a task, a web app or DCV session, an FSx mount).
+ */
+export interface PostLaunchTag {
+  readonly key: string;
+  /** "spored": the agent on the instance. "spawn": Go spawn's own code. */
+  readonly by: "spored" | "spawn";
+  /** Written only when someone runs a command, which reports a failed write itself. Not reserved. */
+  readonly onCommand: boolean;
+  readonly applies: "always" | "dns" | "spot" | "never";
+}
+
+/**
+ * Go's postLaunchInstanceTags at v0.150.0, in its order (the refusal lists the
+ * reserve in this order). A test compares it with
+ * testdata/post-launch-tags.go.json, which scripts/gen-go-fixtures.sh renders
+ * from the published spawn, so the two cannot drift. "spore:plugin:" is a
+ * family, one tag per plugin. spawn:cost-footprint is one tag since #1428
+ * (spored 0.150.0); older spored wrote three.
+ */
+export const POST_LAUNCH_INSTANCE_TAGS: readonly PostLaunchTag[] = [
+  // spored, on every instance.
+  { key: "spawn:compute-seconds", by: "spored", onCommand: false, applies: "always" },
+  { key: "spawn:last-heartbeat", by: "spored", onCommand: false, applies: "always" },
+  { key: "spawn:spored-version", by: "spored", onCommand: false, applies: "always" },
+  { key: "spawn:logged-in-count", by: "spored", onCommand: false, applies: "always" },
+  { key: "spawn:cost-footprint", by: "spored", onCommand: false, applies: "always" },
+  // spored, when the launch asked for what the tag reports on.
+  { key: "spawn:flush-status", by: "spored", onCommand: false, applies: "never" },
+  { key: "spawn:dns-status", by: "spored", onCommand: false, applies: "dns" },
+  { key: "spawn:dns-error", by: "spored", onCommand: false, applies: "dns" },
+  { key: "spawn:ready-status", by: "spored", onCommand: false, applies: "never" },
+  { key: "spawn:ready-url", by: "spored", onCommand: false, applies: "never" },
+  { key: "spawn:ready-token", by: "spored", onCommand: false, applies: "never" },
+  { key: "spawn:fsx-id", by: "spored", onCommand: false, applies: "never" },
+  { key: "spawn:fsx-mount-point", by: "spored", onCommand: false, applies: "never" },
+  { key: "spawn:fsx-dra-status", by: "spored", onCommand: false, applies: "never" },
+  { key: "spawn:fsx-dra-error", by: "spored", onCommand: false, applies: "never" },
+  // Go spawn's launch code, right after RunInstances.
+  { key: "spawn:spot-price-per-hour", by: "spawn", onCommand: false, applies: "spot" },
+  { key: "spawn:fsx-pending", by: "spawn", onCommand: false, applies: "never" },
+  { key: "spawn:fsx-s3-import-path", by: "spawn", onCommand: false, applies: "never" },
+  { key: "spawn:fsx-s3-export-path", by: "spawn", onCommand: false, applies: "never" },
+  // Commands that edit a running instance (not reserved).
+  { key: "spawn:ttl", by: "spawn", onCommand: true, applies: "always" },
+  { key: "spawn:ttl-deadline", by: "spawn", onCommand: true, applies: "always" },
+  { key: "spawn:cost-limit", by: "spawn", onCommand: true, applies: "always" },
+  { key: "spawn:idle-timeout", by: "spored", onCommand: true, applies: "always" },
+  { key: "spawn:on-complete", by: "spored", onCommand: true, applies: "always" },
+  { key: "spawn:hibernate-on-idle", by: "spored", onCommand: true, applies: "always" },
+  { key: "spawn:completion-file", by: "spored", onCommand: true, applies: "always" },
+  { key: "spawn:completion-delay", by: "spored", onCommand: true, applies: "always" },
+  { key: "spawn:last-stop-reason", by: "spawn", onCommand: true, applies: "always" },
+  { key: "spawn:last-stop-time", by: "spawn", onCommand: true, applies: "always" },
+  { key: "spawn:last-start-time", by: "spawn", onCommand: true, applies: "always" },
+  { key: "spawn:dns-name", by: "spawn", onCommand: true, applies: "always" },
+  { key: "spawn:dns-domain", by: "spawn", onCommand: true, applies: "always" },
+  { key: "spawn:dns-endpoint", by: "spawn", onCommand: true, applies: "always" },
+  { key: "spore:plugin:", by: "spawn", onCommand: true, applies: "always" },
+];
+
+/**
+ * The tags spored writes on its own once running that a launch whose
+ * RunInstances tag set is `tags` must keep a slot free for, in list order. Port
+ * of Go's tagReserve (#1355): a tag write that would go past AWS's 50 fails
+ * whole, so with no slot spored's heartbeat, compute-seconds (the cost limit's
+ * clock across stop/start) and cost footprint are never written. A key the
+ * launch already writes (spawn-ts writes spawn:compute-seconds=0) takes no slot.
+ *
+ * Only spored's tags: spored runs on a spawn-ts instance exactly as on a Go one.
+ * The "spawn" entries are Go's launch code (a Spot price, ephemeral FSx tags)
+ * and its commands; spawn-ts writes none of them after RunInstances.
+ */
+export function tagReserve(tags: Record<string, string>): string[] {
+  const applies = (a: PostLaunchTag["applies"]): boolean =>
+    a === "always" ||
+    (a === "dns" && !!tags[tag("dns-name")]) ||
+    (a === "spot" && !!tags[tag("spot-request-type")]);
+  return POST_LAUNCH_INSTANCE_TAGS.filter(
+    (t) => t.by === "spored" && !t.onCommand && !(t.key in tags) && applies(t.applies),
+  ).map((t) => t.key);
+}
 
 /**
  * Refusal of a launch whose tags would not fit in AWS's per-resource limit
  * (Go TagLimitError, #1336). RunInstances rejects such a launch outright; it
- * does not truncate. Thrown before any AWS call.
+ * does not truncate. Thrown before any AWS call. `count` includes the slots
+ * kept for the tags spored writes once running (`spored`, #1355).
  */
 export class TagLimitError extends Error {
   constructor(
     readonly count: number,
     readonly limit: number,
     readonly sporedSettings: string[],
+    readonly spored: string[] = [],
   ) {
-    const droppable =
-      sporedSettings.length > 0
-        ? "the optional spored settings " + sporedSettings.join(", ")
-        : "the launch options that each add a spawn: tag (webhooks, notifications, storage, DNS)";
-    super(
+    const droppable: string[] = [];
+    if (sporedSettings.length > 0) {
+      droppable.push("the optional spored settings " + sporedSettings.join(", "));
+    }
+    if (sporedSettings.length < count - limit) {
+      // Not enough on its own: name what else takes a slot (Go #1355).
+      droppable.push(
+        "the launch options that each add a spawn: tag or a slot kept for one " +
+          "(a job array, a sweep, MPI, webhooks, notifications, DNS, Spot)",
+      );
+    }
+    let msg =
       `refusing to launch: the instance would carry ${count} tags and AWS allows ${limit} per resource, ` +
-        `so RunInstances would reject it (#1336). Drop at least ${count - limit} of: ${droppable}. ` +
-        "The remaining spawn: tags are what spored enforces the TTL, idle and cost limits from",
-    );
+      `so RunInstances would reject it (#1336). Drop at least ${count - limit} of: ${droppable.join("; ")}. ` +
+      "The remaining spawn: tags are what spored enforces the TTL, idle and cost limits from";
+    if (spored.length > 0) {
+      msg += `. Counted: ${spored.length} slot(s) spored needs for the tags it writes once running (${spored.join(", ")})`;
+    }
+    super(msg);
     this.name = "TagLimitError";
   }
 }
 
 /**
  * Throw a TagLimitError when `tags` (the complete set RunInstances would get)
- * is over AWS_TAG_LIMIT. Port of Go's checkTagLimit. spawn-ts writes no tags
- * after RunInstances, so unlike Go nothing is reserved for post-launch tags.
- * Sweep parameters are budgeted to fit (buildSweepTags), never refused; a set
- * over the limit is one whose non-parameter tags alone do not fit.
+ * and the slots kept for spored's own tags (tagReserve) are over
+ * AWS_TAG_LIMIT. Port of Go's checkTagLimit (v0.150.0). Sweep parameters are
+ * budgeted to fit (buildSweepTags), never refused; a set over the limit is one
+ * whose non-parameter tags alone do not fit.
  */
 export function checkTagLimit(tags: Record<string, string>): void {
   const keys = Object.keys(tags);
-  if (keys.length <= AWS_TAG_LIMIT) return;
+  const spored = tagReserve(tags);
+  const count = keys.length + spored.length;
+  if (count <= AWS_TAG_LIMIT) return;
   const settings = keys
     .filter((k) => k in SPORED_SETTING_FLAGS)
     .map((k) => `${SPORED_SETTING_FLAGS[k]} (${k})`);
-  throw new TagLimitError(keys.length, AWS_TAG_LIMIT, settings);
+  throw new TagLimitError(count, AWS_TAG_LIMIT, settings, spored);
 }
 
 /**

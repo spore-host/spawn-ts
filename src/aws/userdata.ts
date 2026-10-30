@@ -19,40 +19,41 @@
 // spored, signature verification off by default).
 //
 // The per-launch parts spawn-ts supports (user, key, command, completion file,
-// plugins) are rendered here exactly as Go renders them; testdata/
-// stub-fixtures.v0.149.0.json holds Go's own output for the same inputs and
-// userdata.test.ts requires byte equality.
+// launch config object, plugins) are rendered here exactly as Go renders them;
+// testdata/stub-fixtures.v0.150.0.json holds Go's own output for the same
+// inputs and userdata.test.ts requires byte equality.
 
 import { type PluginDeclaration, serializeDeclarations } from "../core/plugins.js";
+import { LAUNCH_CONFIG_CACHE_PATH } from "../core/launchconfig.js";
 
 /**
  * The spawn release whose published bootstrap body and spored a spawn-ts launch
  * installs.
  *
- * 0.149.0 deliberately, and it is not "the latest Go release": spored from
- * v0.150.0 reads the launch-fixed settings (webhooks, notify-*, active-ports/
- * -processes, idle-cpu) from a per-launch config object named by spawn:config,
- * and IGNORES them as tags (spawn#1359, no tag fallback by owner decision).
- * spawn-ts writes them as tags, so 0.149.0 is the newest spored that enforces
- * what spawn-ts writes (spore-host/spawn-ts#108). The versioned path is
+ * 0.150.0, the first spored that reads the launch config object (spawn#1359,
+ * LAUNCH_CONFIG_FIRST_SPORED_VERSION): from it on, the hook settings and
+ * idle-cpu are read only from the object, so spawn-ts writes the object
+ * (core/launchconfig.ts) and stops writing those tags. The pin and the object
+ * move together or not at all: a spored older than 0.150.0 ignores the object,
+ * and one from 0.150.0 ignores the tags (#108, #110). The versioned path is
  * permanent (#1412), and the release workflow publishes and reads back the
  * body, spored, .sha256 and .sig there before the CLI is installable (#1415).
  *
  * Moving this pin is a contract change, not a version bump: re-generate the
- * body and fixtures with scripts/gen-go-fixtures.sh, and check what that
- * release's spored reads from tags.
+ * body and fixtures with scripts/gen-go-fixtures.sh, and check which settings
+ * that release's spored reads from tags and which from the object.
  */
-export const SPAWN_BOOTSTRAP_VERSION = "0.149.0";
+export const SPAWN_BOOTSTRAP_VERSION = "0.150.0";
 
 /**
  * sha256 of `spawn bootstrap-body` at SPAWN_BOOTSTRAP_VERSION, i.e. of
  * launcher.BootstrapBody(). Reproducible without a checkout:
- * `go run github.com/spore-host/spawn@v0.149.0 bootstrap-body | sha256sum`.
- * testdata/bootstrap-body.v0.149.0.sh is that output, and a test pins the hash
+ * `go run github.com/spore-host/spawn@v0.150.0 bootstrap-body | sha256sum`.
+ * testdata/bootstrap-body.v0.150.0.sh is that output, and a test pins the hash
  * to it, so this constant cannot silently disagree with the bytes it names.
  */
 export const BOOTSTRAP_BODY_SHA256 =
-  "250f111bf0aec010dde1fa38aabe6c163112a634c3f64e974799ddf5b24254b2";
+  "925521a3c0b1707f749eb55cceaef059a526d56a9dbce198e8c389d7f976fc30";
 
 /**
  * The spore.host spored signing PUBLIC key (pkg/sporedinstall.SigningKeyPEM):
@@ -99,6 +100,13 @@ export interface BootstrapOptions {
    * cannot verify, exactly as a Go release build does.
    */
   sporedSigningPublicKey?: string;
+  /**
+   * The launch config object (core/launchconfig.ts encodeLaunchConfig), seeded
+   * where spored caches it, /etc/spawn/launch-config.json (0600), before the
+   * body starts spored. spored uses it only if it hashes to the instance's
+   * spawn:config tag. Absent when the launch sets none of the object's settings.
+   */
+  launchConfig?: string;
   /**
    * Plugins to declare at launch. Written to /etc/spawn/plugins.json before
    * spored starts (spawn#1023), which spored reads once at startup.
@@ -253,6 +261,22 @@ chmod 600 /etc/spawn/command
 }
 
 /**
+ * Go's launch-config seed block (pkg/launcher perLaunchPreBody, #1359): base64,
+ * so the shell carries the exact bytes whose sha256 spawn:config names. Before
+ * the body, so the cache exists when spored starts; written this boot, so
+ * spored's discard-inherited-state keeps it.
+ */
+function launchConfigBlock(body?: string): string {
+  if (!body) return "";
+  return `
+# Launch config object (#1359), checked by spored against spawn:config
+mkdir -p /etc/spawn
+echo '${base64Utf8(body)}' | base64 -d > ${LAUNCH_CONFIG_CACHE_PATH}
+chmod 600 ${LAUNCH_CONFIG_CACHE_PATH}
+`;
+}
+
+/**
  * Go's plugin-declarations block, written before the body so spored, which
  * reads the file once at startup, never starts without it (#1023). The JSON is
  * `serializeDeclarations`, which matches Go's json.Marshal of
@@ -303,7 +327,7 @@ SPAWN_CMD_COMPLETION_FILE=${shellQuote(completionFile)}
     pinScript(SPAWN_BOOTSTRAP_VERSION) +
     FATAL_RETIRE;
 
-  const pre = commandBlock(opts.command) + pluginsBlock(opts.plugins);
+  const pre = commandBlock(opts.command) + launchConfigBlock(opts.launchConfig) + pluginsBlock(opts.plugins);
   return prefix + pre + bodyStub(SPAWN_BOOTSTRAP_VERSION, BOOTSTRAP_BODY_SHA256);
 }
 

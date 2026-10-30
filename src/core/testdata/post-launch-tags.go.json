@@ -1,0 +1,206 @@
+[
+  {
+    "key": "spawn:compute-seconds",
+    "by": "spored",
+    "onCommand": false,
+    "applies": "always"
+  },
+  {
+    "key": "spawn:last-heartbeat",
+    "by": "spored",
+    "onCommand": false,
+    "applies": "always"
+  },
+  {
+    "key": "spawn:spored-version",
+    "by": "spored",
+    "onCommand": false,
+    "applies": "always"
+  },
+  {
+    "key": "spawn:logged-in-count",
+    "by": "spored",
+    "onCommand": false,
+    "applies": "always"
+  },
+  {
+    "key": "spawn:cost-footprint",
+    "by": "spored",
+    "onCommand": false,
+    "applies": "always"
+  },
+  {
+    "key": "spawn:flush-status",
+    "by": "spored",
+    "onCommand": false,
+    "applies": "other"
+  },
+  {
+    "key": "spawn:dns-status",
+    "by": "spored",
+    "onCommand": false,
+    "applies": "dns"
+  },
+  {
+    "key": "spawn:dns-error",
+    "by": "spored",
+    "onCommand": false,
+    "applies": "dns"
+  },
+  {
+    "key": "spawn:ready-status",
+    "by": "spored",
+    "onCommand": false,
+    "applies": "other"
+  },
+  {
+    "key": "spawn:ready-url",
+    "by": "spored",
+    "onCommand": false,
+    "applies": "other"
+  },
+  {
+    "key": "spawn:ready-token",
+    "by": "spored",
+    "onCommand": false,
+    "applies": "other"
+  },
+  {
+    "key": "spawn:fsx-id",
+    "by": "spored",
+    "onCommand": false,
+    "applies": "other"
+  },
+  {
+    "key": "spawn:fsx-mount-point",
+    "by": "spored",
+    "onCommand": false,
+    "applies": "other"
+  },
+  {
+    "key": "spawn:fsx-dra-status",
+    "by": "spored",
+    "onCommand": false,
+    "applies": "other"
+  },
+  {
+    "key": "spawn:fsx-dra-error",
+    "by": "spored",
+    "onCommand": false,
+    "applies": "other"
+  },
+  {
+    "key": "spawn:spot-price-per-hour",
+    "by": "spawn",
+    "onCommand": false,
+    "applies": "spot"
+  },
+  {
+    "key": "spawn:fsx-pending",
+    "by": "spawn",
+    "onCommand": false,
+    "applies": "other"
+  },
+  {
+    "key": "spawn:fsx-s3-import-path",
+    "by": "spawn",
+    "onCommand": false,
+    "applies": "other"
+  },
+  {
+    "key": "spawn:fsx-s3-export-path",
+    "by": "spawn",
+    "onCommand": false,
+    "applies": "other"
+  },
+  {
+    "key": "spawn:ttl",
+    "by": "spawn",
+    "onCommand": true,
+    "applies": "always"
+  },
+  {
+    "key": "spawn:ttl-deadline",
+    "by": "spawn",
+    "onCommand": true,
+    "applies": "always"
+  },
+  {
+    "key": "spawn:cost-limit",
+    "by": "spawn",
+    "onCommand": true,
+    "applies": "always"
+  },
+  {
+    "key": "spawn:idle-timeout",
+    "by": "spored",
+    "onCommand": true,
+    "applies": "always"
+  },
+  {
+    "key": "spawn:on-complete",
+    "by": "spored",
+    "onCommand": true,
+    "applies": "always"
+  },
+  {
+    "key": "spawn:hibernate-on-idle",
+    "by": "spored",
+    "onCommand": true,
+    "applies": "always"
+  },
+  {
+    "key": "spawn:completion-file",
+    "by": "spored",
+    "onCommand": true,
+    "applies": "always"
+  },
+  {
+    "key": "spawn:completion-delay",
+    "by": "spored",
+    "onCommand": true,
+    "applies": "always"
+  },
+  {
+    "key": "spawn:last-stop-reason",
+    "by": "spawn",
+    "onCommand": true,
+    "applies": "always"
+  },
+  {
+    "key": "spawn:last-stop-time",
+    "by": "spawn",
+    "onCommand": true,
+    "applies": "always"
+  },
+  {
+    "key": "spawn:last-start-time",
+    "by": "spawn",
+    "onCommand": true,
+    "applies": "always"
+  },
+  {
+    "key": "spawn:dns-name",
+    "by": "spawn",
+    "onCommand": true,
+    "applies": "always"
+  },
+  {
+    "key": "spawn:dns-domain",
+    "by": "spawn",
+    "onCommand": true,
+    "applies": "always"
+  },
+  {
+    "key": "spawn:dns-endpoint",
+    "by": "spawn",
+    "onCommand": true,
+    "applies": "always"
+  },
+  {
+    "key": "spore:plugin:",
+    "by": "spawn",
+    "onCommand": true,
+    "applies": "always"
+  }
+]

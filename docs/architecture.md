@@ -33,7 +33,8 @@ tool; the GUI and terminal are two consumers of that library.
 |------|----------------|
 | `types.ts` | Domain model: `LaunchSpec`, `ManagedInstance`, lifecycle types. |
 | `duration.ts` | Go-compatible duration parse/format (`4h`, `1h30m`). |
-| `tags.ts` | The `spawn:*` tag wire-contract; encode/decode config. |
+| `tags.ts` | The `spawn:*` tag wire-contract; encode/decode config; the 50-tag check and its reserve for spored's own tags. |
+| `launchconfig.ts` | The launch config object (`spawn:config`, spawn#1359) spored 0.150.0 reads its launch-fixed settings from, in Go's canonical bytes; the user data seeds it into spored's cache (#110). |
 | `lifecycle.ts` | Pure decision engine — a port of `spored`'s `checkAndAct`. |
 | `provider.ts` | The compute-backend interface. |
 | `mock.ts` | In-memory provider (default; non-billable; sim clock). |
@@ -46,7 +47,7 @@ tool; the GUI and terminal are two consumers of that library.
 - `userdata.ts` — the instance bootstrap that installs `spored`, so instances
   self-terminate even with the browser closed. It is Go spawn's release-build
   user data (`pkg/launcher` `BuildLinuxBootstrap`, spawn#1274), rendered for a
-  pinned spawn release (`SPAWN_BOOTSTRAP_VERSION`, 0.149.0): a short stub that
+  pinned spawn release (`SPAWN_BOOTSTRAP_VERSION`, 0.150.0): a short stub that
   fetches the bootstrap body that release published in every
   `spawn-binaries-<region>` bucket, refuses it unless its sha256 is the pinned
   one **and** its signature verifies against the spore.host key the launcher
@@ -54,9 +55,9 @@ tool; the GUI and terminal are two consumers of that library.
   `spored` from `spawn/versions/<version>/` (spawn#1412), never the unversioned
   latest, and any failure before `spored` is running terminates the instance
   (`spawn_fatal_retire`). `userdata.test.ts` holds Go's own output for the same
-  inputs (`scripts/gen-go-fixtures.sh`) and requires byte equality. Why 0.149.0
-  and not the newest Go release: see #108 and the comment on
-  `SPAWN_BOOTSTRAP_VERSION`.
+  inputs (`scripts/gen-go-fixtures.sh`) and requires byte equality. Moving the
+  pin is a contract change (which settings that spored reads from tags): see
+  #108, #110 and the comment on `SPAWN_BOOTSTRAP_VERSION`.
 
 ### `src/cli`
 

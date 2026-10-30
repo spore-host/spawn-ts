@@ -128,9 +128,11 @@ export interface LaunchSpec {
 }
 
 /**
- * Daemon-enforced lifecycle hooks, written to spawn:* tags at launch and run by
- * spored ON THE INSTANCE — spawn-ts (a browser launcher) cannot execute these
- * itself. Every field maps to the identically-named tag(s) the Go tool writes
+ * Daemon-enforced lifecycle hooks, run by spored ON THE INSTANCE — spawn-ts (a
+ * browser launcher) cannot execute these itself. On a real launch everything
+ * but preStop/preStopTimeout goes into the launch config object named by
+ * spawn:config (spored >= 0.150.0, spawn#1359, core/launchconfig.ts), not into
+ * tags; the mock keeps them as tags. Every field maps to the identically-named tag(s) the Go tool writes
  * (pkg/aws/tags.go), so a real spored honors a spawn-ts launch. All optional.
  */
 export interface LifecycleHooks {
