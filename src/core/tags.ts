@@ -24,7 +24,7 @@ import { isLaunchConfigSetting, LAUNCH_CONFIG_TAG } from "./launchconfig.js";
  * — the same guard the three sibling -ts repos carry on their VERSION constants,
  * two of which caught a real miss.
  */
-export const LIB_VERSION = "0.7.0";
+export const LIB_VERSION = "0.8.0";
 
 /** Tag prefix. The real tool makes this configurable via SPORED_TAG_PREFIX. */
 export const TAG_PREFIX = "spawn";

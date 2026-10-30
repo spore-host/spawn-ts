@@ -145,3 +145,14 @@ describe("CI hygiene", () => {
     ).toContain("npm");
   });
 });
+
+describe("published package", () => {
+  // Apache-2.0 §4(d): a redistribution must carry the NOTICE file. npm always
+  // packs LICENSE and README, but NOTICE only if "files" names it, so every
+  // release through 0.7.0 shipped without it (same gap as truffle-ts#87).
+  it("publishes NOTICE with the package", () => {
+    const pkg = JSON.parse(readFileSync(`${repoRoot}package.json`, "utf8")) as { files: string[] };
+    expect(pkg.files).toContain("NOTICE");
+    expect(readFileSync(`${repoRoot}NOTICE`, "utf8")).toMatch(/spawn-ts/);
+  });
+});
