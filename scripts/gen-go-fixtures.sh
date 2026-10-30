@@ -8,6 +8,8 @@
 #   src/core/testdata/gojson-vectors.go.json      encoding/json escaping vectors
 #   src/core/testdata/launchconfig-setting-keys.go.json
 #                                                 pkg/launchconfig SettingKeys()
+#   src/core/testdata/post-launch-tags.go.json    pkg/aws postLaunchInstanceTags,
+#                                                 the #1355 tag reserve's list
 #
 # Usage: scripts/gen-go-fixtures.sh 0.150.0
 #        SPAWN_SRC=/path/to/spawn scripts/gen-go-fixtures.sh 0.150.0
@@ -18,7 +20,7 @@
 # Needs a Go toolchain and network access to the Go module proxy (no AWS). The
 # spawn source comes from the module proxy, checked against the sum database,
 # so the fixtures are what that tag says, not what a local checkout happens to
-# hold. Nothing is written outside a temp dir except the three fixtures.
+# hold. Nothing is written outside a temp dir except the fixtures above.
 #
 # When moving SPAWN_BOOTSTRAP_VERSION: run this for the new version, update the
 # version and BOOTSTRAP_BODY_SHA256 in src/aws/userdata.ts (the script prints
@@ -53,6 +55,39 @@ package launcher
 
 func SpawnTSStub(cfg BootstrapConfig) (string, error) {
 	return buildLinuxBootstrap(cfg, "${V}", "${V}", BootstrapBody())
+}
+EOF
+
+# In-package helper: postLaunchInstanceTags (#1355) and its applies funcs are
+# unexported. applies is a func, so it is reported by probing it: "always" is
+# nil (every instance); else whether a DNS launch or a Spot launch gets the tag;
+# "other" is neither (a task, a web app or DCV session, an FSx mount).
+cat > pkg/aws/zz_spawnts_fixtures.go <<'EOF'
+package aws
+
+type SpawnTSPostLaunchTag struct {
+	Key       string `json:"key"`
+	By        string `json:"by"`
+	OnCommand bool   `json:"onCommand"`
+	Applies   string `json:"applies"`
+}
+
+func SpawnTSPostLaunchTags() []SpawnTSPostLaunchTag {
+	var out []SpawnTSPostLaunchTag
+	for _, t := range postLaunchInstanceTags {
+		applies := "always"
+		switch {
+		case t.applies == nil:
+		case t.applies(LaunchConfig{DNSName: "x"}):
+			applies = "dns"
+		case t.applies(LaunchConfig{Spot: true}):
+			applies = "spot"
+		default:
+			applies = "other"
+		}
+		out = append(out, SpawnTSPostLaunchTag{Key: t.key, By: string(t.by), OnCommand: t.onCommand, Applies: applies})
+	}
+	return out
 }
 EOF
 
@@ -165,6 +200,10 @@ func main() {
 	if err := os.WriteFile(os.Args[4], keys, 0o644); err != nil {
 		panic(err)
 	}
+	b, _ = json.MarshalIndent(aws.SpawnTSPostLaunchTags(), "", "  ")
+	if err := os.WriteFile(os.Args[5], append(b, '\n'), 0o644); err != nil {
+		panic(err)
+	}
 }
 EOF
 
@@ -172,7 +211,8 @@ go run ./internal/spawntsfixtures \
   "$ROOT/src/aws/testdata/bootstrap-body.v${V}.sh" \
   "$ROOT/src/aws/testdata/stub-fixtures.v${V}.json" \
   "$ROOT/src/core/testdata/gojson-vectors.go.json" \
-  "$ROOT/src/core/testdata/launchconfig-setting-keys.go.json"
+  "$ROOT/src/core/testdata/launchconfig-setting-keys.go.json" \
+  "$ROOT/src/core/testdata/post-launch-tags.go.json"
 
 # The published module's own CLI must print the same body.
 if [ "$(go run . bootstrap-body | shasum -a 256 | cut -d ' ' -f 1)" != \

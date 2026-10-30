@@ -120,9 +120,14 @@ export interface LaunchIdentity {
  * only surfaces when someone tries to clean up. `spawn cleanup --only-mine`
  * skips it too (pkg/aws/cleanup.go:93).
  *
- * created-by is deliberately "spawn-ts", not Go's "spawn": no reader compares the
- * value for equality, and an operator benefits from knowing which launcher
- * produced an instance.
+ * created-by is deliberately "spawn-ts", not Go's "spawn", and the value is now
+ * part of the contract: keep it stable. `spawn upgrade-spored` compares it for
+ * equality (cmd/upgrade_spored.go tagsReadingSpored, spawn#1423, v0.150.0): it
+ * reads spawn:version as a spored version only when created-by == "spawn".
+ * spawn-ts writes its own library version there (no spored has that version),
+ * so writing "spawn" would point the upgrade at a spored that does not exist;
+ * with "spawn-ts" it falls back to spawn:spored-version. It also tells an
+ * operator which launcher produced an instance.
  */
 export function buildIdentityTags(id: LaunchIdentity): Record<string, string> {
   const tags: Record<string, string> = {

@@ -53,7 +53,7 @@ export const SPAWN_BOOTSTRAP_VERSION = "0.150.0";
  * to it, so this constant cannot silently disagree with the bytes it names.
  */
 export const BOOTSTRAP_BODY_SHA256 =
-  "b73c9811fc51ce5ca2b59ffee1a2e3e7ab511a1b2e3de3795419a88d26966b1c";
+  "925521a3c0b1707f749eb55cceaef059a526d56a9dbce198e8c389d7f976fc30";
 
 /**
  * The spore.host spored signing PUBLIC key (pkg/sporedinstall.SigningKeyPEM):
