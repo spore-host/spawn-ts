@@ -19,8 +19,23 @@ import {
   buildIdentityTags,
   checkTagLimit,
   TagLimitError,
+  tagReserve,
+  POST_LAUNCH_INSTANCE_TAGS,
 } from "./tags.js";
+import { LAUNCH_CONFIG_TAG, splitLaunchConfigTags } from "./launchconfig.js";
 import type { LaunchSpec, SweepMembership, JobArrayMembership, LifecycleHooks } from "./types.js";
+
+/**
+ * The tag set RunInstances gets for a buildLaunchTags map, as EC2Provider builds
+ * it: spawn:local-username added, the launch config object's settings out, one
+ * spawn:config in when any is non-empty.
+ */
+function onWire(t: Record<string, string>): Record<string, string> {
+  const split = splitLaunchConfigTags({ [tag("local-username")]: "ec2-user", ...t });
+  return Object.values(split.settings).some((v) => v !== "")
+    ? { ...split.tags, [LAUNCH_CONFIG_TAG]: "0".repeat(64) }
+    : split.tags;
+}
 
 const membership: SweepMembership = {
   id: "hp-20260720-000000",
@@ -161,8 +176,10 @@ describe("sweep tags", () => {
       userArn: "arn:aws:iam::123456789012:user/alice",
       accountName: "my-lab",
     });
-    // +1 for spawn:local-username, which EC2Provider adds after this returns.
-    expect(Object.keys(tags).length + 1).toBeLessThanOrEqual(AWS_TAG_LIMIT);
+    // What RunInstances gets, plus the slots kept for spored's own tags (#1355).
+    const wire = onWire(tags);
+    expect(Object.keys(wire).length + tagReserve(wire).length).toBe(AWS_TAG_LIMIT);
+    expect(() => checkTagLimit(wire)).not.toThrow();
     // The identity block survives the squeeze — parameters are what get dropped,
     // never the tag the portal needs to own the instance.
     expect(tags[tag("iam-user")]).toBe("arn:aws:iam::123456789012:user/alice");
@@ -407,14 +424,19 @@ describe("checkTagLimit (Go #1336)", () => {
     return t;
   };
 
-  it("passes exactly AWS_TAG_LIMIT tags", () => {
-    expect(() => checkTagLimit(nTags(AWS_TAG_LIMIT))).not.toThrow();
+  // nTags carries none of spored's own tags and no spawn:dns-name, so the
+  // reserve is the five spored writes on every instance.
+  const RESERVE = 5;
+
+  it("passes exactly AWS_TAG_LIMIT tags counting the reserve", () => {
+    expect(tagReserve(nTags(1))).toHaveLength(RESERVE);
+    expect(() => checkTagLimit(nTags(AWS_TAG_LIMIT - RESERVE))).not.toThrow();
   });
 
   it("refuses one more, with the count, the limit and how many to drop", () => {
     let err: unknown;
     try {
-      checkTagLimit(nTags(AWS_TAG_LIMIT + 2));
+      checkTagLimit(nTags(AWS_TAG_LIMIT - RESERVE + 2));
     } catch (e) {
       err = e;
     }
@@ -423,11 +445,25 @@ describe("checkTagLimit (Go #1336)", () => {
     expect((err as Error).message).toMatch(
       /^refusing to launch: the instance would carry 52 tags and AWS allows 50 per resource, so RunInstances would reject it \(#1336\)\. Drop at least 2 of: /,
     );
+    // Go's TagLimitError.Error (#1355): the reserve is named, in list order.
+    expect((err as TagLimitError).spored).toEqual([
+      "spawn:compute-seconds", "spawn:last-heartbeat", "spawn:spored-version", "spawn:logged-in-count",
+      "spawn:cost-footprint",
+    ]);
+    expect((err as Error).message).toMatch(
+      /\. Counted: 5 slot\(s\) spored needs for the tags it writes once running \(spawn:compute-seconds, spawn:last-heartbeat, spawn:spored-version, spawn:logged-in-count, spawn:cost-footprint\)$/,
+    );
   });
 
-  it("names the spored setting that added a tag", () => {
-    expect(() => checkTagLimit(nTags(51, { "spawn:idle-cpu": "5" }))).toThrow(
-      "the optional spored settings --idle-cpu (spawn:idle-cpu)",
+  it("names the spored setting that added a tag (Go's map: --metrics)", () => {
+    expect(() =>
+      checkTagLimit(nTags(AWS_TAG_LIMIT - RESERVE + 1, { "spawn:metrics-enabled": "true" })),
+    ).toThrow("the optional spored settings --metrics (spawn:metrics-enabled)");
+  });
+
+  it("does not name --idle-cpu: it is in the launch config object, not a tag (#110)", () => {
+    expect(() => checkTagLimit(nTags(AWS_TAG_LIMIT, { "spawn:idle-cpu": "5" }))).toThrow(
+      /Drop at least \d+ of: the launch options that each add a spawn: tag or a slot kept for one/,
     );
   });
 
@@ -457,9 +493,54 @@ describe("checkTagLimit (Go #1336)", () => {
       0,
       { accountId: "123456789012", userArn: "arn:aws:iam::123456789012:user/u", accountName: "acct" },
     );
-    t[tag("local-username")] = "ec2-user";
-    expect(() => checkTagLimit(t)).not.toThrow();
-    expect(Object.keys(t).length).toBe(AWS_TAG_LIMIT);
+    const wire = onWire(t);
+    expect(() => checkTagLimit(wire)).not.toThrow();
+    expect(Object.keys(wire).length + tagReserve(wire).length).toBe(AWS_TAG_LIMIT);
+  });
+});
+
+describe("tag reserve (Go #1355, pkg/aws/post_launch_tags.go)", () => {
+  type GoTag = { key: string; by: string; onCommand: boolean; applies: string };
+  const goTags: GoTag[] = JSON.parse(
+    readFileSync(new URL("./testdata/post-launch-tags.go.json", import.meta.url), "utf8"),
+  );
+
+  it("is Go's postLaunchInstanceTags at v0.150.0: same keys, order, writer and command flag", () => {
+    expect(POST_LAUNCH_INSTANCE_TAGS.map((t) => [t.key, t.by, t.onCommand])).toEqual(
+      goTags.map((t) => [t.key, t.by, t.onCommand]),
+    );
+  });
+
+  it("classifies each tag as Go does; Go's 'other' (task, web app, DCV, FSx) is 'never' here", () => {
+    const want: Record<string, string> = { always: "always", dns: "dns", spot: "spot", other: "never" };
+    expect(POST_LAUNCH_INSTANCE_TAGS.map((t) => t.applies)).toEqual(goTags.map((t) => want[t.applies]));
+  });
+
+  it("reserves spored's tags for a DNS launch, skipping what the launch already writes", () => {
+    const wire = onWire(buildLaunchTags(baseSpec(), 0));
+    expect(wire[tag("dns-name")]).toBeTruthy();
+    expect(tagReserve(wire)).toEqual([
+      // spawn:compute-seconds is written at launch, so an update takes no slot.
+      "spawn:last-heartbeat", "spawn:spored-version", "spawn:logged-in-count", "spawn:cost-footprint",
+      "spawn:dns-status", "spawn:dns-error",
+    ]);
+  });
+
+  it("reserves nothing for Go spawn's own post-launch tags (spawn-ts writes none), Spot included", () => {
+    const wire = onWire(buildLaunchTags({ ...baseSpec(), spot: true }, 0));
+    expect(tagReserve(wire)).not.toContain("spawn:spot-price-per-hour");
+  });
+
+  it("a sweep's parameter budget leaves the reserve free and counts the object as one tag", () => {
+    const parameters: Record<string, string> = {};
+    for (let i = 0; i < 80; i++) parameters[`p${String(i).padStart(2, "0")}`] = String(i);
+    const spec: LaunchSpec = {
+      ...baseSpec({ ...membership, parameters }),
+      hooks: { notifyUrl: "https://example.invalid/n", notifyPlatform: "slack", activePorts: "8787" },
+    };
+    const wire = onWire(buildLaunchTags(spec, 0));
+    // Exactly full: no slot is wasted on the three settings that left the tags.
+    expect(Object.keys(wire).length + tagReserve(wire).length).toBe(AWS_TAG_LIMIT);
   });
 });
 

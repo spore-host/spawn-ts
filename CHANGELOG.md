@@ -34,7 +34,22 @@ version strings agree.
   `SPAWN_BOOTSTRAP_VERSION` moves to 0.150.0 in the same change, because the
   pin and the object only work together. A `list()`/`get()` of a real instance
   no longer shows those nine settings, since they are not tags; the instance
-  `launch()` returns still does.
+  `launch()` returns still does. The pinned body is the published v0.150.0
+  body, sha256 `925521a3…fc30`.
+
+- **The 50-tag check keeps a slot free for each tag spored writes once
+  running** (Go spawn#1355). A tag write past AWS's 50 fails whole, so a launch
+  that used every slot left spored unable to write its heartbeat,
+  `spawn:spored-version`, `spawn:logged-in-count`, its cost footprint
+  (`spawn:cost-footprint`, one tag since spawn#1428) and, with DNS, its
+  `spawn:dns-status`/`spawn:dns-error`. `checkTagLimit` now counts them (a
+  launch with DNS keeps 6 slots) and the refusal names them. A sweep's
+  parameter budget leaves them free too, and now counts the launch config
+  object as the one tag it is rather than its nine settings, so a sweep with
+  hook settings tags more parameters than before. The list is Go's
+  `postLaunchInstanceTags`, pinned by a fixture rendered from the published
+  spawn. The refusal no longer offers `--idle-cpu` as droppable, since it is in
+  the object and adds no tag.
 
 - **A real launch now sends Go spawn's release-build bootstrap, pinned to spawn
   v0.149.0** (#108; Go spawn#1274, spawn#1412). The user data used to be a

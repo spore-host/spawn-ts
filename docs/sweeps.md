@@ -104,7 +104,7 @@ CLI and vice-versa:
 | `spawn:sweep-name` | the sweep's name |
 | `spawn:sweep-index` | this member's 0-based index |
 | `spawn:sweep-size` | total members in the sweep |
-| `spawn:param:<key>` | one sweep parameter (capped at 35 to stay under AWS's 50-tag limit) |
+| `spawn:param:<key>` | one sweep parameter (budgeted to what the launch leaves of AWS's 50-tag limit, after the slots kept for spored's own tags; the rest are dropped in sorted key order) |
 
 See [`src/core/tags.ts`](./architecture.md) for the encode/decode, which is
 shared verbatim with single launches.

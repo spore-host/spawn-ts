@@ -97,15 +97,18 @@ The full 50-command tier matrix is
 ### The tag budget is a real constraint
 
 AWS caps a resource at **50 tags**, and exceeding it fails `RunInstances`
-outright — it doesn't truncate. A fully configured non-sweep launch already
-stamps 39, so the per-member `spawn:param:*` tags of a sweep cannot be a fixed
-allowance. Go uses a flat 35 with a comment claiming it stays "under AWS 50-tag
-limit" (`pkg/aws/tags.go:247`), which doesn't hold: 35 params on a maximal launch
-reaches ~73 tags. spawn-ts computes the remaining budget instead
-(`AWS_TAG_LIMIT` minus what the launch has already consumed) and drops the
-surplus in sorted key order, so the surviving subset is deterministic. Dropping
-parameters is itself lossy — they're how a sweep member records which point in
-the space it *is* — but a truncated tag set beats a launch that fails.
+outright — it doesn't truncate. And a launch that fits is not done: `spored`
+writes tags of its own once running (its heartbeat, `spawn:spored-version`, its
+cost footprint and, with DNS, the DNS status), and a write past 50 fails whole.
+So spawn-ts, like Go since spawn#1355, keeps a slot free for each
+(`tagReserve`, Go's `postLaunchInstanceTags`; 6 for a launch with DNS) and
+refuses a launch whose tags plus that reserve exceed 50, before any AWS call
+(`checkTagLimit`, spawn#1336). The per-member `spawn:param:*` tags of a sweep
+are the one droppable class: they get what is left (`AWS_TAG_LIMIT` less the
+launch's tags and the reserve, Go's `launchTagLimit`), in sorted key order, so
+the surviving subset is deterministic. Dropping parameters is itself lossy —
+they're how a sweep member records which point in the space it *is* — but a
+truncated tag set beats a launch that fails.
 
 ## Why the catalog is offline (and where live data goes)
 
@@ -144,7 +147,7 @@ docs (both carry the same stale framing — truffle-ts#35).
 The browser is the **launcher and viewer**; the `spored` daemon on the instance
 is the **enforcer**. spawn-ts installs `spored` via the bootstrap
 ([userdata.ts](../src/aws/userdata.ts)) — Go's release-build stub, pinned to
-spawn 0.149.0's signed bootstrap body and `spored`, verified by sha256 and the
+spawn 0.150.0's signed bootstrap body and `spored`, verified by sha256 and the
 spore.host signature — so the self-termination guarantee holds even after the
 browser tab is closed. That
 guarantee is validated end-to-end on real AWS (see the closed issue #2).
