@@ -165,3 +165,6 @@ export type { ShellCtx, CmdResult } from "./cli/commands.js";
 // `flagStr` is last-wins and would silently drop all but the final occurrence.
 export { tokenize, parseArgs, flagStr, flagBool, flagList } from "./cli/args.js";
 export type { ParsedArgs } from "./cli/args.js";
+
+// The monitor loop's mode (#126): "observe" everywhere but a MockProvider.
+export type { LifecycleMode } from "./core/client.js";

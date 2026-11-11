@@ -108,16 +108,16 @@ describe("EC2Provider against live substrate", () => {
     expect(after === null || after.state === "terminated" || after.state === "shutting-down").toBe(true);
   });
 
-  it("SpawnClient monitor self-terminates an expired-TTL instance over the wire", async () => {
+  it("SpawnClient over substrate only observes: an expired TTL is left to spored and the reaper (#126)", async () => {
     if (!reachable) return;
     await fetch(`${ENDPOINT}/v1/state/reset`, { method: "POST" }).catch(() => {});
 
-    // The substrate endpoint is non-billable, so the client runs on its sim
-    // clock. Launch with a short TTL, then advance the clock past the deadline;
-    // the resulting monitor tick must fire a real TerminateInstances via the SDK.
+    // Non-billable is not simulated: over EC2's wire protocol the client is a
+    // viewer, so the monitor tick past the deadline must NOT terminate.
     const client = new SpawnClient({ provider: provider() });
+    expect(client.lifecycleMode).toBe("observe");
     const inst = await client.launch({
-      name: "ttl-reaper",
+      name: "ttl-observed",
       ami: "ami-12345678",
       ttl: 1, // 1ms TTL
       pricePerHour: 0.1,
@@ -129,10 +129,11 @@ describe("EC2Provider against live substrate", () => {
       if (e.type === "action") actions.push(`${e.rule}:${e.action}`);
     });
 
-    await client.step(1000); // advance 1s past the deadline → one monitor tick
+    await client.step(1000); // one monitor tick, past the deadline
 
-    expect(actions).toContain("ttl:terminate");
-    const after = await client.get("ttl-reaper");
-    expect(after === null || after.state === "terminated" || after.state === "shutting-down").toBe(true);
+    expect(actions).toEqual([]);
+    const after = await client.get(inst.instanceId);
+    expect(after?.state).toBe("running");
+    await provider().terminate(inst.instanceId, "integration cleanup");
   });
 });

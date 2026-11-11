@@ -101,7 +101,8 @@ spawn.on((e) => console.log(e));              // typed event stream
 spawn.startMonitor();                          // begin the lifecycle loop
 
 await spawn.launch({ name: "job", ttl: "4h", onComplete: "terminate", pricePerHour: 0.153 });
-// …instance self-terminates when its TTL expires, emitting an "action" event.
+// …the simulated instance terminates when its TTL expires, emitting an "action"
+// event. On EC2 the loop only observes: spored and the reaper enforce (#126).
 ```
 
 Swap to real AWS (credentials held in memory only, never persisted):

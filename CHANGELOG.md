@@ -118,6 +118,26 @@ version strings agree.
   unconfirmed terminate or stop presented as a demo button. The Dashboard
   hides it there, and the client throws on any provider that isn't a
   simulation.
+- **A `SpawnClient` over EC2 no longer stops, hibernates or terminates
+  anything from its monitor loop** (#126). The loop ran spored's lifecycle
+  engine in the browser with `isIdle: true` hardcoded and the launch time as
+  the last activity, so any open portal tab stopped every spawn-managed
+  instance in the region once it was older than its `spawn:idle-timeout`,
+  however busy. A Go `spawn launch` without `--ttl` defaults to a 1h idle
+  timeout, so a CLI job was stopped an hour after launch. The loop also
+  terminated on TTL and cost limit, duplicating spored and the reaper. New
+  `ClientOptions.lifecycle`:
+  - `"observe"`: refresh, TTL and cost warnings, and progress for the sweeps,
+    queues and job arrays this client started. Never a lifecycle action. The
+    default for every provider except a `MockProvider`, including substrate.
+  - `"simulate"`: the engine runs and acts. The `MockProvider` default, so the
+    demo still plays a TTL out. Throws on any other provider.
+
+  `client.lifecycleMode` says which applies. `setProvider` re-derives it, so a
+  mock-backed client switched to EC2 becomes a viewer. **Behaviour change:** a
+  caller that relied on the loop enforcing TTL, cost or idle on EC2 no longer
+  gets that from spawn-ts. spored and the reaper enforce them, as they always
+  did.
 
 ## [0.8.1] — 2026-10-29
 
