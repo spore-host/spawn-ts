@@ -289,21 +289,32 @@ export class EC2Provider implements Provider {
     return new Error(`${cause.message}; instance ${instanceId} was terminated because the launch failed after it was created`);
   }
 
+  /**
+   * Every spawn-managed instance, across all DescribeInstances pages. Rejects
+   * when a page fails: a partial or empty list must never stand in for the
+   * real one, because "nothing is running" is what a user believes when the
+   * list is empty (#125).
+   */
   async list(includeTerminated = false): Promise<ManagedInstance[]> {
-    const res = await this.client.send(
-      new DescribeInstancesCommand({
-        Filters: [{ Name: `tag:${tag("managed")}`, Values: ["true"] }],
-      }),
-    );
     const out: ManagedInstance[] = [];
-    for (const r of res.Reservations ?? []) {
-      for (const inst of r.Instances ?? []) {
-        const m = this.toManaged(inst, this.opts.region);
-        if (!isManaged(m.tags)) continue;
-        if (!includeTerminated && m.state === "terminated") continue;
-        out.push(m);
+    let NextToken: string | undefined;
+    do {
+      const res = await this.client.send(
+        new DescribeInstancesCommand({
+          Filters: [{ Name: `tag:${tag("managed")}`, Values: ["true"] }],
+          NextToken,
+        }),
+      );
+      for (const r of res.Reservations ?? []) {
+        for (const inst of r.Instances ?? []) {
+          const m = this.toManaged(inst, this.opts.region);
+          if (!isManaged(m.tags)) continue;
+          if (!includeTerminated && m.state === "terminated") continue;
+          out.push(m);
+        }
       }
-    }
+      NextToken = res.NextToken || undefined;
+    } while (NextToken);
     return out;
   }
 

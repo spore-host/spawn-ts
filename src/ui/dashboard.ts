@@ -7,6 +7,7 @@ import type { SpawnClient, SpawnEvent } from "../core/client.js";
 import type { LifecycleAction, ManagedInstance } from "../core/types.js";
 import type { FanOutSummary } from "../core/fanout.js";
 import { accumulatedCost } from "../core/lifecycle.js";
+import { describeSpawnError, toSpawnError, type SpawnError, type SpawnOperation } from "../core/errors.js";
 import { dnsNotice, sporedUpgrade, type Notice } from "../core/notices.js";
 import { instancePlugins, LAUNCH_DECLARABLE_PLUGINS } from "../core/plugins.js";
 import { humanRemaining, formatDuration, parseDuration } from "../core/duration.js";
@@ -21,6 +22,8 @@ interface CardView {
   el: HTMLElement;
   info: HTMLElement;
   actions: HTMLElement;
+  /** The last action's failure, in words; outside `info`, so a render keeps it. */
+  error: HTMLElement;
   /** The instance as last rendered; button handlers read it, never a stale closure. */
   inst: ManagedInstance;
   infoHtml: string;
@@ -30,6 +33,11 @@ interface CardView {
 
 interface CardAction {
   label: string;
+  /** Shown on the button while the call runs ("stopping…"). */
+  progress: string;
+  op: SpawnOperation;
+  /** Asked before anything runs; a false answer runs nothing. */
+  confirm?: (inst: ManagedInstance) => string;
   run: (inst: ManagedInstance) => Promise<unknown>;
 }
 interface SweepView { kind: "sweep" | "queue" | "jobarray"; name: string; summary: FanOutSummary; done: boolean; }
@@ -38,6 +46,7 @@ export class Dashboard {
   readonly el: HTMLElement;
   private instancesEl!: HTMLElement;
   private orphanBannerEl!: HTMLElement;
+  private listErrorEl!: HTMLElement;
   private logEl!: HTMLElement;
   private sweepsEl!: HTMLElement;
   private log: LogItem[] = [];
@@ -79,6 +88,7 @@ export class Dashboard {
       <div class="dash-section">
         <h2>Instances</h2>
         <div class="orphan-banner" hidden></div>
+        <div class="list-error" role="alert" hidden></div>
         <div class="instances"></div>
       </div>
       <div class="dash-section">
@@ -87,6 +97,7 @@ export class Dashboard {
       </div>`;
     this.instancesEl = this.el.querySelector(".instances")!;
     this.orphanBannerEl = this.el.querySelector(".orphan-banner")!;
+    this.listErrorEl = this.el.querySelector(".list-error")!;
     this.logEl = this.el.querySelector(".log")!;
     this.sweepsEl = this.el.querySelector(".sweeps")!;
 
@@ -415,6 +426,9 @@ export class Dashboard {
       case "info":
         this.pushLog({ kind: "info", instance: e.instance, text: e.message });
         break;
+      case "error":
+        this.onError(e.error);
+        break;
       case "provider":
         this.pushLog({ kind: "info", instance: "-", text: `backend → ${e.label}${e.isReal ? " (REAL)" : ""}` });
         break;
@@ -513,12 +527,24 @@ export class Dashboard {
    */
   private renderInstances(insts: ManagedInstance[]): void {
     this.renderOrphanBanner();
+    const state = this.client.listState;
+    if (state.status === "ok") this.listErrorEl.hidden = true;
     const live = insts.filter((i) => i.state !== "terminated");
     const empty = this.instancesEl.querySelector(":scope > .empty");
     if (live.length === 0) {
       for (const c of this.cards.values()) c.el.remove();
       this.cards.clear();
-      if (!empty) this.instancesEl.innerHTML = `<div class="empty">no instances — launch one above</div>`;
+      // "No instances" only from a list that loaded: before the first one,
+      // or after a failure, an empty list is not knowledge (#125).
+      const text =
+        state.status === "ok"
+          ? "no instances — launch one above"
+          : state.status === "loading"
+            ? "checking instances…"
+            : "";
+      if (empty?.textContent !== text) {
+        this.instancesEl.innerHTML = text ? `<div class="empty">${text}</div>` : "";
+      }
       return;
     }
     empty?.remove();
@@ -584,8 +610,12 @@ export class Dashboard {
     info.className = "inst-info";
     const actions = document.createElement("div");
     actions.className = "actions";
-    el.append(info, actions);
-    return { el, info, actions, inst: i, infoHtml: "", actionKey: "" };
+    const error = document.createElement("div");
+    error.className = "card-error";
+    error.setAttribute("role", "alert");
+    error.hidden = true;
+    el.append(info, actions, error);
+    return { el, info, actions, error, inst: i, infoHtml: "", actionKey: "" };
   }
 
   private updateCard(c: CardView, i: ManagedInstance, now: number): void {
@@ -692,46 +722,126 @@ export class Dashboard {
     const running = i.state === "running";
     const stopped = i.state === "stopped" || i.state === "hibernated";
     if (running) {
-      out.push({ label: "stop", run: (x) => this.client.stop(x.instanceId) });
-      out.push({ label: "hibernate", run: (x) => this.client.hibernate(x.instanceId) });
-      out.push({ label: "extend 1h", run: (x) => this.client.extend(x.instanceId, "1h") });
+      out.push({ label: "stop", progress: "stopping…", op: "stop", run: (x) => this.client.stop(x.instanceId) });
+      out.push({
+        label: "hibernate",
+        progress: "hibernating…",
+        op: "hibernate",
+        run: (x) => this.client.hibernate(x.instanceId),
+      });
+      out.push({
+        label: "extend 1h",
+        progress: "extending…",
+        op: "extend",
+        run: (x) => this.client.extend(x.instanceId, "1h"),
+      });
       // A simulation affordance: on a real backend it was an unconfirmed
       // terminate or stop dressed as a demo button (#128).
       if (i.onComplete && !this.client.backend.isReal) {
-        out.push({ label: "signal complete", run: (x) => this.client.signalComplete(x.instanceId) });
+        out.push({
+          label: "signal complete",
+          progress: "signalling…",
+          op: "signalComplete",
+          run: (x) => this.client.signalComplete(x.instanceId),
+        });
       }
     }
-    if (stopped) out.push({ label: "start", run: (x) => this.client.start(x.instanceId) });
+    if (stopped) {
+      out.push({ label: "start", progress: "starting…", op: "start", run: (x) => this.client.start(x.instanceId) });
+    }
     out.push({
       label: "terminate",
-      run: async (x) => {
-        if (await this.confirmFn(`terminate ${x.name} (${x.instanceId})? This is permanent.`)) {
-          await this.client.terminate(x.instanceId);
-        }
-      },
+      progress: "terminating…",
+      op: "terminate",
+      confirm: (x) => `terminate ${x.name} (${x.instanceId})? This is permanent.`,
+      run: (x) => this.client.terminate(x.instanceId),
     });
     return out;
   }
 
+  /**
+   * One card button. While its call runs the button says what is happening
+   * ("stopping…") and the card's buttons are disabled; a failure is shown on
+   * the card in words with the AWS code, and logged. Nothing is left as an
+   * unhandled rejection (#125): the old handler re-enabled the button and
+   * showed nothing when AWS refused.
+   */
   private actionBtn(instanceId: string, a: CardAction): HTMLButtonElement {
     const b = document.createElement("button");
     b.textContent = a.label;
     b.disabled = this.busy.has(instanceId);
-    b.addEventListener("click", () => {
-      const c = this.cards.get(instanceId);
-      if (!c || this.busy.has(instanceId)) return;
-      this.busy.set(instanceId, a.label);
-      for (const x of c.actions.querySelectorAll("button")) x.disabled = true;
-      void a.run(c.inst).finally(() => {
-        this.busy.delete(instanceId);
-        const now = this.cards.get(instanceId);
-        if (!now) return;
-        for (const x of now.actions.querySelectorAll("button")) x.disabled = false;
-        // Catch up on an action-set change that arrived while it ran.
-        this.updateCard(now, now.inst, this.client.now());
-      });
-    });
+    b.addEventListener("click", () => void this.runAction(instanceId, a, b));
     return b;
+  }
+
+  private async runAction(instanceId: string, a: CardAction, b: HTMLButtonElement): Promise<void> {
+    const c = this.cards.get(instanceId);
+    if (!c || this.busy.has(instanceId)) return;
+    const inst = c.inst;
+    this.busy.set(instanceId, a.label);
+    const setBusy = (on: boolean) => {
+      for (const x of (this.cards.get(instanceId)?.actions ?? c.actions).querySelectorAll("button")) x.disabled = on;
+    };
+    setBusy(true);
+    try {
+      if (a.confirm && !(await this.confirmFn(a.confirm(inst)))) return;
+      b.textContent = a.progress;
+      c.error.hidden = true;
+      c.error.textContent = "";
+      await a.run(inst);
+      this.pushLog({ kind: "info", instance: inst.name, text: `${a.label}: requested (${instanceId})` });
+    } catch (err) {
+      const e = toSpawnError(err, a.op, instanceId);
+      const now = this.cards.get(instanceId) ?? c;
+      this.showCardError(now, e);
+      this.pushLog({ kind: "error", instance: inst.name, text: `${a.label} failed — ${describeSpawnError(e)} [${e.code}]` });
+    } finally {
+      b.textContent = a.label;
+      this.busy.delete(instanceId);
+      setBusy(false);
+      const now = this.cards.get(instanceId);
+      // Catch up on an action-set change that arrived while it ran.
+      if (now) this.updateCard(now, now.inst, this.client.now());
+    }
+  }
+
+  private showCardError(c: CardView, e: SpawnError): void {
+    c.error.replaceChildren();
+    const text = document.createElement("span");
+    text.className = "card-error-text";
+    text.textContent = describeSpawnError(e);
+    const detail = document.createElement("span");
+    detail.className = "card-error-detail";
+    detail.textContent = `${e.code}${e.aws && e.message ? `: ${e.message}` : ""}`;
+    const dismiss = document.createElement("button");
+    dismiss.type = "button";
+    dismiss.className = "card-error-dismiss";
+    dismiss.textContent = "dismiss";
+    dismiss.addEventListener("click", () => {
+      c.error.hidden = true;
+      c.error.replaceChildren();
+    });
+    c.error.append(text, " ", detail, " ", dismiss);
+    c.error.hidden = false;
+  }
+
+  /**
+   * A failure nobody awaited: a refresh or a monitor tick. A failed list keeps
+   * the cards it last had (they may still be running and billing) and says the
+   * list is stale; it never turns into "no instances" (#125).
+   */
+  private onError(e: SpawnError): void {
+    this.pushLog({ kind: "error", instance: e.instanceId ?? "-", text: `${describeSpawnError(e)} [${e.code}]` });
+    if (e.operation !== "list" && e.operation !== "monitor") return;
+    const state = this.client.listState;
+    const asOf =
+      state.checkedAtMs !== undefined
+        ? ` Showing the list from ${new Date(state.checkedAtMs).toISOString().slice(11, 19)}; those instances may still be running.`
+        : " Your instances may still be running and costing money.";
+    this.listErrorEl.textContent = `${describeSpawnError(e)} [${e.code}]${asOf}`;
+    this.listErrorEl.hidden = false;
+    // Drop a "no instances" or "checking…" placeholder: neither is true now.
+    if (this.cards.size === 0) this.instancesEl.innerHTML = "";
   }
 
   private pushLog(item: Omit<LogItem, "atMs">): void {

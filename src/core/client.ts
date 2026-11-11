@@ -30,6 +30,7 @@ import { evaluateBounds } from "./bounds.js";
 import { parseDuration, parseLifetimeDuration, formatDuration } from "./duration.js";
 import { tag } from "./tags.js";
 import { requireInstanceId } from "./resolve.js";
+import { SpawnError, toSpawnError, type SpawnOperation } from "./errors.js";
 import { MockProvider } from "./mock.js";
 import { FanOut, type FanOutMemberStatus, type FanOutSummary } from "./fanout.js";
 import { buildSweep, Sweep, type SweepOptions } from "./sweep.js";
@@ -47,7 +48,28 @@ export type SpawnEvent =
   | { type: "provider"; label: string; isReal: boolean }
   | { type: "sweep"; id: string; name: string; summary: FanOutSummary; done: boolean }
   | { type: "queue"; id: string; name: string; summary: FanOutSummary; done: boolean }
-  | { type: "jobarray"; id: string; name: string; summary: FanOutSummary; done: boolean };
+  | { type: "jobarray"; id: string; name: string; summary: FanOutSummary; done: boolean }
+  /**
+   * A failure nobody awaited: a refresh (DescribeInstances) the monitor or a
+   * post-action refresh ran, or a monitor tick (#125). An awaited call rejects
+   * with the same SpawnError instead. `error.operation` says which.
+   */
+  | { type: "error"; error: SpawnError };
+
+/**
+ * What the client knows about the instance list (#125). `instances` is the last
+ * list that loaded; on `"error"` it is stale (or empty, if no list ever loaded)
+ * and must not be shown as "you have no instances".
+ */
+export interface ListState {
+  /** `"loading"` until the first refresh settles. */
+  status: "loading" | "ok" | "error";
+  instances: ManagedInstance[];
+  /** When the shown `instances` were fetched (client clock, ms), if ever. */
+  checkedAtMs?: number;
+  /** Why the latest refresh failed; set only when `status` is `"error"`. */
+  error?: SpawnError;
+}
 
 export type EventHandler = (e: SpawnEvent) => void;
 
@@ -130,6 +152,7 @@ export class SpawnClient {
   private timer: ReturnType<typeof setInterval> | null = null;
   private warned = new Set<string>();
   private lastInstances: ManagedInstance[] = [];
+  private listStatus: ListState = { status: "loading", instances: [] };
   /** Active fan-outs (sweeps/queues/job arrays) pumped on each monitor tick. */
   private fanOuts = new Map<
     string,
@@ -174,8 +197,11 @@ export class SpawnClient {
     this.provider = p;
     this.warned.clear();
     if (p.isReal) this.speed = 1;
+    this.lastInstances = [];
+    this.listStatus = { status: "loading", instances: [] };
     this.emit({ type: "provider", label: p.label, isReal: p.isReal });
-    void this.refresh();
+    // Failure is recorded in listState and emitted as an "error" event.
+    void this.refresh().catch(() => undefined);
   }
 
   /** Set sim speed (mock only). 1 = realtime, 60 = 1 min/sec. */
@@ -198,7 +224,9 @@ export class SpawnClient {
   /** Begin the monitor loop (ticks every `intervalMs` of wall time). */
   startMonitor(intervalMs = 250): void {
     if (this.timer !== null) return;
-    this.timer = setInterval(() => void this.tick(intervalMs), intervalMs);
+    this.timer = setInterval(() => {
+      this.tick(intervalMs).catch((err) => this.reportUnawaited(err, "monitor"));
+    }, intervalMs);
   }
   stopMonitor(): void {
     if (this.timer !== null) {
@@ -387,14 +415,64 @@ export class SpawnClient {
 
   // ---- operations ----
 
+  /**
+   * Re-read the instance list. Rejects with a SpawnError (operation `"list"`)
+   * when the provider can't list, and never resolves to an empty list for a
+   * failed DescribeInstances: the last good list stays in `list()`, and
+   * `listState` says it is stale (#125).
+   */
   async refresh(): Promise<ManagedInstance[]> {
-    this.lastInstances = await this.provider.list(true);
+    let insts: ManagedInstance[];
+    try {
+      insts = await this.provider.list(true);
+    } catch (err) {
+      const error = toSpawnError(err, "list");
+      this.listStatus = { ...this.listStatus, status: "error", error };
+      this.emit({ type: "error", error });
+      throw error;
+    }
+    this.lastInstances = insts;
+    this.listStatus = { status: "ok", instances: insts, checkedAtMs: this.now() };
     this.emit({ type: "instances", instances: this.lastInstances });
     return this.lastInstances;
   }
 
+  /**
+   * The last list that loaded. Empty both before the first refresh and when no
+   * refresh ever succeeded: read `listState.status` before treating empty as
+   * "no instances".
+   */
   list(): ManagedInstance[] {
     return this.lastInstances;
+  }
+
+  /** Whether the list is loading, current, or stale after a failure (#125). */
+  get listState(): ListState {
+    return this.listStatus;
+  }
+
+  /**
+   * A refresh after an operation that already succeeded. Its failure must not
+   * turn that success into a rejection (the stop happened), so it is reported
+   * through listState and an "error" event instead.
+   */
+  private async refreshAfter(): Promise<void> {
+    await this.refresh().catch(() => undefined);
+  }
+
+  /** Report a failure nobody is awaiting. A failed refresh has reported itself. */
+  private reportUnawaited(err: unknown, operation: SpawnOperation): void {
+    if (err instanceof SpawnError && err.operation === "list") return;
+    this.emit({ type: "error", error: toSpawnError(err, operation) });
+  }
+
+  /** Run one instance operation, rejecting with a SpawnError that names it. */
+  private async act<T>(operation: SpawnOperation, instanceId: string, fn: () => Promise<T>): Promise<T> {
+    try {
+      return await fn();
+    } catch (err) {
+      throw toSpawnError(err, operation, instanceId);
+    }
   }
 
   /**
@@ -415,7 +493,9 @@ export class SpawnClient {
   async reapOrphans(orphans: Orphan[] = this.findOrphans()): Promise<string[]> {
     const reaped: string[] = [];
     for (const o of orphans) {
-      await this.provider.terminate(o.instance.instanceId, "orphan reaper (TTL exceeded)");
+      await this.act("terminate", o.instance.instanceId, () =>
+        this.provider.terminate(o.instance.instanceId, "orphan reaper (TTL exceeded)"),
+      );
       this.emit({
         type: "info",
         instance: o.instance.name,
@@ -423,7 +503,7 @@ export class SpawnClient {
       });
       reaped.push(o.instance.instanceId);
     }
-    if (reaped.length) await this.refresh();
+    if (reaped.length) await this.refreshAfter();
     return reaped;
   }
 
@@ -436,12 +516,28 @@ export class SpawnClient {
     return this.provider.get(nameOrId);
   }
 
+  /**
+   * Launch one instance. Rejects with a SpawnError (operation `"launch"`): code
+   * `LaunchRefused` for a launch refused before any AWS call, else the AWS code
+   * (`InsufficientInstanceCapacity`, `UnauthorizedOperation`, …) when AWS gave
+   * one. The message is unchanged from what it was before typing (#125).
+   */
+  // Typed at each throw rather than by wrapping the whole method: a wrapper
+  // promise adds a microtask per launch, and fan-out pumps (sweeps, queues,
+  // arrays) are sensitive to that ordering.
   async launch(input: LaunchInput): Promise<ManagedInstance> {
-    const spec = this.toSpec(input);
+    const refused = (message: string) =>
+      new SpawnError({ operation: "launch", message, code: "LaunchRefused", aws: false });
+    let spec: LaunchSpec;
+    try {
+      spec = this.toSpec(input);
+    } catch (err) {
+      throw refused((err as Error).message);
+    }
     // Shared with the CLI's `launch` (src/cli/commands.ts), which reaches the
     // provider directly — one definition so the two can't drift apart.
     const verdict = evaluateBounds(spec, this.provider.isReal);
-    if (verdict.refuse && !input.allowUnbounded) throw new Error(verdict.refuse);
+    if (verdict.refuse && !input.allowUnbounded) throw refused(verdict.refuse);
 
     // A plugin the launch-time path can't honour is refused BEFORE the launch,
     // not dropped from it. `validateDeclarations` returns rejections so a caller
@@ -460,11 +556,16 @@ export class SpawnClient {
     if (spec.plugins?.length) {
       const { rejected } = validateDeclarations(spec.plugins);
       if (rejected.length) {
-        throw new Error(rejected.map((r) => `plugin "${r.ref}": ${r.reason}`).join("\n"));
+        throw refused(rejected.map((r) => `plugin "${r.ref}": ${r.reason}`).join("\n"));
       }
     }
 
-    const inst = await this.provider.launch(spec, this.now());
+    let inst: ManagedInstance;
+    try {
+      inst = await this.provider.launch(spec, this.now());
+    } catch (err) {
+      throw toSpawnError(err, "launch");
+    }
     // From here the instance exists. If anything below fails, launch() rejects,
     // and a caller told "the launch failed" is not watching an instance that is
     // billing: terminate it unless keepOnError (Go #1298, where one such
@@ -481,8 +582,22 @@ export class SpawnClient {
       await this.refresh();
     } catch (err) {
       const cause = (err as Error).message;
+      // The cause's code (e.g. the AWS code of a failed refresh), with the
+      // message that says what became of the instance.
+      const base = toSpawnError(err, "launch", inst.instanceId);
+      const fail = (message: string) =>
+        new SpawnError({
+          operation: "launch",
+          instanceId: inst.instanceId,
+          code: base.code,
+          aws: base.aws,
+          httpStatus: base.httpStatus,
+          requestId: base.requestId,
+          message,
+          cause: err,
+        });
       if (input.keepOnError) {
-        throw new Error(
+        throw fail(
           `${cause}; instance ${inst.instanceId} was KEPT (keepOnError): nothing has confirmed its ` +
             "spored is enforcing its TTL, idle timeout or cost limit, so terminate it yourself when done",
         );
@@ -490,12 +605,12 @@ export class SpawnClient {
       try {
         await this.provider.terminate(inst.instanceId, "launch failed after the instance was created");
       } catch (terr) {
-        throw new Error(
+        throw fail(
           `${cause}; terminating instance ${inst.instanceId} after the failed launch ALSO failed ` +
             `(${(terr as Error).message}): it is still running and billing, terminate it by hand`,
         );
       }
-      throw new Error(
+      throw fail(
         `${cause}; instance ${inst.instanceId} was terminated because the launch failed after it was created`,
       );
     }
@@ -507,25 +622,38 @@ export class SpawnClient {
   // portal audit, stop/terminate on a live `test` resolved to a terminated
   // `test`, EC2 accepted the terminate, and the live one kept billing.
 
+  //
+  // Each rejects with a SpawnError carrying the operation, the instance id and
+  // the AWS code (#125). It resolves only when the provider call succeeded; the
+  // refresh after it reports its own failure through listState.
+
   async terminate(instanceId: string, reason = "user request"): Promise<void> {
-    const i = await this.resolveId("terminate", instanceId);
-    await this.provider.terminate(i.instanceId, reason);
-    await this.refresh();
+    await this.act("terminate", instanceId, async () => {
+      const i = await this.resolveId("terminate", instanceId);
+      await this.provider.terminate(i.instanceId, reason);
+    });
+    await this.refreshAfter();
   }
   async stop(instanceId: string, reason = "user request"): Promise<void> {
-    const i = await this.resolveId("stop", instanceId);
-    await this.provider.stop(i.instanceId, reason);
-    await this.refresh();
+    await this.act("stop", instanceId, async () => {
+      const i = await this.resolveId("stop", instanceId);
+      await this.provider.stop(i.instanceId, reason);
+    });
+    await this.refreshAfter();
   }
   async start(instanceId: string): Promise<void> {
-    const i = await this.resolveId("start", instanceId);
-    await this.provider.start(i.instanceId);
-    await this.refresh();
+    await this.act("start", instanceId, async () => {
+      const i = await this.resolveId("start", instanceId);
+      await this.provider.start(i.instanceId);
+    });
+    await this.refreshAfter();
   }
   async hibernate(instanceId: string): Promise<void> {
-    const i = await this.resolveId("hibernate", instanceId);
-    await this.provider.hibernate(i.instanceId);
-    await this.refresh();
+    await this.act("hibernate", instanceId, async () => {
+      const i = await this.resolveId("hibernate", instanceId);
+      await this.provider.hibernate(i.instanceId);
+    });
+    await this.refreshAfter();
   }
 
   /**
@@ -540,6 +668,12 @@ export class SpawnClient {
    * after silently clamping is the same class of lie as the unclamped bug.
    */
   async extend(instanceId: string, by: string | number): Promise<number> {
+    const deadline = await this.act("extend", instanceId, () => this.extendOnce(instanceId, by));
+    await this.refreshAfter();
+    return deadline;
+  }
+
+  private async extendOnce(instanceId: string, by: string | number): Promise<number> {
     const i = await this.resolveId("extend", instanceId);
     // Accept either TTL form: an instance tagged only spawn:ttl (no absolute
     // deadline) still has a deadline under ttlDeadline()'s launch+ttl fallback,
@@ -575,7 +709,6 @@ export class SpawnClient {
             } 'sudo spored reload'`,
       });
     }
-    await this.refresh();
     return ext.deadlineMs;
   }
 
@@ -586,6 +719,11 @@ export class SpawnClient {
    * spored watches the real completion file.
    */
   async signalComplete(instanceId: string): Promise<void> {
+    await this.act("signalComplete", instanceId, () => this.signalCompleteOnce(instanceId));
+    await this.refreshAfter();
+  }
+
+  private async signalCompleteOnce(instanceId: string): Promise<void> {
     const simulated =
       !this.provider.isReal && typeof (this.provider as Partial<MockProvider>).simTick === "function";
     if (!simulated) {
@@ -605,7 +743,6 @@ export class SpawnClient {
       reason: "completion signal",
     });
     await this.applyAction(i, i.onComplete);
-    await this.refresh();
   }
 
   // ---- internals ----

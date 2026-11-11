@@ -14,7 +14,10 @@ export type {
   EventHandler,
   ClientOptions,
   LaunchInput,
+  ListState,
 } from "./core/client.js";
+export { SpawnError, toSpawnError, awsErrorCode, describeSpawnError } from "./core/errors.js";
+export type { SpawnOperation, SpawnErrorCode } from "./core/errors.js";
 
 export { MockProvider } from "./core/mock.js";
 export { isInstanceId, resolveByName, AmbiguousNameError } from "./core/resolve.js";

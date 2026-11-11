@@ -42,8 +42,11 @@ describe("Dashboard launch form", () => {
     document.body.innerHTML = "";
   });
 
-  it("renders the empty state before any launch", () => {
-    const { dash } = setup();
+  it("says it is checking before the first list, and 'no instances' only once one loaded", async () => {
+    const { client, dash } = setup();
+    // Not "no instances": nothing has been checked yet (#125).
+    expect(dash.el.querySelector(".instances")!.textContent).toContain("checking instances");
+    await client.refresh();
     expect(dash.el.querySelector(".instances")!.textContent).toContain("no instances");
     // The log only renders once the first event arrives; empty before that.
     expect(dash.el.querySelector(".log")!.textContent).toBe("");
@@ -333,6 +336,119 @@ describe("Dashboard card actions target the card's instance id (#128)", () => {
       await expect(op()).rejects.toThrow(/needs an instance id/);
     }
     expect(client.list()[0].state).toBe("running");
+  });
+});
+
+describe("Dashboard shows failures instead of swallowing them (#125)", () => {
+  beforeEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  const awsError = (code: string, message: string) =>
+    Object.assign(new Error(message), { name: code, $fault: "client", $metadata: { httpStatusCode: 400 } });
+
+  async function mounted() {
+    const provider = new MockProvider();
+    const client = new SpawnClient({ provider, startMs: T0, clock: 1 });
+    const inst = await client.launch({ name: "denied", ttl: "4h" });
+    const dash = new Dashboard(client, async () => true);
+    document.body.appendChild(dash.el);
+    await client.refresh();
+    const card = () => dash.el.querySelector<HTMLElement>(`.inst[data-instance-id="${inst.instanceId}"]`)!;
+    const btn = (label: string) =>
+      [...card().querySelectorAll<HTMLButtonElement>(".actions button")].find((b) => b.textContent === label)!;
+    return { provider, client, inst, dash, card, btn };
+  }
+
+  it("a refused stop shows the reason on the card, logs it, and re-enables the buttons", async () => {
+    const { provider, dash, card, btn } = await mounted();
+    provider.stop = async () => {
+      throw awsError("UnauthorizedOperation", "You are not authorized to perform this operation.");
+    };
+    const unhandled: unknown[] = [];
+    const onUnhandled = (r: unknown) => unhandled.push(r);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      btn("stop").click();
+      await tick();
+      await tick();
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+    const err = card().querySelector<HTMLElement>(".card-error")!;
+    expect(err.hidden).toBe(false);
+    expect(err.getAttribute("role")).toBe("alert");
+    expect(err.textContent).toContain("You don't have permission to stop this instance.");
+    expect(err.textContent).toContain("UnauthorizedOperation");
+    expect(dash.el.querySelector(".log-line.error")!.textContent).toMatch(/stop failed .*UnauthorizedOperation/);
+    expect([...card().querySelectorAll<HTMLButtonElement>(".actions button")].some((b) => b.disabled)).toBe(false);
+    expect(unhandled).toEqual([]);
+  });
+
+  it("the error survives the monitor's re-renders, and the next success clears it", async () => {
+    const { provider, client, card, btn } = await mounted();
+    const realStop = provider.stop.bind(provider);
+    provider.stop = async () => {
+      throw awsError("IncorrectInstanceState", "not now");
+    };
+    btn("stop").click();
+    await tick();
+    await client.step(60_000);
+    await client.refresh();
+    expect(card().querySelector<HTMLElement>(".card-error")!.hidden).toBe(false);
+
+    provider.stop = realStop;
+    btn("stop").click();
+    await tick();
+    await tick();
+    expect(card().querySelector<HTMLElement>(".card-error")!.hidden).toBe(true);
+    expect(card().querySelector(".state")!.textContent).toBe("stopped");
+  });
+
+  it("says what is happening while the call runs", async () => {
+    const { provider, btn, card } = await mounted();
+    let release!: () => void;
+    const realStop = provider.stop.bind(provider);
+    provider.stop = (id: string) => new Promise<void>((r) => (release = r)).then(() => realStop(id));
+    btn("stop").click();
+    await tick();
+    const pressed = [...card().querySelectorAll<HTMLButtonElement>(".actions button")].find((b) =>
+      b.textContent?.endsWith("…"),
+    );
+    expect(pressed?.textContent).toBe("stopping…");
+    release();
+    await tick();
+    await tick();
+    expect(card().querySelector(".state")!.textContent).toBe("stopped");
+  });
+
+  it("a failed refresh keeps the cards, says the list is stale, and never says 'no instances'", async () => {
+    const { provider, client, dash, inst } = await mounted();
+    provider.list = async () => {
+      throw awsError("ExpiredToken", "The security token included in the request is expired");
+    };
+    await client.refresh().catch(() => undefined);
+    const banner = dash.el.querySelector<HTMLElement>(".list-error")!;
+    expect(banner.hidden).toBe(false);
+    expect(banner.textContent).toMatch(/sign-in has expired/);
+    expect(banner.textContent).toContain("ExpiredToken");
+    expect(banner.textContent).toMatch(/may still be running/);
+    expect(dash.el.querySelector(`.inst[data-instance-id="${inst.instanceId}"]`)).toBeTruthy();
+    expect(dash.el.querySelector(".instances")!.textContent).not.toContain("no instances");
+  });
+
+  it("a first refresh that fails shows the error, not an empty account", async () => {
+    const provider = new MockProvider();
+    provider.list = async () => {
+      throw awsError("UnauthorizedOperation", "denied");
+    };
+    const client = new SpawnClient({ provider, startMs: T0, clock: 1 });
+    const dash = new Dashboard(client, async () => true);
+    document.body.appendChild(dash.el);
+    await client.refresh().catch(() => undefined);
+    expect(dash.el.querySelector<HTMLElement>(".list-error")!.hidden).toBe(false);
+    expect(dash.el.querySelector(".instances")!.textContent).not.toMatch(/no instances|checking/);
   });
 });
 

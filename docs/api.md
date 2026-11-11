@@ -62,6 +62,34 @@ Name that is still ambiguous throws `AmbiguousNameError` with the candidate ids.
 `signalComplete` throws on anything but a simulated provider: on EC2, spored
 runs the on-complete action when the completion file appears.
 
+### Errors and list state (#125)
+
+Every operation above rejects with a **`SpawnError`**:
+
+| Field | Meaning |
+|-------|---------|
+| `operation` | `"list"`, `"launch"`, `"stop"`, `"start"`, `"hibernate"`, `"terminate"`, `"extend"`, `"signalComplete"` or `"monitor"` |
+| `instanceId` | the instance acted on, when there was one |
+| `code` | the AWS error code (`UnauthorizedOperation`, `IncorrectInstanceState`, `UnsupportedHibernationConfiguration`, `ExpiredToken`, …) when `aws` is true; otherwise spawn-ts's own (`InvalidInstanceId`, `InstanceNotFound`, `AmbiguousName`, `NotSimulated`, `NoTtl`, `InvalidDuration`, `LaunchRefused`, `NetworkError`, `Unknown`) |
+| `aws` | whether `code` came from AWS |
+| `httpStatus`, `requestId` | from the AWS response, for support |
+| `cause` | the original error; `message` is unchanged from it |
+
+An action resolves only when its provider call succeeded. The refresh after it
+does not turn that success into a failure; a failed refresh is reported instead.
+
+**`refresh()` rejects when the list can't be read, and never resolves to an
+empty list for a failed `DescribeInstances`.** `EC2Provider.list` reads every
+page. `client.listState` is `{ status: "loading" | "ok" | "error", instances,
+checkedAtMs?, error? }`. On `"error"`, `instances` is the last list that loaded
+(or empty if none did), so a UI can say "couldn't check" instead of "you have no
+instances". `list()` returns the same last good list.
+
+A failure nobody awaited (a monitor tick, a post-action refresh) is emitted as an
+`{ type: "error", error: SpawnError }` event, never as an unhandled rejection.
+`describeSpawnError(e)` gives one plain sentence naming the action, which is what
+the Dashboard shows.
+
 `LaunchInput` accepts `name`, `instanceType`, `region`, `ami`, `keyPair`,
 `spot`, `ttl`, `idleTimeout`, `hibernateOnIdle`, `idleCpuPercent`, `costLimit`,
 `pricePerHour`, `onComplete`, `completionFile`, `completionDelay`, `plugins`, and
