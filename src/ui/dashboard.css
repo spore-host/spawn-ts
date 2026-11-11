@@ -101,6 +101,7 @@
 .log-line .inst-name { color: var(--accent); }
 .log-line.warning { color: var(--yellow); }
 .log-line.action { color: var(--fg); }
+.log-line.error { color: var(--red); }
 
 /* Modal */
 .modal-backdrop {
@@ -140,6 +141,21 @@
 }
 .orphan-banner button:hover { filter: brightness(1.1); }
 .orphan-banner button:disabled { opacity: .5; cursor: default; }
+/* display:flex above would otherwise beat the hidden attribute. */
+.orphan-banner[hidden], .list-error[hidden], .card-error[hidden] { display: none; }
+
+/* A failed refresh or card action (#125): said on the page, never only in the console. */
+.list-error {
+  margin-bottom: 10px; padding: 8px 12px; border-radius: 6px;
+  background: rgba(248,81,73,.12); border: 1px solid var(--red); color: var(--red);
+  font-size: 12px;
+}
+.card-error { margin-top: 6px; font-size: 11px; color: var(--red); }
+.card-error .card-error-detail { color: var(--muted); }
+.card-error .card-error-dismiss {
+  background: none; border: none; color: var(--muted); text-decoration: underline;
+  cursor: pointer; font-family: var(--mono); font-size: 11px; padding: 0;
+}
 
 /* Launch form */
 .launch-form .grid2, .sweep-form .grid2 {

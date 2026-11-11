@@ -43,6 +43,33 @@ version strings agree.
   buttons are rebuilt only when the set of offered actions changes, and never
   while an action on it is running. The orphan banner is rebuilt only when the
   set of orphans changes.
+- **Errors reach the caller and the page** (#125).
+  - **Typed rejections.** `stop`, `start`, `hibernate`, `terminate`,
+    `extend`, `signalComplete`, `launch` and `refresh` reject with a
+    `SpawnError`. It carries `operation`, `instanceId`, `code` (the AWS code,
+    e.g. `UnauthorizedOperation`, when `aws` is true), `httpStatus`,
+    `requestId` and `cause`, and keeps the original message.
+  - **An action's success stands.** It resolves only when its provider call
+    succeeded, and a failed refresh after it no longer turns the success into
+    a rejection.
+  - **A failed list is never empty.** `refresh()` rejects rather than
+    resolving to `[]` for a failed DescribeInstances. `EC2Provider.list` now
+    follows `NextToken` instead of reading one page.
+  - **`listState` says how current the list is.** The new
+    `client.listState` (`loading | ok | error`, last good instances,
+    `checkedAtMs`, `error`) tells "couldn't check" apart from "none".
+  - **No unhandled rejections.** A monitor tick or post-action refresh that
+    fails emits an `{ type: "error" }` event instead.
+  - **The Dashboard shows it inline.** A refused action appears on its card
+    in plain words with the AWS code (`describeSpawnError`), survives
+    re-renders, and is logged. The pressed button reads "stopping…" while the
+    call runs. A failed refresh keeps the last cards with a "couldn't check
+    your instances" banner, and "no instances" appears only after a list
+    actually loaded (before the first, it says "checking instances…").
+  - **The orphan banner honours `hidden`.** Its `display: flex` overrode
+    the attribute.
+  - **Breaking:** errors are `SpawnError` instances. The messages are the
+    same, and `instanceof Error` still holds.
 - **`signalComplete` is mock-only** (#128). On a real provider it was an
   unconfirmed terminate or stop presented as a demo button. The Dashboard
   hides it there, and the client throws on any provider that isn't a
