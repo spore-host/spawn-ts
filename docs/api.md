@@ -23,6 +23,7 @@ new SpawnClient(options?: ClientOptions)
 | `provider` | `Provider` | `new MockProvider()` | Compute backend. |
 | `clock` | `"real" \| number` | `"real"` | A number is a sim-speed multiplier (`60` = 1 sim-minute/sec). Real providers are pinned to realtime. |
 | `startMs` | `number` | fixed 2026-07-20 epoch | Sim clock start; fixed default keeps demos reproducible. |
+| `lifecycle` | `"observe" \| "simulate"` | `"simulate"` for a `MockProvider`, `"observe"` otherwise | What the monitor loop does with a lifecycle decision. `"simulate"` throws on a non-mock provider. |
 
 ## Lifecycle loop
 
@@ -34,6 +35,15 @@ await client.step(by);                   // advance sim clock by a duration + on
 
 `step` accepts a Go-form duration string (`"4h"`) or milliseconds. Use it in
 tests to fast-forward without wall time.
+
+**On EC2 (and substrate) the loop only observes** (`client.lifecycleMode ===
+"observe"`): it refreshes the list, emits TTL and cost warnings, and advances
+sweeps, queues and job arrays this client started. It never stops, hibernates
+or terminates an instance on a lifecycle rule. spored on the instance and the
+out-of-band reaper enforce lifetimes; a browser has no activity signal for idle,
+and an enforcer that only runs while a tab is open is a second, weaker one
+(#126). The lifecycle engine runs and acts only over a `MockProvider`, where the
+sim clock is the activity signal.
 
 ## Operations
 

@@ -3,8 +3,10 @@
 // any consumer (the GUI, the terminal, tests, another app) drives the same way.
 //
 // It owns three things the raw Provider does not:
-//   1. lifecycle enforcement — a monitor loop mirroring spored's checkAndAct,
-//      so instances self-terminate on TTL/cost/idle/completion in-app too;
+//   1. a monitor loop — on a simulated backend (MockProvider) it runs the
+//      lifecycle engine, mirroring spored's checkAndAct, so a demo's TTL/cost/
+//      idle play out; on any other backend it only OBSERVES (see LifecycleMode),
+//      because spored and the reaper own enforcement there (#126);
 //   2. a clock — real wall-time, or an accelerated/steppable sim clock so a 4h
 //      TTL can play out in seconds (and to line up with substrate's controllable
 //      clock later);
@@ -73,9 +75,44 @@ export interface ListState {
 
 export type EventHandler = (e: SpawnEvent) => void;
 
+/**
+ * What the monitor loop does with a lifecycle decision (#126).
+ *
+ * - `"observe"`: read-only. The loop refreshes the instance list and emits
+ *   warnings (TTL / cost nearing), and never stops, hibernates or terminates
+ *   anything. Lifetime enforcement on a real instance belongs to spored on the
+ *   box and the out-of-band reaper; a browser tab has no activity signal for
+ *   idle, and a second, weaker enforcer that runs only while a tab is open adds
+ *   risk and no safety. The default for every backend except a simulation.
+ * - `"simulate"`: runs the lifecycle engine (completion > TTL > cost > idle) and
+ *   applies its decisions. Only allowed on a simulated backend (MockProvider),
+ *   whose activity clock (`lastActivityMs`, advanced by `simTick`) IS the idle
+ *   signal. It is the default there, so the demo still plays a 4h TTL out.
+ *
+ * There is deliberately no mode that enforces against EC2: the old loop did,
+ * with `isIdle: true` hardcoded, and stopped busy CLI jobs one idle-timeout
+ * after launch whenever a portal tab was open (#126).
+ *
+ * Sweeps, queues and job arrays the client itself started are still advanced
+ * in both modes: launching their members, and draining a non-viable job array,
+ * are part of the operation the caller asked for, not lifecycle enforcement.
+ */
+export type LifecycleMode = "observe" | "simulate";
+
+/** A provider is a simulation when it is non-billable AND advances its own clock. */
+function isSimulated(p: Provider): boolean {
+  return !p.isReal && typeof (p as Partial<MockProvider>).simTick === "function";
+}
+
 export interface ClientOptions {
   /** Provider backend. Defaults to a non-billable in-memory MockProvider. */
   provider?: Provider;
+  /**
+   * Monitor-loop behaviour; see {@link LifecycleMode}. Defaults to `"simulate"`
+   * for a MockProvider and `"observe"` for everything else (EC2, substrate).
+   * Passing `"simulate"` with a non-simulated provider throws.
+   */
+  lifecycle?: LifecycleMode;
   /**
    * Clock. "real" tracks wall time; a number is a sim-speed multiplier
    * (e.g. 60 = one simulated minute per real second). Sim mode only applies to
@@ -166,6 +203,9 @@ export class SpawnClient {
   private handlers = new Set<EventHandler>();
   private speed: number; // 1 = realtime
   private clockMs: number;
+  /** What the caller asked for, if anything; re-applied on setProvider. */
+  private requestedMode?: LifecycleMode;
+  private mode: LifecycleMode;
   private timer: ReturnType<typeof setInterval> | null = null;
   private warned = new Set<string>();
   private lastInstances: ManagedInstance[] = [];
@@ -191,6 +231,14 @@ export class SpawnClient {
 
   constructor(opts: ClientOptions = {}) {
     this.provider = opts.provider ?? new MockProvider();
+    if (opts.lifecycle === "simulate" && !isSimulated(this.provider)) {
+      throw new Error(
+        `lifecycle "simulate" needs a simulated provider (MockProvider), not ${this.provider.label}: ` +
+          "on a real backend spored and the reaper enforce lifetimes, and this client only observes",
+      );
+    }
+    this.requestedMode = opts.lifecycle;
+    this.mode = this.modeFor(this.provider);
     this.speed = opts.clock === "real" || opts.clock === undefined ? 1 : opts.clock;
     if (this.provider.isReal) this.speed = 1;
     this.clockMs = opts.startMs ?? Date.UTC(2026, 6, 20, 12, 0, 0);
@@ -211,9 +259,26 @@ export class SpawnClient {
     return this.provider.isReal ? Date.now() : this.clockMs;
   }
 
-  /** Swap the compute backend at runtime (e.g. mock → real AWS from a creds form). */
+  /**
+   * What the monitor loop does with lifecycle decisions for the current
+   * provider: `"observe"` (never mutates) or `"simulate"` (MockProvider only).
+   */
+  get lifecycleMode(): LifecycleMode {
+    return this.mode;
+  }
+
+  private modeFor(p: Provider): LifecycleMode {
+    return this.requestedMode !== "observe" && isSimulated(p) ? "simulate" : "observe";
+  }
+
+  /**
+   * Swap the compute backend at runtime (e.g. mock → real AWS from a creds form).
+   * The lifecycle mode follows the provider: a switch to anything but a
+   * simulation makes the client a viewer, whatever it was constructed with.
+   */
   setProvider(p: Provider): void {
     this.provider = p;
+    this.mode = this.modeFor(p);
     this.warned.clear();
     if (p.isReal) this.speed = 1;
     this.lastInstances = [];
@@ -271,8 +336,16 @@ export class SpawnClient {
     }
 
     await this.refresh();
+    if (this.mode === "observe") {
+      this.emitWarnings();
+      await this.pumpFanOuts();
+      return;
+    }
     for (const inst of this.lastInstances) {
       if (inst.state !== "running") continue;
+      // "simulate" only, i.e. a MockProvider: its sim clock moves
+      // lastActivityMs, so "idle since lastActivityMs" is the sim's own
+      // activity signal. Never reached for EC2 (#126).
       const res = evaluate(inst, {
         nowMs: this.now(),
         completionFilePresent: false,
@@ -297,6 +370,26 @@ export class SpawnClient {
     }
     await this.refresh();
     await this.pumpFanOuts();
+  }
+
+  /**
+   * The observe-mode half of a tick: the engine's warnings (TTL / cost nearing),
+   * each once per instance and rule, and nothing else. Decisions are discarded:
+   * spored and the reaper act on them. Idle is evaluated as NOT idle, because
+   * nothing here can see activity on the box, so it can neither warn about nor
+   * act on idleness.
+   */
+  private emitWarnings(): void {
+    for (const inst of this.lastInstances) {
+      if (inst.state !== "running") continue;
+      const res = evaluate(inst, { nowMs: this.now(), completionFilePresent: false, isIdle: false });
+      for (const w of res.warnings) {
+        const key = `${inst.instanceId}:${w.rule}`;
+        if (this.warned.has(key)) continue;
+        this.warned.add(key);
+        this.emit({ type: "warning", instance: inst.name, rule: w.rule, message: w.message });
+      }
+    }
   }
 
   /**

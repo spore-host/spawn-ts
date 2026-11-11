@@ -15,6 +15,7 @@ export type {
   ClientOptions,
   LaunchInput,
   ListState,
+  LifecycleMode,
 } from "./core/client.js";
 export { SpawnError, toSpawnError, awsErrorCode, describeSpawnError, isAmbiguousLaunchError } from "./core/errors.js";
 export type { SpawnOperation, SpawnErrorCode } from "./core/errors.js";
