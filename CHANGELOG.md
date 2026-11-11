@@ -18,6 +18,10 @@ version strings agree.
 
 ## [Unreleased]
 
+### Added
+
+- `SECURITY.md`: report vulnerabilities privately through GitHub's private vulnerability reporting (the repository's Security tab), not public issues.
+
 ### Fixed
 
 - **Instance actions act on an instance id, never a Name** (#128).
