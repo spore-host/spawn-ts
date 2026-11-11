@@ -12,7 +12,7 @@
 // Mirrors the intent of Go's `applyIdleTimeoutDefault` (cmd/zombie_guard.go:20),
 // with one deliberate divergence recorded in `evaluateBounds` below.
 
-import type { LaunchSpec } from "./types.js";
+import type { LaunchSpec, ManagedInstance } from "./types.js";
 
 /** A configured limit that could end an instance's life. */
 export type Bound = "ttl" | "idle-timeout" | "cost-limit";
@@ -162,9 +162,74 @@ export function checkNestedSpawnTtl(source: string, profile: string | undefined,
  * hibernate.
  */
 export function needsStoppable(
-  spec: Pick<LaunchSpec, "idleTimeoutMs" | "onComplete">,
+  spec: Pick<LaunchSpec, "idleTimeoutMs" | "onComplete"> & Partial<Pick<LaunchSpec, "hibernateOnIdle">>,
 ): boolean {
-  return spec.idleTimeoutMs > 0 || spec.onComplete === "stop" || spec.onComplete === "hibernate";
+  // hibernateOnIdle configures hibernation (hibernationRequested), and Go
+  // passes that as NeedsStoppable's `hibernate` (pkg/aws/client.go:739 runs
+  // prepareHibernation before the Spot options are built).
+  return (
+    spec.idleTimeoutMs > 0 || spec.onComplete === "stop" || spec.onComplete === "hibernate" || !!spec.hibernateOnIdle
+  );
+}
+
+/**
+ * Go's LaunchConfig.HibernationRequested (pkg/aws/hibernation.go): will anything
+ * in this launch ask EC2 to hibernate the instance? spawn-ts has no --hibernate
+ * flag, so that is hibernate-on-idle or on-complete hibernate. When true, the
+ * launch must be configured for hibernation (HibernationOptions, an encrypted
+ * root sized for RAM), or every hibernate it asks for fails (#129).
+ */
+export function hibernationRequested(spec: Pick<LaunchSpec, "hibernateOnIdle" | "onComplete">): boolean {
+  return spec.hibernateOnIdle || spec.onComplete === "hibernate";
+}
+
+/** Go's `spotrequest.IsOneTime`: a Spot instance not tagged persistent is one-time. */
+export function isOneTimeSpot(inst: Pick<ManagedInstance, "spot" | "tags">): boolean {
+  return inst.spot && inst.tags["spawn:spot-request-type"] !== "persistent";
+}
+
+/** Why an instance can't be stopped or hibernated, by a user or a UI. */
+export type StopBlock = "NotRunning" | "OneTimeSpot" | "NotHibernatable";
+
+/**
+ * Whether `stop` or `hibernate` can succeed on this instance, and if not, why,
+ * in Go's words (spawn/cmd/state.go stopOrHibernateInstance,
+ * oneTimeSpotStopError). Undefined means go ahead.
+ *
+ * - Not running: EC2 rejects the call (IncorrectInstanceState).
+ * - A one-time Spot instance: EC2 stops only Spot instances from persistent
+ *   requests (UnsupportedOperation, Go #922). spawn-ts launches one-time only.
+ * - Hibernate on an instance not launched with HibernationOptions.Configured
+ *   (`hibernationConfigured === false`): EC2 rejects it
+ *   (UnsupportedHibernationConfiguration). Unknown (undefined) is left to EC2.
+ */
+export function stopBlocker(
+  inst: Pick<ManagedInstance, "instanceId" | "state" | "spot" | "tags" | "hibernationConfigured">,
+  action: "stop" | "hibernate",
+): { code: StopBlock; message: string } | undefined {
+  if (inst.state === "stopped" || inst.state === "hibernated") {
+    return { code: "NotRunning", message: `instance ${inst.instanceId} is already stopped` };
+  }
+  if (inst.state !== "running") {
+    return { code: "NotRunning", message: `instance ${inst.instanceId} is not running (state: ${inst.state})` };
+  }
+  if (isOneTimeSpot(inst)) {
+    return {
+      code: "OneTimeSpot",
+      message:
+        `cannot ${action} ${inst.instanceId}: it is a Spot instance from a one-time Spot request, and EC2 can only ` +
+        "stop Spot instances from persistent requests. Nothing was changed. To end it, terminate it.",
+    };
+  }
+  if (action === "hibernate" && inst.hibernationConfigured === false) {
+    return {
+      code: "NotHibernatable",
+      message:
+        `cannot hibernate ${inst.instanceId}: it was not launched with hibernation configured, so EC2 would ` +
+        "refuse. Nothing was changed. Stop it instead.",
+    };
+  }
+  return undefined;
 }
 
 /**
@@ -180,11 +245,11 @@ export function needsStoppable(
  * members rather than doing so, and why spawn-ts does the same.
  */
 export function checkSpotStoppable(
-  spec: Pick<LaunchSpec, "spot" | "idleTimeoutMs" | "onComplete">,
+  spec: Pick<LaunchSpec, "spot" | "idleTimeoutMs" | "onComplete"> & Partial<Pick<LaunchSpec, "hibernateOnIdle">>,
 ): string | undefined {
   if (!spec.spot || !needsStoppable(spec)) return undefined;
   return (
-    "refusing a Spot launch whose lifecycle stops the instance (an idle timeout, or on-complete " +
+    "refusing a Spot launch whose lifecycle stops the instance (an idle timeout, hibernate on idle, or on-complete " +
     "stop/hibernate): spawn-ts makes one-time Spot requests, which EC2 cannot stop, so the stop would " +
     "fail and the instance would keep billing. Give it a ttl and no idle timeout, and on-complete " +
     "terminate if it has one, or launch on-demand"

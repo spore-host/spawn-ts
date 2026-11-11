@@ -11,7 +11,7 @@ import { parseGridShorthand } from "../core/params.js";
 import { parseQueueConfig } from "../core/queue.js";
 import { parseDuration, parseLifetimeDuration, formatDuration, humanRemaining } from "../core/duration.js";
 import { accumulatedCost, computeExtension, ttlDeadline } from "../core/lifecycle.js";
-import { evaluateBounds } from "../core/bounds.js";
+import { evaluateBounds, stopBlocker } from "../core/bounds.js";
 import { AmbiguousNameError } from "../core/resolve.js";
 import { statusNotices, type ElasticIpLookup } from "../core/notices.js";
 import {
@@ -576,6 +576,10 @@ async function lifecycleOp(
 ): Promise<CmdResult> {
   const inst = await requireInstance(p, ctx);
   if ("error" in inst) return inst.result;
+  // Go refuses these before any call (cmd/state.go): not running, a one-time
+  // Spot instance; and hibernate on an instance not launched hibernatable.
+  const blocked = stopBlocker(inst.value, op);
+  if (blocked) return err(`${op}: ${blocked.message}`);
   if (op === "stop") await ctx.provider.stop(inst.value.instanceId, "user request");
   else await ctx.provider.hibernate(inst.value.instanceId);
   return ok(`${op === "stop" ? "stopping" : "hibernating"} ${inst.value.name}`);

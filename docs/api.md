@@ -92,8 +92,45 @@ the Dashboard shows.
 
 `LaunchInput` accepts `name`, `instanceType`, `region`, `ami`, `keyPair`,
 `spot`, `ttl`, `idleTimeout`, `hibernateOnIdle`, `idleCpuPercent`, `costLimit`,
-`pricePerHour`, `onComplete`, `completionFile`, `completionDelay`, `plugins`, and
-`allowUnbounded`. Durations are Go-form strings or ms.
+`pricePerHour`, `onComplete`, `completionFile`, `completionDelay`, `plugins`,
+`allowUnbounded` and `clientToken`. Durations are Go-form strings or ms.
+
+> **`clientToken`** is the launch intent's RunInstances idempotency token
+> (spore-host#673). Mint one per thing the user means to launch with
+> `newLaunchToken()` and pass the same one on every attempt at it: concurrent
+> `launch()` calls with one token share a single request, and EC2 returns the
+> instance a settled earlier attempt created instead of launching another. Mint
+> a new one when the user changes what they're launching, and after a failure
+> that `isAmbiguousLaunchError(err)` says was definite (a 4xx left nothing
+> behind; a created-then-terminated instance is what the old token would
+> return). Keep it after an ambiguous one (network, 5xx), so the retry finds
+> the instance if it exists. Absent: a fresh token per call, as Go does.
+
+### What a real launch picks (Go parity, #129)
+
+`EC2Provider` chooses as Go's `GetRecommendedAMI` does (`pkg/aws/ami.go`). The
+choices are pinned by vectors rendered from spawn v0.150.0
+(`src/aws/testdata/launch-parity.go.json`).
+
+| | spawn-ts | Go source |
+|---|---|---|
+| Architecture | EC2 `DescribeInstanceTypes`; offline fallback `archForInstanceType`. trn/inf are **x86_64** | `resolveArchitecture`, `DetectArchitecture` |
+| NVIDIA GPU types (`isNvidiaGpuInstance`, Go's exact family set) | the DLAMI "Base OSS Nvidia Driver GPU AMI (Amazon Linux 2023)" via Go's SSM parameter (`GPU_AMI_PARAMETERS`); failure refuses the launch | `DetectGPUInstance`, `GetAL2023AMI` |
+| Everything else, Trainium and Inferentia included | Amazon Linux 2023 for the architecture (DescribeImages, kernel 6.1). Go gives Neuron the CPU image too; pass `ami` for the Neuron DLAMI | `GetAL2023AMI` |
+| `hibernateOnIdle` or `onComplete: "hibernate"` | refused unless EC2 says the type hibernates; then `HibernationOptions.Configured` and an encrypted gp3 root on the AMI's root device, RAM + 10 GiB, never below the AMI's snapshot | `HibernationRequested`, `prepareHibernation`, `buildBlockDevices`, launch preflight |
+| Spot whose lifecycle stops or hibernates | refused (spawn-ts makes one-time requests only; Go makes these persistent) | `NeedsStoppable` |
+| `ClientToken` | the caller's, else `spawn-ts-<uuid>` | `launchAcrossZones` |
+
+The extra permissions this needs are `ec2:DescribeInstanceTypes` (every launch,
+best-effort) and `ssm:GetParameter` on
+`arn:aws:ssm:*::parameter/aws/service/deeplearning/ami/*` (GPU launches only).
+
+`stop` and `hibernate` refuse, before any call, what EC2 would refuse:
+- an instance that isn't running (`NotRunning`);
+- a one-time Spot instance (`OneTimeSpot`, Go's `oneTimeSpotStopError`);
+- for hibernate, an instance whose `hibernationConfigured` is false (`NotHibernatable`).
+
+`stopBlocker(inst, action)` exposes the same check, so a UI can hide the button.
 
 > **`plugins`** carries `PluginDeclaration[]` into user-data as
 > `/etc/spawn/plugins.json`, which spored reads at boot. Only the seven remote-only

@@ -70,6 +70,50 @@ version strings agree.
     the attribute.
   - **Breaking:** errors are `SpawnError` instances. The messages are the
     same, and `instanceof Error` still holds.
+- **Launch parity with Go spawn** (#129), pinned by vectors rendered from
+  spawn v0.150.0 (`src/aws/testdata/launch-parity.go.json`,
+  `scripts/gen-go-fixtures.sh`):
+  - **Trainium and Inferentia launch on x86_64.** `archForInstanceType` called
+    trn/inf arm64, so `resolveAmi` picked an arm64 image that RunInstances
+    refused. The architecture now comes from EC2 `DescribeInstanceTypes`, as
+    Go's `resolveArchitecture` does, falling back to the static table, which
+    agrees with Go's `DetectArchitecture` on every family that lists. As in Go,
+    Neuron types get the AL2023 CPU image; pass `ami` for the Neuron DLAMI.
+  - **NVIDIA GPU types get the NVIDIA-driver image.** Go's `DetectGPUInstance`
+    families (`isNvidiaGpuInstance`) resolve the DLAMI "Base OSS Nvidia Driver
+    GPU AMI (Amazon Linux 2023)" through Go's SSM parameter. Before, they got
+    plain AL2023, and `nvidia-smi` saw no GPU. A failed lookup refuses the
+    launch instead of falling back to the CPU image. Go's family set misses
+    `p6-b200`, `p6e-gb200`, `p5en`, `gr6` and `g6f` (spore-host/spawn#1579),
+    and so does spawn-ts until Go's is fixed and the vectors are regenerated.
+  - **Hibernation can succeed.** `hibernateOnIdle` or `onComplete:
+    "hibernate"` now configures `HibernationOptions` and an encrypted gp3 root
+    on the AMI's root device, sized RAM + 10 GiB and never below the AMI's
+    snapshot, as Go's `prepareHibernation` and `buildBlockDevices` do. The
+    launch is refused before RunInstances when EC2 says the type can't
+    hibernate, or can't be asked. `ManagedInstance.hibernationConfigured` is
+    read back from EC2.
+  - **Stop and hibernate only where EC2 accepts them.** `stop` and `hibernate`
+    refuse a one-time Spot instance (`OneTimeSpot`, Go's
+    `oneTimeSpotStopError`), an instance that isn't running (`NotRunning`), and
+    hibernate on one not launched hibernatable (`NotHibernatable`). The
+    Dashboard doesn't offer those buttons, and the terminal's `stop` and
+    `hibernate` refuse the same way. `stopBlocker` exposes the check. A Spot
+    launch with `hibernateOnIdle` is refused like the other stop-based
+    lifecycles.
+  - **One launch intent, one instance** (spore-host#673). RunInstances
+    carries a `ClientToken`: `LaunchInput.clientToken` when given, else a fresh
+    `spawn-ts-<uuid>`. Concurrent `launch()` calls with the same token share
+    one request. `newLaunchToken()` mints a token, and
+    `isAmbiguousLaunchError()` says whether a retry should keep it. The
+    Dashboard's form keeps one token per intent across retries of an
+    ambiguous failure, and disables Launch while a launch runs.
+  - **New permissions:** `ec2:DescribeInstanceTypes` (every launch, used
+    best-effort) and `ssm:GetParameter` on
+    `arn:aws:ssm:*::parameter/aws/service/deeplearning/ami/*` (GPU launches).
+  - **Breaking:** the Dashboard no longer offers hibernate on an instance not
+    launched hibernatable. `client.hibernate` and `client.stop` refuse the
+    cases above, which EC2 rejected anyway.
 - **`signalComplete` is mock-only** (#128). On a real provider it was an
   unconfirmed terminate or stop presented as a demo button. The Dashboard
   hides it there, and the client throws on any provider that isn't a

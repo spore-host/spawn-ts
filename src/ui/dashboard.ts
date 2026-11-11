@@ -7,7 +7,15 @@ import type { SpawnClient, SpawnEvent } from "../core/client.js";
 import type { LifecycleAction, ManagedInstance } from "../core/types.js";
 import type { FanOutSummary } from "../core/fanout.js";
 import { accumulatedCost } from "../core/lifecycle.js";
-import { describeSpawnError, toSpawnError, type SpawnError, type SpawnOperation } from "../core/errors.js";
+import { stopBlocker } from "../core/bounds.js";
+import { newLaunchToken } from "../core/client.js";
+import {
+  describeSpawnError,
+  isAmbiguousLaunchError,
+  toSpawnError,
+  type SpawnError,
+  type SpawnOperation,
+} from "../core/errors.js";
 import { dnsNotice, sporedUpgrade, type Notice } from "../core/notices.js";
 import { instancePlugins, LAUNCH_DECLARABLE_PLUGINS } from "../core/plugins.js";
 import { humanRemaining, formatDuration, parseDuration } from "../core/duration.js";
@@ -274,8 +282,19 @@ export class Dashboard {
   private wireForm(): void {
     const form = this.el.querySelector<HTMLFormElement>(".launch-form")!;
     const msg = this.el.querySelector<HTMLElement>(".launch-msg")!;
+    const button = form.querySelector<HTMLButtonElement>(".launch-btn")!;
+    // One idempotency token per launch intent (#129, spore-host#673): kept
+    // across retries of the same form, so a double-click or a retry after a
+    // lost response returns the first instance instead of launching a second;
+    // replaced once that launch succeeds or the form changes.
+    let intent: string | undefined;
+    form.addEventListener("input", () => (intent = undefined));
+    form.addEventListener("change", () => (intent = undefined));
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
+      intent ??= newLaunchToken();
+      const clientToken = intent;
+      button.disabled = true;
       const fd = new FormData(form);
       const s = (k: string) => String(fd.get(k) ?? "").trim();
       const numOr = (k: string, d: number) => {
@@ -305,13 +324,19 @@ export class Dashboard {
           // return only the first, quietly launching with one of three ticked
           // boxes honoured. Same defect the CLI's flagList exists to avoid.
           plugins: fd.getAll("plugin").map((v) => ({ ref: String(v) })),
+          clientToken,
         });
+        intent = undefined;
         msg.textContent = `launched ${inst.name}`;
         msg.className = "launch-msg good";
         (form.elements.namedItem("name") as HTMLInputElement).value = "";
       } catch (err) {
         msg.textContent = (err as Error).message;
         msg.className = "launch-msg bad";
+        // Keep the token only when the launch may have happened anyway.
+        if (!isAmbiguousLaunchError(err)) intent = undefined;
+      } finally {
+        button.disabled = false;
       }
     });
   }
@@ -722,13 +747,19 @@ export class Dashboard {
     const running = i.state === "running";
     const stopped = i.state === "stopped" || i.state === "hibernated";
     if (running) {
-      out.push({ label: "stop", progress: "stopping…", op: "stop", run: (x) => this.client.stop(x.instanceId) });
-      out.push({
-        label: "hibernate",
-        progress: "hibernating…",
-        op: "hibernate",
-        run: (x) => this.client.hibernate(x.instanceId),
-      });
+      // Offered only where EC2 would accept them (#129): never on a one-time
+      // Spot instance, and hibernate only on one launched hibernatable.
+      if (!stopBlocker(i, "stop")) {
+        out.push({ label: "stop", progress: "stopping…", op: "stop", run: (x) => this.client.stop(x.instanceId) });
+      }
+      if (!stopBlocker(i, "hibernate")) {
+        out.push({
+          label: "hibernate",
+          progress: "hibernating…",
+          op: "hibernate",
+          run: (x) => this.client.hibernate(x.instanceId),
+        });
+      }
       out.push({
         label: "extend 1h",
         progress: "extending…",

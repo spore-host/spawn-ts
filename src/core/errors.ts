@@ -36,6 +36,9 @@ export type SpawnErrorCode =
   | "NoTtl"
   | "InvalidDuration"
   | "LaunchRefused"
+  | "NotRunning"
+  | "OneTimeSpot"
+  | "NotHibernatable"
   | "NetworkError"
   | "Unknown";
 
@@ -144,6 +147,22 @@ export function toSpawnError(err: unknown, operation: SpawnOperation, instanceId
   return new SpawnError({ operation, instanceId, message, code: local, aws: false, cause: err });
 }
 
+/**
+ * Whether a failed launch may still have created an instance whose response was
+ * lost: a network failure, or an AWS server-side error, with no instance id
+ * known. Retry exactly that with the SAME clientToken, so EC2 returns the
+ * instance if it exists instead of launching another (Go's Ambiguous fault
+ * class, #108). Any other failure is definite, so a retry should mint a NEW
+ * token: a 4xx left nothing behind, and an instance that was created and then
+ * terminated is what the old token would return.
+ */
+export function isAmbiguousLaunchError(err: unknown): boolean {
+  const e = err instanceof SpawnError ? err : toSpawnError(err, "launch");
+  if (e.operation !== "launch" || e.instanceId) return false;
+  if (e.code === "NetworkError") return true;
+  return e.aws && (e.httpStatus === undefined || e.httpStatus >= 500);
+}
+
 const VERB: Record<SpawnOperation, string> = {
   list: "check your instances",
   launch: "launch",
@@ -168,10 +187,14 @@ export function describeSpawnError(e: SpawnError): string {
     case "AccessDenied":
     case "AccessDeniedException":
       return `You don't have permission to ${verb}.`;
+    case "NotRunning":
     case "IncorrectInstanceState":
       return `Couldn't ${verb}: it isn't in a state that allows it right now, and may already be changing state.`;
     case "UnsupportedOperation":
       return `Couldn't ${verb}: EC2 doesn't support it for this instance.`;
+    case "OneTimeSpot":
+      return `Couldn't ${verb}: it's a one-time Spot instance, which EC2 can't stop. Terminate it to end it.`;
+    case "NotHibernatable":
     case "UnsupportedHibernationConfiguration":
       return "This instance wasn't launched with hibernation enabled, so it can't hibernate. Stop it instead.";
     case "InvalidInstanceID.NotFound":

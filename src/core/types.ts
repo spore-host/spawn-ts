@@ -125,6 +125,16 @@ export interface LaunchSpec {
    * billing and may have nothing enforcing its TTL. Not written as a tag.
    */
   keepOnError?: boolean;
+
+  /**
+   * RunInstances idempotency token (#129, spore-host#673). The same token on a
+   * retry of the same launch returns the instance the first call created
+   * instead of launching a second. 1-64 ASCII characters. Absent: the provider
+   * mints a fresh one per launch, as Go does (`"spawn-" + rand.Text()`,
+   * pkg/aws/zone_fallback.go:326), which covers the SDK's own retries only.
+   * Not written as a tag.
+   */
+  clientToken?: string;
 }
 
 /**
@@ -269,6 +279,13 @@ export interface ManagedInstance {
   lastActivityMs: number;
   /** Latest observed CPU %, for idle detection + dashboard. */
   cpuPercent: number;
+
+  /**
+   * EC2's HibernationOptions.Configured: whether the instance was launched able
+   * to hibernate. Hibernate is refused, and not offered, when this is false
+   * (#129). Undefined when the provider doesn't know.
+   */
+  hibernationConfigured?: boolean;
 
   /**
    * Parameter-sweep membership, decoded from the instance's spawn:sweep-* /
