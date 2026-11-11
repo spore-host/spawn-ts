@@ -12,6 +12,7 @@ import { parseQueueConfig } from "../core/queue.js";
 import { parseDuration, parseLifetimeDuration, formatDuration, humanRemaining } from "../core/duration.js";
 import { accumulatedCost, computeExtension, ttlDeadline } from "../core/lifecycle.js";
 import { evaluateBounds } from "../core/bounds.js";
+import { AmbiguousNameError } from "../core/resolve.js";
 import { statusNotices, type ElasticIpLookup } from "../core/notices.js";
 import {
   describePluginState,
@@ -501,8 +502,9 @@ async function extend(p: ParsedArgs, ctx: ShellCtx): Promise<CmdResult> {
   const ms = parseDuration(durStr);
   if (ms === null || ms <= 0) return err(`extend: invalid duration "${durStr}"`);
 
-  const i = await ctx.provider.get(name);
-  if (!i) return err(`extend: no instance named "${name}"`);
+  const found = await lookup(ctx, name);
+  if ("error" in found) return err(`extend: ${found.message}`);
+  const i = found.value;
   // ttlDeadline() rather than the raw tag, so an instance carrying only spawn:ttl
   // is extendable too (its deadline is launch+ttl).
   if (!ttlDeadline(i)) return err(`extend: ${name} has no TTL to extend`);
@@ -899,9 +901,34 @@ type Resolved =
 async function requireInstance(p: ParsedArgs, ctx: ShellCtx): Promise<Resolved> {
   const name = p.positionals[0];
   if (!name) return { error: true, result: err("a <name> is required") };
-  const i = await ctx.provider.get(name);
-  if (!i) return { error: true, result: err(`no instance named "${name}"`) };
-  return { value: i };
+  const found = await lookup(ctx, name);
+  if ("error" in found) return { error: true, result: err(found.message) };
+  return { value: found.value };
+}
+
+/**
+ * A name-or-id argument, resolved as Go's resolveInstance does (#128): a Name
+ * matches live instances only, and a Name two live instances share is refused
+ * with their ids instead of picking one, so `terminate test` can't hit a
+ * terminated or someone else's `test`.
+ */
+async function lookup(
+  ctx: ShellCtx,
+  nameOrId: string,
+): Promise<{ value: ManagedInstance } | { error: true; message: string }> {
+  try {
+    const i = await ctx.provider.get(nameOrId);
+    if (i) return { value: i };
+    return {
+      error: true,
+      message: nameOrId.startsWith("i-")
+        ? `instance ${nameOrId} not found (must be spawn-managed)`
+        : `no instance named "${nameOrId}"`,
+    };
+  } catch (e) {
+    if (e instanceof AmbiguousNameError) return { error: true, message: e.message };
+    throw e;
+  }
 }
 
 function pad(s: string, n: number): string {

@@ -18,7 +18,35 @@ version strings agree.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **Instance actions act on an instance id, never a Name** (#128).
+  `SpawnClient.stop`, `start`, `hibernate`, `terminate`, `extend` and
+  `signalComplete` now take an instance id and reject anything else. The
+  Dashboard's cards passed the instance's Name, and the Name lookup returned
+  the first DescribeInstances match. In the portal audit that match was a
+  terminated `test`: terminate on the live `test` card hit the dead one, EC2
+  accepted it, and the live instance kept billing. A Name lookup that remains
+  (`get(nameOrId)`, the terminal's `stop test`) resolves as Go's
+  `resolveInstance` does: spawn-managed live instances only, case-insensitive,
+  a single running match wins a tie, and anything still ambiguous throws
+  `AmbiguousNameError` with the candidate ids. A lookup by id returns
+  instances in any state, and doesn't find an instance that isn't
+  spawn-managed. `isInstanceId`, `resolveByName` and `AmbiguousNameError` are
+  exported. **Breaking:** a caller passing a Name to one of those six methods
+  gets a rejection. Pass `instance.instanceId`.
+- **Dashboard cards render in place, keyed by instance id** (#128). Every
+  `instances` event replaced every card. A press slower than the gap between
+  renders (~125 ms) put mousedown and mouseup on different elements, so the
+  click never fired, and a button's disabled state was wiped. A card is now
+  created once per instance. Its text is rewritten only when it changes, its
+  buttons are rebuilt only when the set of offered actions changes, and never
+  while an action on it is running. The orphan banner is rebuilt only when the
+  set of orphans changes.
+- **`signalComplete` is mock-only** (#128). On a real provider it was an
+  unconfirmed terminate or stop presented as a demo button. The Dashboard
+  hides it there, and the client throws on any provider that isn't a
+  simulation.
 
 ## [0.8.1] — 2026-10-29
 

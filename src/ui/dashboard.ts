@@ -15,6 +15,23 @@ import { parseQueueConfig } from "../core/queue.js";
 import { find, type FindResult } from "@spore-host/truffle-ts";
 
 interface LogItem { atMs: number; kind: string; instance: string; text: string; }
+
+/** One rendered instance card, kept across renders and keyed by instance id (#128). */
+interface CardView {
+  el: HTMLElement;
+  info: HTMLElement;
+  actions: HTMLElement;
+  /** The instance as last rendered; button handlers read it, never a stale closure. */
+  inst: ManagedInstance;
+  infoHtml: string;
+  /** The offered actions, joined; the buttons are rebuilt only when this changes. */
+  actionKey: string;
+}
+
+interface CardAction {
+  label: string;
+  run: (inst: ManagedInstance) => Promise<unknown>;
+}
 interface SweepView { kind: "sweep" | "queue" | "jobarray"; name: string; summary: FanOutSummary; done: boolean; }
 
 export class Dashboard {
@@ -25,6 +42,10 @@ export class Dashboard {
   private sweepsEl!: HTMLElement;
   private log: LogItem[] = [];
   private sweeps = new Map<string, SweepView>();
+  private cards = new Map<string, CardView>();
+  /** Instance id → the action running on it; survives re-renders. */
+  private busy = new Map<string, string>();
+  private orphanKey = "";
 
   constructor(
     private client: SpawnClient,
@@ -478,24 +499,63 @@ export class Dashboard {
     }
   }
 
+  /**
+   * Render the instance cards IN PLACE, keyed by instance id (#128).
+   *
+   * The monitor emits an `instances` event several times a second, and this
+   * used to replace every card each time. A press slower than the gap between
+   * renders landed mousedown and mouseup on different elements, so no click
+   * fired (a 180 ms press on "terminate" opened nothing), and a button's
+   * disabled state was wiped by the next render. Now a card is created once
+   * per instance id, its text is rewritten only when it changed, and its
+   * buttons are rebuilt only when the set of offered actions changes and no
+   * action is running on it.
+   */
   private renderInstances(insts: ManagedInstance[]): void {
     this.renderOrphanBanner();
     const live = insts.filter((i) => i.state !== "terminated");
+    const empty = this.instancesEl.querySelector(":scope > .empty");
     if (live.length === 0) {
-      this.instancesEl.innerHTML = `<div class="empty">no instances — launch one above</div>`;
+      for (const c of this.cards.values()) c.el.remove();
+      this.cards.clear();
+      if (!empty) this.instancesEl.innerHTML = `<div class="empty">no instances — launch one above</div>`;
       return;
     }
+    empty?.remove();
     const now = this.client.now();
-    this.instancesEl.innerHTML = "";
-    for (const i of live) this.instancesEl.appendChild(this.instanceCard(i, now));
+    const seen = new Set<string>();
+    let prev: HTMLElement | null = null;
+    for (const i of live) {
+      seen.add(i.instanceId);
+      let c = this.cards.get(i.instanceId);
+      if (!c) {
+        c = this.createCard(i);
+        this.cards.set(i.instanceId, c);
+      }
+      this.updateCard(c, i, now);
+      // Keep list order without moving a card that is already in place: moving
+      // the node under the pointer is as bad as replacing it.
+      const want: ChildNode | null = prev ? prev.nextSibling : this.instancesEl.firstChild;
+      if (want !== c.el) this.instancesEl.insertBefore(c.el, want);
+      prev = c.el;
+    }
+    for (const [id, c] of this.cards) {
+      if (seen.has(id)) continue;
+      c.el.remove();
+      this.cards.delete(id);
+    }
   }
 
   /**
    * Warn about orphans — managed, live instances past their TTL that spored
-   * should have reaped (the #19 failure mode) — with a one-click reap.
+   * should have reaped (the #19 failure mode) — with a one-click reap. Rebuilt
+   * only when the set of orphans changes, for the same reason as the cards.
    */
   private renderOrphanBanner(): void {
     const orphans = this.client.findOrphans();
+    const key = orphans.map((o) => o.instance.instanceId).join(",");
+    if (key === this.orphanKey) return;
+    this.orphanKey = key;
     if (orphans.length === 0) {
       this.orphanBannerEl.hidden = true;
       this.orphanBannerEl.innerHTML = "";
@@ -516,10 +576,36 @@ export class Dashboard {
     this.orphanBannerEl.appendChild(btn);
   }
 
-  private instanceCard(i: ManagedInstance, now: number): HTMLElement {
-    const card = document.createElement("div");
-    card.className = "inst";
+  private createCard(i: ManagedInstance): CardView {
+    const el = document.createElement("div");
+    el.className = "inst";
+    el.dataset.instanceId = i.instanceId;
+    const info = document.createElement("div");
+    info.className = "inst-info";
+    const actions = document.createElement("div");
+    actions.className = "actions";
+    el.append(info, actions);
+    return { el, info, actions, inst: i, infoHtml: "", actionKey: "" };
+  }
 
+  private updateCard(c: CardView, i: ManagedInstance, now: number): void {
+    c.inst = i;
+    const html = this.cardInfoHtml(i, now);
+    if (html !== c.infoHtml) {
+      c.info.innerHTML = html;
+      c.infoHtml = html;
+    }
+    const offered = this.cardActions(i);
+    const key = offered.map((a) => a.label).join("|");
+    // Never pull a button out from under a running action: the busy state and
+    // the button the user pressed both stay until it settles.
+    if (key !== c.actionKey && !this.busy.has(i.instanceId)) {
+      c.actions.replaceChildren(...offered.map((a) => this.actionBtn(i.instanceId, a)));
+      c.actionKey = key;
+    }
+  }
+
+  private cardInfoHtml(i: ManagedInstance, now: number): string {
     const meta: string[] = [`${i.instanceType}`, i.region];
     if (i.spot) meta.push("spot");
     if (i.publicIp) meta.push(i.publicIp);
@@ -587,43 +673,65 @@ export class Dashboard {
           .join(" ")}</div>`
       : "";
 
-    card.innerHTML = `
+    return `
       <div class="row1">
         <span class="name">${escapeHtml(i.name)}</span>
         <span class="id">${i.instanceId}</span>
         <span class="state ${i.state}">${i.state}</span>
       </div>
       <div class="meta">${meta.map(escapeHtml).join(" · ")}</div>
-      ${ttlMeter}${costMeter}${idleLine}${pluginLine}${notices}
-      <div class="actions"></div>`;
+      ${ttlMeter}${costMeter}${idleLine}${pluginLine}${notices}`;
+  }
 
-    const actions = card.querySelector(".actions")!;
+  /**
+   * The buttons a card offers. Every one acts on the card's instance ID: the
+   * Name is a label, and two instances can share it (#128).
+   */
+  private cardActions(i: ManagedInstance): CardAction[] {
+    const out: CardAction[] = [];
     const running = i.state === "running";
     const stopped = i.state === "stopped" || i.state === "hibernated";
     if (running) {
-      this.actionBtn(actions, "stop", () => this.client.stop(i.name));
-      this.actionBtn(actions, "hibernate", () => this.client.hibernate(i.name));
-      this.actionBtn(actions, "extend 1h", () => this.client.extend(i.name, "1h"));
-      if (i.onComplete) this.actionBtn(actions, "signal complete", () => this.client.signalComplete(i.name));
-    }
-    if (stopped) this.actionBtn(actions, "start", () => this.client.start(i.name));
-    this.actionBtn(actions, "terminate", async () => {
-      if (await this.confirmFn(`terminate ${i.name}? This is permanent.`)) {
-        await this.client.terminate(i.name);
+      out.push({ label: "stop", run: (x) => this.client.stop(x.instanceId) });
+      out.push({ label: "hibernate", run: (x) => this.client.hibernate(x.instanceId) });
+      out.push({ label: "extend 1h", run: (x) => this.client.extend(x.instanceId, "1h") });
+      // A simulation affordance: on a real backend it was an unconfirmed
+      // terminate or stop dressed as a demo button (#128).
+      if (i.onComplete && !this.client.backend.isReal) {
+        out.push({ label: "signal complete", run: (x) => this.client.signalComplete(x.instanceId) });
       }
+    }
+    if (stopped) out.push({ label: "start", run: (x) => this.client.start(x.instanceId) });
+    out.push({
+      label: "terminate",
+      run: async (x) => {
+        if (await this.confirmFn(`terminate ${x.name} (${x.instanceId})? This is permanent.`)) {
+          await this.client.terminate(x.instanceId);
+        }
+      },
     });
-
-    return card;
+    return out;
   }
 
-  private actionBtn(parent: Element, label: string, fn: () => Promise<unknown>): void {
+  private actionBtn(instanceId: string, a: CardAction): HTMLButtonElement {
     const b = document.createElement("button");
-    b.textContent = label;
+    b.textContent = a.label;
+    b.disabled = this.busy.has(instanceId);
     b.addEventListener("click", () => {
-      b.disabled = true;
-      void fn().finally(() => (b.disabled = false));
+      const c = this.cards.get(instanceId);
+      if (!c || this.busy.has(instanceId)) return;
+      this.busy.set(instanceId, a.label);
+      for (const x of c.actions.querySelectorAll("button")) x.disabled = true;
+      void a.run(c.inst).finally(() => {
+        this.busy.delete(instanceId);
+        const now = this.cards.get(instanceId);
+        if (!now) return;
+        for (const x of now.actions.querySelectorAll("button")) x.disabled = false;
+        // Catch up on an action-set change that arrived while it ran.
+        this.updateCard(now, now.inst, this.client.now());
+      });
     });
-    parent.appendChild(b);
+    return b;
   }
 
   private pushLog(item: Omit<LogItem, "atMs">): void {

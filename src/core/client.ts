@@ -29,6 +29,7 @@ import { findOrphans, type Orphan } from "./orphans.js";
 import { evaluateBounds } from "./bounds.js";
 import { parseDuration, parseLifetimeDuration, formatDuration } from "./duration.js";
 import { tag } from "./tags.js";
+import { requireInstanceId } from "./resolve.js";
 import { MockProvider } from "./mock.js";
 import { FanOut, type FanOutMemberStatus, type FanOutSummary } from "./fanout.js";
 import { buildSweep, Sweep, type SweepOptions } from "./sweep.js";
@@ -426,6 +427,11 @@ export class SpawnClient {
     return reaped;
   }
 
+  /**
+   * Read one instance, by id or by Name. A Name resolves as Go's does (live
+   * instances only; ambiguous throws AmbiguousNameError). Read-only: every
+   * method that changes an instance takes its id (#128).
+   */
   async get(nameOrId: string): Promise<ManagedInstance | null> {
     return this.provider.get(nameOrId);
   }
@@ -496,23 +502,28 @@ export class SpawnClient {
     return inst;
   }
 
-  async terminate(nameOrId: string, reason = "user request"): Promise<void> {
-    const i = await this.resolve(nameOrId);
+  // Every method below that changes an instance takes its instance id and
+  // refuses anything else, Name included (#128). A Name is not unique: in the
+  // portal audit, stop/terminate on a live `test` resolved to a terminated
+  // `test`, EC2 accepted the terminate, and the live one kept billing.
+
+  async terminate(instanceId: string, reason = "user request"): Promise<void> {
+    const i = await this.resolveId("terminate", instanceId);
     await this.provider.terminate(i.instanceId, reason);
     await this.refresh();
   }
-  async stop(nameOrId: string, reason = "user request"): Promise<void> {
-    const i = await this.resolve(nameOrId);
+  async stop(instanceId: string, reason = "user request"): Promise<void> {
+    const i = await this.resolveId("stop", instanceId);
     await this.provider.stop(i.instanceId, reason);
     await this.refresh();
   }
-  async start(nameOrId: string): Promise<void> {
-    const i = await this.resolve(nameOrId);
+  async start(instanceId: string): Promise<void> {
+    const i = await this.resolveId("start", instanceId);
     await this.provider.start(i.instanceId);
     await this.refresh();
   }
-  async hibernate(nameOrId: string): Promise<void> {
-    const i = await this.resolve(nameOrId);
+  async hibernate(instanceId: string): Promise<void> {
+    const i = await this.resolveId("hibernate", instanceId);
     await this.provider.hibernate(i.instanceId);
     await this.refresh();
   }
@@ -528,8 +539,8 @@ export class SpawnClient {
    * asked for is not the one they got, and an extend that reports plain success
    * after silently clamping is the same class of lie as the unclamped bug.
    */
-  async extend(nameOrId: string, by: string | number): Promise<number> {
-    const i = await this.resolve(nameOrId);
+  async extend(instanceId: string, by: string | number): Promise<number> {
+    const i = await this.resolveId("extend", instanceId);
     // Accept either TTL form: an instance tagged only spawn:ttl (no absolute
     // deadline) still has a deadline under ttlDeadline()'s launch+ttl fallback,
     // and refusing it here would have made `extend` unusable on exactly those.
@@ -568,9 +579,23 @@ export class SpawnClient {
     return ext.deadlineMs;
   }
 
-  /** Fire a completion signal (drops the watched file) to demo on-complete. */
-  async signalComplete(nameOrId: string): Promise<void> {
-    const i = await this.resolve(nameOrId);
+  /**
+   * Demo affordance: act as if the instance's completion file appeared, i.e.
+   * run its on-complete action now. Simulated providers only. On EC2 this was an
+   * unconfirmed terminate or stop presented as a demo button (#128); there,
+   * spored watches the real completion file.
+   */
+  async signalComplete(instanceId: string): Promise<void> {
+    const simulated =
+      !this.provider.isReal && typeof (this.provider as Partial<MockProvider>).simTick === "function";
+    if (!simulated) {
+      throw new Error(
+        `signalComplete is a simulation affordance and ${this.provider.label} is not a simulation: ` +
+          "spored runs the on-complete action when the completion file appears on the instance. " +
+          "To end it now, use terminate or stop.",
+      );
+    }
+    const i = await this.resolveId("signalComplete", instanceId);
     if (!i.onComplete) throw new Error(`${i.name} has no on-complete action`);
     this.emit({
       type: "action",
@@ -600,9 +625,13 @@ export class SpawnClient {
     }
   }
 
-  private async resolve(nameOrId: string): Promise<ManagedInstance> {
-    const i = await this.provider.get(nameOrId);
-    if (!i) throw new Error(`no instance named "${nameOrId}"`);
+  /** The instance `instanceId` names; refuses a Name or anything else that isn't an id. */
+  private async resolveId(op: string, instanceId: string): Promise<ManagedInstance> {
+    requireInstanceId(op, instanceId);
+    const i = await this.provider.get(instanceId);
+    if (!i || i.instanceId !== instanceId) {
+      throw new Error(`${op}: no spawn-managed instance ${instanceId}`);
+    }
     return i;
   }
 

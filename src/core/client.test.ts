@@ -23,12 +23,12 @@ describe("SpawnClient end-to-end", () => {
     const c = client();
     const events: SpawnEvent[] = [];
     c.on((e) => events.push(e));
-    await c.launch({ name: "job", ttl: "1h", pricePerHour: 1 });
+    const { instanceId: id } = await c.launch({ name: "job", ttl: "1h", pricePerHour: 1 });
 
     // Advance 61 minutes of sim time in one step; the tick should terminate it.
     await c.step(61 * 60_000);
 
-    const inst = await c.get("job");
+    const inst = await c.get(id);
     expect(inst?.state).toBe("terminated");
     const action = events.find((e) => e.type === "action" && e.rule === "ttl");
     expect(action).toBeTruthy();
@@ -36,9 +36,9 @@ describe("SpawnClient end-to-end", () => {
 
   it("accrues compute cost while running", async () => {
     const c = client();
-    await c.launch({ name: "job", ttl: "4h", pricePerHour: 3.6 });
+    const { instanceId: id } = await c.launch({ name: "job", ttl: "4h", pricePerHour: 3.6 });
     await c.step(30 * 60_000); // 30 min
-    const inst = await c.get("job");
+    const inst = await c.get(id);
     // 0.5h * $3.6/hr ≈ $1.80 (allow slack for the double-refresh in tick).
     expect(inst!.computeSeconds).toBeGreaterThan(1700);
     expect(inst!.computeSeconds).toBeLessThan(1900);
@@ -46,9 +46,9 @@ describe("SpawnClient end-to-end", () => {
 
   it("extend pushes out the TTL deadline", async () => {
     const c = client();
-    await c.launch({ name: "job", ttl: "1h" });
-    const before = (await c.get("job"))!.ttlDeadlineMs;
-    const after = await c.extend("job", "2h");
+    const { instanceId: id } = await c.launch({ name: "job", ttl: "1h" });
+    const before = (await c.get(id))!.ttlDeadlineMs;
+    const after = await c.extend(id, "2h");
     expect(after).toBe(before + 2 * 3600_000);
   });
 
@@ -58,14 +58,14 @@ describe("SpawnClient end-to-end", () => {
       // the deadline — the #19 orphan situation extend is most used in.
       const provider = new MockProvider();
       const launcher = new SpawnClient({ provider, startMs: T0, clock: 1 });
-      await launcher.launch({ name: "late", ttl: "1h" });
+      const { instanceId: id } = await launcher.launch({ name: "late", ttl: "1h" });
 
       const now = T0 + 3 * 3600_000;
       const rescuer = new SpawnClient({ provider, startMs: now, clock: 1 });
       const events: SpawnEvent[] = [];
       rescuer.on((e) => events.push(e));
 
-      const deadline = await rescuer.extend("late", "1h");
+      const deadline = await rescuer.extend(id, "1h");
       expect(deadline).toBe(now + 3600_000);
       // Not merely "later than before" — later than NOW, which is the property
       // that decides whether the reaper spares it.
@@ -76,33 +76,33 @@ describe("SpawnClient end-to-end", () => {
 
     it("emits no clamp notice for a live instance", async () => {
       const c = client();
-      await c.launch({ name: "job", ttl: "4h" });
+      const { instanceId: id } = await c.launch({ name: "job", ttl: "4h" });
       const events: SpawnEvent[] = [];
       c.on((e) => events.push(e));
-      await c.extend("job", "1h");
+      await c.extend(id, "1h");
       expect(events.some((e) => e.type === "info" && /already expired/.test(e.message))).toBe(false);
     });
 
     it("writes both TTL tags", async () => {
       const c = client();
-      await c.launch({ name: "job", ttl: "1h" });
-      await c.extend("job", "2h");
-      const i = (await c.get("job"))!;
+      const { instanceId: id } = await c.launch({ name: "job", ttl: "1h" });
+      await c.extend(id, "2h");
+      const i = (await c.get(id))!;
       expect(i.tags["spawn:ttl"]).toBe("3h");
       expect(i.tags["spawn:ttl-deadline"]).toBe(new Date(T0 + 3 * 3600_000).toISOString());
     });
 
     it("rejects a non-positive or unparseable duration", async () => {
       const c = client();
-      await c.launch({ name: "job", ttl: "1h" });
-      await expect(c.extend("job", "nonsense")).rejects.toThrow(/invalid duration/);
-      await expect(c.extend("job", 0)).rejects.toThrow(/invalid duration/);
+      const { instanceId: id } = await c.launch({ name: "job", ttl: "1h" });
+      await expect(c.extend(id, "nonsense")).rejects.toThrow(/invalid duration/);
+      await expect(c.extend(id, 0)).rejects.toThrow(/invalid duration/);
     });
 
     it("throws for an instance with no TTL at all", async () => {
       const c = client();
-      await c.launch({ name: "job", idleTimeout: "30m" });
-      await expect(c.extend("job", "1h")).rejects.toThrow(/no TTL to extend/);
+      const { instanceId: id } = await c.launch({ name: "job", idleTimeout: "30m" });
+      await expect(c.extend(id, "1h")).rejects.toThrow(/no TTL to extend/);
     });
 
     describe("the spored reload nudge", () => {
@@ -120,10 +120,10 @@ describe("SpawnClient end-to-end", () => {
 
       it("requests a reload and reports the outcome", async () => {
         const c = reloadClient(async () => ({ ok: true, detail: "reload requested via SSM" }));
-        await c.launch({ name: "job", ttl: "1h" });
+        const { instanceId: id } = await c.launch({ name: "job", ttl: "1h" });
         const events: SpawnEvent[] = [];
         c.on((e) => events.push(e));
-        await c.extend("job", "2h");
+        await c.extend(id, "2h");
         expect(events.some((e) => e.type === "info" && /reload requested/.test(e.message))).toBe(
           true,
         );
@@ -133,13 +133,13 @@ describe("SpawnClient end-to-end", () => {
         // The extend succeeded — the tag is written. A failed nudge downgrades the
         // promptness, not the result, and must be surfaced as a gap.
         const c = reloadClient(async () => ({ ok: false, detail: "ssm:SendCommand failed: denied" }));
-        await c.launch({ name: "job", ttl: "1h" });
+        const { instanceId: id } = await c.launch({ name: "job", ttl: "1h" });
         // A real provider pins the clock to wall time, so compare against the
         // deadline the launch actually produced rather than the sim epoch.
-        const before = (await c.get("job"))!.ttlDeadlineMs;
+        const before = (await c.get(id))!.ttlDeadlineMs;
         const events: SpawnEvent[] = [];
         c.on((e) => events.push(e));
-        const deadline = await c.extend("job", "2h");
+        const deadline = await c.extend(id, "2h");
         expect(deadline).toBe(before + 2 * 3600_000);
         const info = events.find((e) => e.type === "info" && /could not reload/.test(e.message));
         expect(info).toBeTruthy();
@@ -155,8 +155,8 @@ describe("SpawnClient end-to-end", () => {
           throw new Error("must not be called");
         };
         const c = new SpawnClient({ provider: p, startMs: T0, clock: 1 });
-        await c.launch({ name: "job", ttl: "1h" });
-        await c.extend("job", "2h");
+        const { instanceId: id } = await c.launch({ name: "job", ttl: "1h" });
+        await c.extend(id, "2h");
         expect(called).toBe(false);
       });
     });
@@ -224,9 +224,9 @@ describe("SpawnClient end-to-end", () => {
 
   it("signalComplete applies the on-complete action", async () => {
     const c = client();
-    await c.launch({ name: "job", ttl: "4h", onComplete: "stop", completionFile: "/tmp/done" });
-    await c.signalComplete("job");
-    expect((await c.get("job"))!.state).toBe("stopped");
+    const { instanceId: id } = await c.launch({ name: "job", ttl: "4h", onComplete: "stop", completionFile: "/tmp/done" });
+    await c.signalComplete(id);
+    expect((await c.get(id))!.state).toBe("stopped");
   });
 
   it("findOrphans + reapOrphans over a shared provider (spored-failed instance)", async () => {
@@ -244,7 +244,9 @@ describe("SpawnClient end-to-end", () => {
 
     const reaped = await viewer.reapOrphans(orphans);
     expect(reaped).toHaveLength(1);
-    expect((await viewer.get("zombie"))!.state).toBe("terminated");
+    // By id: a Name lookup matches live instances only, as in Go (#128).
+    expect((await viewer.get(orphans[0].instance.instanceId))!.state).toBe("terminated");
+    expect(await viewer.get("zombie")).toBeNull();
     expect(viewer.findOrphans()).toEqual([]);
   });
 

@@ -17,6 +17,7 @@ export type {
 } from "./core/client.js";
 
 export { MockProvider } from "./core/mock.js";
+export { isInstanceId, resolveByName, AmbiguousNameError } from "./core/resolve.js";
 export { EC2Provider } from "./aws/ec2.js";
 export type { EC2ProviderOptions } from "./aws/ec2.js";
 

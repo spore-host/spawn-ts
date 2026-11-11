@@ -486,33 +486,86 @@ describe("EC2Provider.list", () => {
 });
 
 describe("EC2Provider.get", () => {
+  const managed = [{ Key: "spawn:managed", Value: "true" }];
+  const named = (id: string, name: string, state: string, extra: { Key: string; Value: string }[] = managed) => ({
+    InstanceId: id,
+    State: { Name: state },
+    Tags: [{ Key: "Name", Value: name }, ...extra],
+  });
+
   it("looks up by instance-id when the arg starts with i-", async () => {
     handler = (cmd) => {
       if (cmd instanceof DescribeInstancesCommand)
-        return {
-          Reservations: [
-            { Instances: [{ InstanceId: "i-xyz", State: { Name: "running" }, Tags: [] }] },
-          ],
-        };
+        return { Reservations: [{ Instances: [named("i-0123456789abcdef0", "x", "running")] }] };
       return {};
     };
-    const inst = await provider().get("i-xyz");
-    expect(inst?.instanceId).toBe("i-xyz");
-    expect(lastOf(DescribeInstancesCommand).input.InstanceIds).toEqual(["i-xyz"]);
+    const inst = await provider().get("i-0123456789abcdef0");
+    expect(inst?.instanceId).toBe("i-0123456789abcdef0");
+    expect(lastOf(DescribeInstancesCommand).input.InstanceIds).toEqual(["i-0123456789abcdef0"]);
     expect(lastOf(DescribeInstancesCommand).input.Filters).toBeUndefined();
   });
 
-  it("looks up by tag:Name filter otherwise", async () => {
+  it("returns a terminated instance by id, in the state it is really in", async () => {
+    handler = () => ({ Reservations: [{ Instances: [named("i-0ccc000000000000c", "test", "terminated")] }] });
+    expect((await provider().get("i-0ccc000000000000c"))?.state).toBe("terminated");
+  });
+
+  it("does not find an instance that isn't spawn-managed, by id (Go: 'must be spawn-managed')", async () => {
+    handler = () => ({ Reservations: [{ Instances: [named("i-0ddd000000000000d", "theirs", "running", [])] }] });
+    expect(await provider().get("i-0ddd000000000000d")).toBeNull();
+  });
+
+  it("reads EC2's InvalidInstanceID.NotFound as not found, and rethrows anything else", async () => {
+    handler = () => {
+      throw Object.assign(new Error("The instance ID 'i-0eee000000000000e' does not exist"), {
+        name: "InvalidInstanceID.NotFound",
+      });
+    };
+    expect(await provider().get("i-0eee000000000000e")).toBeNull();
+    handler = () => {
+      throw Object.assign(new Error("You are not authorized"), { name: "UnauthorizedOperation" });
+    };
+    await expect(provider().get("i-0eee000000000000e")).rejects.toThrow(/not authorized/);
+  });
+
+  it("resolves a Name over the managed list, never matching a terminated namesake (#128)", async () => {
+    // The audit's account: a live `test` and an older, terminated `test`, the
+    // terminated one first. The old lookup returned it.
     handler = () => ({
       Reservations: [
-        { Instances: [{ InstanceId: "i-named", State: { Name: "stopped" }, Tags: [] }] },
+        { Instances: [named("i-0ccc000000000000c", "test", "terminated")] },
+        { Instances: [named("i-0bbb000000000000b", "test", "running")] },
       ],
     });
-    const inst = await provider().get("job");
-    expect(inst?.state).toBe("stopped");
+    const inst = await provider().get("test");
+    expect(inst?.instanceId).toBe("i-0bbb000000000000b");
     const cmd = lastOf(DescribeInstancesCommand);
-    expect(cmd.input.Filters).toEqual([{ Name: "tag:Name", Values: ["job"] }]);
-    expect(cmd.input.InstanceIds).toBeUndefined();
+    expect(cmd.input.Filters).toEqual([{ Name: "tag:spawn:managed", Values: ["true"] }]);
+  });
+
+  it("matches a Name case-insensitively, as Go's EqualFold does", async () => {
+    handler = () => ({ Reservations: [{ Instances: [named("i-0bbb000000000000b", "Test", "stopped")] }] });
+    expect((await provider().get("test"))?.state).toBe("stopped");
+  });
+
+  it("prefers the single running instance over stopped namesakes (Go #313)", async () => {
+    handler = () => ({
+      Reservations: [
+        { Instances: [named("i-0aaa000000000000a", "job", "stopped"), named("i-0bbb000000000000b", "job", "running")] },
+      ],
+    });
+    expect((await provider().get("job"))?.instanceId).toBe("i-0bbb000000000000b");
+  });
+
+  it("refuses a Name two live instances share, naming both ids", async () => {
+    handler = () => ({
+      Reservations: [
+        { Instances: [named("i-0aaa000000000000a", "job", "running"), named("i-0bbb000000000000b", "job", "running")] },
+      ],
+    });
+    await expect(provider().get("job")).rejects.toThrow(
+      /multiple instances found with name: job \(i-0aaa000000000000a running, i-0bbb000000000000b running\)/,
+    );
   });
 
   it("returns null when nothing matches", async () => {

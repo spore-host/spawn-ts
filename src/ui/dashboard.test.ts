@@ -149,9 +149,10 @@ describe("Dashboard instance-card actions", () => {
     const { client, dash } = setup(confirm);
     setField(dash, "name", "goner");
     await submit(dash);
+    const id = client.list()[0].instanceId;
     await clickBtn(dash, "terminate");
-    expect(confirm).toHaveBeenCalledWith("terminate goner? This is permanent.");
-    expect((await client.get("goner"))!.state).toBe("terminated");
+    expect(confirm).toHaveBeenCalledWith(`terminate goner (${id})? This is permanent.`);
+    expect((await client.get(id))!.state).toBe("terminated");
     expect(dash.el.querySelector(".instances")!.textContent).toContain("no instances");
   });
 
@@ -171,6 +172,167 @@ describe("Dashboard instance-card actions", () => {
     const before = (await client.get("ext"))!.ttlDeadlineMs;
     await clickBtn(dash, "extend 1h");
     expect((await client.get("ext"))!.ttlDeadlineMs).toBe(before + 3600_000);
+  });
+});
+
+describe("Dashboard card actions target the card's instance id (#128)", () => {
+  beforeEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+
+  /** Every provider mutation, as [method, instanceId]. */
+  function spyProvider(provider: MockProvider): [string, string][] {
+    const calls: [string, string][] = [];
+    for (const m of ["stop", "start", "hibernate", "terminate", "setTags"] as const) {
+      const orig = (provider[m] as (...a: unknown[]) => Promise<void>).bind(provider);
+      (provider as unknown as Record<string, unknown>)[m] = (id: string, ...rest: unknown[]) => {
+        calls.push([m, id]);
+        return orig(id, ...rest);
+      };
+    }
+    return calls;
+  }
+
+  function cardFor(dash: Dashboard, id: string): HTMLElement {
+    const c = dash.el.querySelector<HTMLElement>(`.inst[data-instance-id="${id}"]`);
+    if (!c) throw new Error(`no card for ${id}`);
+    return c;
+  }
+
+  async function press(card: HTMLElement, label: string) {
+    const b = [...card.querySelectorAll<HTMLButtonElement>(".actions button")].find((x) => x.textContent === label);
+    if (!b) throw new Error(`no "${label}" on the card`);
+    b.click();
+    await tick();
+  }
+
+  it("with a terminated and a live instance both named `test`, every action hits the live card's id", async () => {
+    // The audit's account. The old card passed i.name, the Name lookup returned
+    // the terminated `test` first, and terminate "succeeded" on the dead one.
+    const provider = new MockProvider();
+    const calls = spyProvider(provider);
+    const client = new SpawnClient({ provider, startMs: T0, clock: 1 });
+    const dead = await client.launch({ name: "test", ttl: "4h" });
+    await client.terminate(dead.instanceId);
+    const live = await client.launch({ name: "test", ttl: "4h" });
+    calls.length = 0;
+
+    const dash = new Dashboard(client, async () => true);
+    document.body.appendChild(dash.el);
+    await client.refresh();
+    expect(dash.el.querySelectorAll(".inst")).toHaveLength(1);
+    const card = cardFor(dash, live.instanceId);
+
+    await press(card, "extend 1h");
+    await press(card, "stop");
+    await press(cardFor(dash, live.instanceId), "start");
+    await press(cardFor(dash, live.instanceId), "hibernate");
+    await press(cardFor(dash, live.instanceId), "start");
+    await press(cardFor(dash, live.instanceId), "terminate");
+
+    expect(calls.map(([m]) => m)).toEqual(["setTags", "stop", "start", "hibernate", "start", "terminate"]);
+    expect(calls.every(([, id]) => id === live.instanceId)).toBe(true);
+    expect((await client.get(dead.instanceId))!.state).toBe("terminated");
+    expect((await client.get(live.instanceId))!.state).toBe("terminated");
+  });
+
+  it("two LIVE instances sharing a Name each act on their own id", async () => {
+    const provider = new MockProvider();
+    const calls = spyProvider(provider);
+    const client = new SpawnClient({ provider, startMs: T0, clock: 1 });
+    const a = await client.launch({ name: "twin", ttl: "4h" });
+    const b = await client.launch({ name: "twin", ttl: "4h" });
+    const dash = new Dashboard(client, async () => true);
+    document.body.appendChild(dash.el);
+    await client.refresh();
+
+    await press(cardFor(dash, b.instanceId), "stop");
+    await press(cardFor(dash, a.instanceId), "terminate");
+    expect(calls).toEqual([
+      ["stop", b.instanceId],
+      ["terminate", a.instanceId],
+    ]);
+  });
+
+  it("a re-render between mousedown and mouseup keeps the same button, so the click lands", async () => {
+    const confirm = vi.fn(async () => false);
+    const { client, dash } = setup(confirm);
+    setField(dash, "name", "slow-press");
+    setField(dash, "ttl", "4h");
+    await submit(dash);
+    const id = client.list()[0].instanceId;
+    const card = cardFor(dash, id);
+    const btn = [...card.querySelectorAll<HTMLButtonElement>("button")].find((x) => x.textContent === "terminate")!;
+
+    btn.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    // What the monitor does several times a second, with the TTL meter moving.
+    await client.step(60_000);
+    await client.refresh();
+    btn.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+
+    expect(btn.isConnected).toBe(true);
+    expect(cardFor(dash, id)).toBe(card);
+    expect(card.querySelector(".actions button:last-child")).toBe(btn);
+    btn.click();
+    await tick();
+    expect(confirm).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a running action's buttons disabled across renders, then re-enables them", async () => {
+    const provider = new MockProvider();
+    const client = new SpawnClient({ provider, startMs: T0, clock: 1 });
+    const inst = await client.launch({ name: "busy", ttl: "4h" });
+    let release!: () => void;
+    const orig = provider.stop.bind(provider);
+    provider.stop = (id: string) => new Promise<void>((r) => (release = r)).then(() => orig(id));
+    const dash = new Dashboard(client, async () => true);
+    document.body.appendChild(dash.el);
+    await client.refresh();
+
+    await press(cardFor(dash, inst.instanceId), "stop");
+    await client.refresh();
+    await client.refresh();
+    const disabled = () =>
+      [...cardFor(dash, inst.instanceId).querySelectorAll<HTMLButtonElement>("button")].map((b) => b.disabled);
+    expect(disabled().every(Boolean)).toBe(true);
+
+    release();
+    await tick();
+    await tick();
+    expect(disabled().some(Boolean)).toBe(false);
+    expect([...cardFor(dash, inst.instanceId).querySelectorAll("button")].map((b) => b.textContent)).toContain("start");
+  });
+
+  it("hides signal complete on a real backend, and the client refuses it there", async () => {
+    const provider = new MockProvider() as MockProvider & { isReal: boolean };
+    Object.defineProperty(provider, "isReal", { value: true });
+    const client = new SpawnClient({ provider, startMs: T0, clock: 1 });
+    const inst = await client.launch({ name: "real", ttl: "4h", onComplete: "terminate" });
+    const dash = new Dashboard(client, async () => true);
+    document.body.appendChild(dash.el);
+    await client.refresh();
+    const labels = [...cardFor(dash, inst.instanceId).querySelectorAll("button")].map((b) => b.textContent);
+    expect(labels).not.toContain("signal complete");
+    await expect(client.signalComplete(inst.instanceId)).rejects.toThrow(/not a simulation/);
+    expect((await client.get(inst.instanceId))!.state).toBe("running");
+  });
+
+  it("the client refuses a Name where an id is required", async () => {
+    const { client } = setup();
+    await client.launch({ name: "named", ttl: "4h" });
+    for (const op of [
+      () => client.stop("named"),
+      () => client.start("named"),
+      () => client.hibernate("named"),
+      () => client.terminate("named"),
+      () => client.extend("named", "1h"),
+      () => client.signalComplete("named"),
+    ]) {
+      await expect(op()).rejects.toThrow(/needs an instance id/);
+    }
+    expect(client.list()[0].state).toBe("running");
   });
 });
 
@@ -535,9 +697,10 @@ describe("Dashboard orphan banner", () => {
     expect(banner.textContent).toContain("1 orphan");
 
     // Click reap → instance terminated → banner hides on the next render.
+    const id = client.list()[0].instanceId;
     banner.querySelector("button")!.click();
     await new Promise((r) => setTimeout(r, 0));
-    expect((await client.get("zombie"))!.state).toBe("terminated");
+    expect((await client.get(id))!.state).toBe("terminated");
     expect(dash.el.querySelector<HTMLElement>(".orphan-banner")!.hidden).toBe(true);
   });
 
