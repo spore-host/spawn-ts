@@ -25,7 +25,13 @@ export interface Provider {
   /** List all spawn-managed instances (spawn:managed=true), excluding terminated by default. */
   list(includeTerminated?: boolean): Promise<ManagedInstance[]>;
 
-  /** Fetch a single instance by name or instance-id. Returns null if not found. */
+  /**
+   * Fetch one spawn-managed instance. By instance id: the instance in whatever
+   * state it is in. By Name: resolved as Go's resolveInstance does
+   * (core/resolve.ts `resolveByName`): live instances only, and an ambiguous
+   * Name throws AmbiguousNameError rather than picking one. Returns null if not
+   * found. Callers that MUTATE pass an id (#128).
+   */
   get(nameOrId: string): Promise<ManagedInstance | null>;
 
   /** Terminate (permanent). */

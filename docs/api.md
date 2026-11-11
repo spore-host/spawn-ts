@@ -41,15 +41,26 @@ tests to fast-forward without wall time.
 await client.launch(input: LaunchInput): Promise<ManagedInstance>;
 await client.refresh(): Promise<ManagedInstance[]>;
 client.list(): ManagedInstance[];              // last refreshed snapshot
-await client.get(nameOrId): Promise<ManagedInstance | null>;
-await client.terminate(nameOrId, reason?);
-await client.stop(nameOrId, reason?);
-await client.start(nameOrId);
-await client.hibernate(nameOrId);
-await client.extend(nameOrId, by): Promise<number>;   // returns new deadline (ms)
+await client.get(nameOrId): Promise<ManagedInstance | null>;   // read-only
+await client.terminate(instanceId, reason?);
+await client.stop(instanceId, reason?);
+await client.start(instanceId);
+await client.hibernate(instanceId);
+await client.extend(instanceId, by): Promise<number>; // returns new deadline (ms)
                                                       // floored at now+by; nudges spored
-await client.signalComplete(nameOrId);          // fire the completion action
+await client.signalComplete(instanceId);        // mock only: fire the completion action
 ```
+
+**Every method that changes an instance takes its instance id** and rejects a
+Name (#128). A Name is a label, not an identity: a relaunch, a reused CLI name
+or another user's instance can share it, and acting on "the first instance
+called `test`" terminated a dead `test` while the live one kept billing.
+`get(nameOrId)` still reads by Name, resolved as Go's `resolveInstance` does:
+live instances only, case-insensitive, a single running match wins a tie, and a
+Name that is still ambiguous throws `AmbiguousNameError` with the candidate ids.
+
+`signalComplete` throws on anything but a simulated provider: on EC2, spored
+runs the on-complete action when the completion file appears.
 
 `LaunchInput` accepts `name`, `instanceType`, `region`, `ami`, `keyPair`,
 `spot`, `ttl`, `idleTimeout`, `hibernateOnIdle`, `idleCpuPercent`, `costLimit`,

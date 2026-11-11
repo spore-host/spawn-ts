@@ -9,6 +9,7 @@
 
 import type { Provider } from "./provider.js";
 import type { LaunchSpec, LifecycleAction, ManagedInstance } from "./types.js";
+import { resolveByName } from "./resolve.js";
 import { buildLaunchTags, decodeConfigTags, decodeSweepTags, decodeJobArrayTags, decodeMpiTags, decodeHookTags, isManaged, tag } from "./tags.js";
 
 let idCounter = 0;
@@ -75,10 +76,13 @@ export class MockProvider implements Provider {
       .map((i) => structuredClone(i));
   }
 
+  /** By id in any state, or by Name with EC2Provider's (Go's) rules; see core/resolve.ts. */
   async get(nameOrId: string): Promise<ManagedInstance | null> {
-    const found =
-      this.instances.get(nameOrId) ??
-      [...this.instances.values()].find((i) => i.name === nameOrId);
+    if (nameOrId.startsWith("i-")) {
+      const found = this.instances.get(nameOrId);
+      return found && isManaged(found.tags) ? structuredClone(found) : null;
+    }
+    const found = resolveByName([...this.instances.values()].filter((i) => isManaged(i.tags)), nameOrId);
     return found ? structuredClone(found) : null;
   }
 

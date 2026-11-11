@@ -463,7 +463,7 @@ describe("CLI orphans", () => {
     // client clock is T0+2h (past deadline + grace), sharing the provider.
     const provider = new MockProvider();
     const launcher = new SpawnClient({ provider, startMs: T0, clock: 1 });
-    await launcher.launch({ name: "zombie", ttl: "1h" });
+    const { instanceId: zombieId } = await launcher.launch({ name: "zombie", ttl: "1h" });
 
     const client = new SpawnClient({ provider, startMs: T0 + 2 * 3600_000, clock: 1 });
     const ctx: ShellCtx = { provider, now: () => client.now(), confirm: async () => true, client };
@@ -476,7 +476,7 @@ describe("CLI orphans", () => {
 
     const reaped = await runCommand("orphans --reap -y", ctx);
     expect(reaped.lines.join("\n")).toContain("reaped 1 orphan");
-    expect((await client.get("zombie"))!.state).toBe("terminated");
+    expect((await client.get(zombieId))!.state).toBe("terminated");
   });
 
   it("reports none when all instances are within TTL", async () => {

@@ -31,6 +31,7 @@ import { checkNestedSpawnTtl, checkSpotStoppable } from "../core/bounds.js";
 import { LAUNCH_CONFIG_TAG, encodeLaunchConfig, splitLaunchConfigTags } from "../core/launchconfig.js";
 import { buildLinuxBootstrap, checkUserDataSize, encodeLinuxUserData } from "./userdata.js";
 import { lookupElasticIp } from "./eip.js";
+import { resolveByName } from "../core/resolve.js";
 import type { ElasticIpLookup } from "../core/notices.js";
 
 export interface EC2ProviderOptions {
@@ -306,18 +307,31 @@ export class EC2Provider implements Provider {
     return out;
   }
 
+  /**
+   * One spawn-managed instance by id, or by Name as Go's resolveInstance picks
+   * one (core/resolve.ts): live instances only, a single running match wins,
+   * and an ambiguous Name throws AmbiguousNameError. The old Name lookup
+   * returned the first DescribeInstances match, terminated or not (#128).
+   *
+   * An id lookup returns the instance in any state, terminated included, so a
+   * caller acting on it sees the state it is really in. An instance that is not
+   * spawn-managed is not found, as in Go ("must be spawn-managed").
+   */
   async get(nameOrId: string): Promise<ManagedInstance | null> {
-    const isId = nameOrId.startsWith("i-");
-    const res = await this.client.send(
-      new DescribeInstancesCommand(
-        isId
-          ? { InstanceIds: [nameOrId] }
-          : { Filters: [{ Name: "tag:Name", Values: [nameOrId] }] },
-      ),
-    );
+    if (!nameOrId.startsWith("i-")) return resolveByName(await this.list(), nameOrId);
+    let res;
+    try {
+      res = await this.client.send(new DescribeInstancesCommand({ InstanceIds: [nameOrId] }));
+    } catch (err) {
+      // EC2's answer for an id it doesn't know is an error, not an empty set.
+      if ((err as { name?: string }).name === "InvalidInstanceID.NotFound") return null;
+      throw err;
+    }
     for (const r of res.Reservations ?? []) {
       for (const inst of r.Instances ?? []) {
-        return this.toManaged(inst, this.opts.region);
+        if (inst.InstanceId !== nameOrId) continue;
+        const m = this.toManaged(inst, this.opts.region);
+        return isManaged(m.tags) ? m : null;
       }
     }
     return null;
