@@ -26,7 +26,7 @@ import type {
 } from "./types.js";
 import { evaluate, computeExtension, ttlDeadline } from "./lifecycle.js";
 import { findOrphans, type Orphan } from "./orphans.js";
-import { evaluateBounds } from "./bounds.js";
+import { evaluateBounds, stopBlocker } from "./bounds.js";
 import { parseDuration, parseLifetimeDuration, formatDuration } from "./duration.js";
 import { tag } from "./tags.js";
 import { requireInstanceId } from "./resolve.js";
@@ -142,6 +142,23 @@ export interface LaunchInput {
    * sees a failure and nobody is watching an instance that bills.
    */
   keepOnError?: boolean;
+  /**
+   * The launch intent's RunInstances idempotency token (#129, spore-host#673).
+   * Mint one per thing the user means to launch (`newLaunchToken()`) and pass
+   * the same one on every attempt at it, a double-click or a retry after a lost
+   * response included: EC2 then returns the instance the first attempt created
+   * rather than launching another, and concurrent `launch()` calls with one
+   * token share a single request. Mint a new one when the user changes what
+   * they're launching, or EC2 answers IdempotentParameterMismatch. Absent: a
+   * fresh token per call, which covers only the SDK's own retries (Go's
+   * behaviour for a CLI invocation).
+   */
+  clientToken?: string;
+}
+
+/** A new launch-intent token for `LaunchInput.clientToken`. */
+export function newLaunchToken(): string {
+  return `spawn-ts-${globalThis.crypto.randomUUID()}`;
 }
 
 export class SpawnClient {
@@ -152,6 +169,8 @@ export class SpawnClient {
   private timer: ReturnType<typeof setInterval> | null = null;
   private warned = new Set<string>();
   private lastInstances: ManagedInstance[] = [];
+  /** In-flight launches by clientToken, so one intent makes one request. */
+  private launching = new Map<string, Promise<ManagedInstance>>();
   private listStatus: ListState = { status: "loading", instances: [] };
   /** Active fan-outs (sweeps/queues/job arrays) pumped on each monitor tick. */
   private fanOuts = new Map<
@@ -522,10 +541,22 @@ export class SpawnClient {
    * (`InsufficientInstanceCapacity`, `UnauthorizedOperation`, …) when AWS gave
    * one. The message is unchanged from what it was before typing (#125).
    */
+  launch(input: LaunchInput): Promise<ManagedInstance> {
+    const token = input.clientToken;
+    if (!token) return this.launchOnce(input);
+    const pending = this.launching.get(token);
+    if (pending) return pending;
+    const p = this.launchOnce(input);
+    this.launching.set(token, p);
+    const done = () => void this.launching.delete(token);
+    p.then(done, done);
+    return p;
+  }
+
   // Typed at each throw rather than by wrapping the whole method: a wrapper
   // promise adds a microtask per launch, and fan-out pumps (sweeps, queues,
   // arrays) are sensitive to that ordering.
-  async launch(input: LaunchInput): Promise<ManagedInstance> {
+  private async launchOnce(input: LaunchInput): Promise<ManagedInstance> {
     const refused = (message: string) =>
       new SpawnError({ operation: "launch", message, code: "LaunchRefused", aws: false });
     let spec: LaunchSpec;
@@ -637,6 +668,7 @@ export class SpawnClient {
   async stop(instanceId: string, reason = "user request"): Promise<void> {
     await this.act("stop", instanceId, async () => {
       const i = await this.resolveId("stop", instanceId);
+      this.checkStoppable(i, "stop");
       await this.provider.stop(i.instanceId, reason);
     });
     await this.refreshAfter();
@@ -651,6 +683,7 @@ export class SpawnClient {
   async hibernate(instanceId: string): Promise<void> {
     await this.act("hibernate", instanceId, async () => {
       const i = await this.resolveId("hibernate", instanceId);
+      this.checkStoppable(i, "hibernate");
       await this.provider.hibernate(i.instanceId);
     });
     await this.refreshAfter();
@@ -762,6 +795,18 @@ export class SpawnClient {
     }
   }
 
+  /**
+   * Refuse a stop or hibernate EC2 would reject, before calling it (#129): not
+   * running, a one-time Spot instance, or hibernate without hibernation
+   * configured. Go refuses the first two the same way (cmd/state.go).
+   */
+  private checkStoppable(i: ManagedInstance, action: "stop" | "hibernate"): void {
+    const why = stopBlocker(i, action);
+    if (why) {
+      throw new SpawnError({ operation: action, instanceId: i.instanceId, code: why.code, aws: false, message: why.message });
+    }
+  }
+
   /** The instance `instanceId` names; refuses a Name or anything else that isn't an id. */
   private async resolveId(op: string, instanceId: string): Promise<ManagedInstance> {
     requireInstanceId(op, instanceId);
@@ -815,6 +860,7 @@ export class SpawnClient {
       hooks: input.hooks,
       plugins: input.plugins,
       keepOnError: input.keepOnError,
+      clientToken: input.clientToken,
     };
   }
 }

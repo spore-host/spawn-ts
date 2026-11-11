@@ -10,6 +10,12 @@
 #                                                 pkg/launchconfig SettingKeys()
 #   src/core/testdata/post-launch-tags.go.json    pkg/aws postLaunchInstanceTags,
 #                                                 the #1355 tag reserve's list
+#   src/aws/testdata/launch-parity.go.json        pkg/aws AMI choice per type
+#                                                 (DetectArchitecture, DetectGPUInstance,
+#                                                 amiParameters), hibernation root
+#                                                 sizing and HibernationRequested,
+#                                                 spotrequest NeedsStoppable/IsOneTime,
+#                                                 the default root device (#129)
 #
 # Usage: scripts/gen-go-fixtures.sh 0.150.0
 #        SPAWN_SRC=/path/to/spawn scripts/gen-go-fixtures.sh 0.150.0
@@ -89,6 +95,51 @@ func SpawnTSPostLaunchTags() []SpawnTSPostLaunchTag {
 	}
 	return out
 }
+
+// #129: what Go's launch picks for an instance type, and the hibernation and
+// Spot rules around it. amiParameters, hibernationRootGiB and
+// defaultRootDeviceName are unexported.
+type SpawnTSTypeVector struct {
+	InstanceType string `json:"instanceType"`
+	StaticArch   string `json:"staticArch"`
+	GPU          bool   `json:"gpu"`
+	AMIParameter string `json:"amiParameter"`
+}
+
+func SpawnTSTypeVectors(types []string) []SpawnTSTypeVector {
+	var out []SpawnTSTypeVector
+	for _, t := range types {
+		arch, gpu := DetectArchitecture(t), DetectGPUInstance(t)
+		key := AMI_AL2023_X86
+		switch {
+		case gpu && arch == "arm64":
+			key = AMI_AL2023_GPU_ARM
+		case gpu:
+			key = AMI_AL2023_GPU_X86
+		case arch == "arm64":
+			key = AMI_AL2023_ARM
+		}
+		out = append(out, SpawnTSTypeVector{InstanceType: t, StaticArch: arch, GPU: gpu, AMIParameter: amiParameters[key]})
+	}
+	return out
+}
+
+type SpawnTSRootVector struct {
+	MemoryMiB int64 `json:"memoryMiB"`
+	RootGiB   int32 `json:"rootGiB"`
+	OK        bool  `json:"ok"`
+}
+
+func SpawnTSRootVectors(mibs []int64) []SpawnTSRootVector {
+	var out []SpawnTSRootVector
+	for _, m := range mibs {
+		g, ok := hibernationRootGiB(m)
+		out = append(out, SpawnTSRootVector{MemoryMiB: m, RootGiB: g, OK: ok})
+	}
+	return out
+}
+
+func SpawnTSDefaultRootDevice() string { return defaultRootDeviceName }
 EOF
 
 mkdir -p internal/spawntsfixtures
@@ -106,6 +157,7 @@ import (
 	"github.com/spore-host/spawn/pkg/launchconfig"
 	"github.com/spore-host/spawn/pkg/launcher"
 	"github.com/spore-host/spawn/pkg/plugin"
+	"github.com/spore-host/spawn/pkg/spotrequest"
 )
 
 type fixture struct {
@@ -204,6 +256,75 @@ func main() {
 	if err := os.WriteFile(os.Args[5], append(b, '\n'), 0o644); err != nil {
 		panic(err)
 	}
+
+	// #129. Every family in Go's static arm64 and NVIDIA GPU lists, the Neuron
+	// families, AMD/Intel GPUs, and common x86 types.
+	types := []string{
+		"t4g.nano", "m6g.large", "m6gd.large", "m7g.large", "m7gd.large", "m8g.large", "m8gd.large", "m9g.large",
+		"c6g.large", "c6gd.large", "c6gn.large", "c7g.large", "c7gd.large", "c7gn.large", "c8g.large", "c8gd.large",
+		"c8gn.large", "c9g.large", "r6g.large", "r6gd.large", "r7g.large", "r7gd.large", "r8g.large", "r8gd.large",
+		"r9g.large", "x2gd.large", "i8g.large", "im8g.large", "is8g.large", "hpc7g.4xlarge",
+		"p6-b200.48xlarge", "p5e.48xlarge", "p5.48xlarge", "p4de.24xlarge", "p4d.24xlarge", "p3.2xlarge", "p2.xlarge",
+		"g7e.xlarge", "g7.xlarge", "g6e.xlarge", "g6.xlarge", "g5.xlarge", "g5g.xlarge", "g4dn.xlarge", "g3.4xlarge",
+		"trn1.2xlarge", "trn1n.32xlarge", "trn2.48xlarge", "inf1.xlarge", "inf2.xlarge",
+		"g4ad.xlarge", "gr6.4xlarge", "dl1.24xlarge",
+		"c6a.xlarge", "m7i.large", "m7i-flex.large", "r7i.large", "t3.micro", "c5n.18xlarge", "hpc6a.48xlarge", "p5en.48xlarge",
+	}
+	tags := func(kv ...string) map[string]string {
+		m := map[string]string{}
+		for i := 0; i+1 < len(kv); i += 2 {
+			m[kv[i]] = kv[i+1]
+		}
+		return m
+	}
+	type hibRow struct {
+		HibernateOnIdle bool   `json:"hibernateOnIdle"`
+		OnComplete      string `json:"onComplete"`
+		Requested       bool   `json:"requested"`
+	}
+	var hib []hibRow
+	for _, h := range []bool{false, true} {
+		for _, oc := range []string{"", "terminate", "stop", "hibernate", "exit"} {
+			hib = append(hib, hibRow{h, oc, aws.LaunchConfig{HibernateOnIdle: h, OnComplete: oc}.HibernationRequested()})
+		}
+	}
+	type stopRow struct {
+		IdleTimeout string `json:"idleTimeout"`
+		OnComplete  string `json:"onComplete"`
+		Hibernate   bool   `json:"hibernate"`
+		Needs       bool   `json:"needsStoppable"`
+	}
+	var stoppable []stopRow
+	for _, it := range []string{"", "0", "30m"} {
+		for _, oc := range []string{"", "terminate", "stop", "hibernate"} {
+			for _, h := range []bool{false, true} {
+				stoppable = append(stoppable, stopRow{it, oc, h, spotrequest.NeedsStoppable(it, oc, h, false)})
+			}
+		}
+	}
+	type oneTimeRow struct {
+		Tags    map[string]string `json:"tags"`
+		OneTime bool              `json:"oneTime"`
+	}
+	var oneTime []oneTimeRow
+	for _, t := range []map[string]string{
+		{}, tags(spotrequest.TypeTag, "one-time"), tags(spotrequest.TypeTag, spotrequest.TypePersistent), tags(spotrequest.TypeTag, "other"),
+	} {
+		oneTime = append(oneTime, oneTimeRow{t, spotrequest.IsOneTime(t)})
+	}
+	parity := map[string]any{
+		"types":                 aws.SpawnTSTypeVectors(types),
+		"hibernationRootGiB":    aws.SpawnTSRootVectors([]int64{0, -1, 512, 1024, 1025, 8192, 16384, 65536, 786432}),
+		"hibernationRequested":  hib,
+		"needsStoppable":        stoppable,
+		"isOneTime":             oneTime,
+		"spotRequestTypeTag":    spotrequest.TypeTag,
+		"defaultRootDeviceName": aws.SpawnTSDefaultRootDevice(),
+	}
+	b, _ = json.MarshalIndent(parity, "", "  ")
+	if err := os.WriteFile(os.Args[6], append(b, '\n'), 0o644); err != nil {
+		panic(err)
+	}
 }
 EOF
 
@@ -212,7 +333,8 @@ go run ./internal/spawntsfixtures \
   "$ROOT/src/aws/testdata/stub-fixtures.v${V}.json" \
   "$ROOT/src/core/testdata/gojson-vectors.go.json" \
   "$ROOT/src/core/testdata/launchconfig-setting-keys.go.json" \
-  "$ROOT/src/core/testdata/post-launch-tags.go.json"
+  "$ROOT/src/core/testdata/post-launch-tags.go.json" \
+  "$ROOT/src/aws/testdata/launch-parity.go.json"
 
 # The published module's own CLI must print the same body.
 if [ "$(go run . bootstrap-body | shasum -a 256 | cut -d ' ' -f 1)" != \

@@ -8,7 +8,7 @@
 //   spawn.start();
 //   await spawn.launch({ name: "job", ttl: "4h", onComplete: "terminate" });
 
-export { SpawnClient } from "./core/client.js";
+export { SpawnClient, newLaunchToken } from "./core/client.js";
 export type {
   SpawnEvent,
   EventHandler,
@@ -16,12 +16,19 @@ export type {
   LaunchInput,
   ListState,
 } from "./core/client.js";
-export { SpawnError, toSpawnError, awsErrorCode, describeSpawnError } from "./core/errors.js";
+export { SpawnError, toSpawnError, awsErrorCode, describeSpawnError, isAmbiguousLaunchError } from "./core/errors.js";
 export type { SpawnOperation, SpawnErrorCode } from "./core/errors.js";
 
 export { MockProvider } from "./core/mock.js";
 export { isInstanceId, resolveByName, AmbiguousNameError } from "./core/resolve.js";
-export { EC2Provider } from "./aws/ec2.js";
+export {
+  EC2Provider,
+  archForInstanceType,
+  isNvidiaGpuInstance,
+  NVIDIA_GPU_FAMILIES,
+  GPU_AMI_PARAMETERS,
+  hibernationRootGiB,
+} from "./aws/ec2.js";
 export type { EC2ProviderOptions } from "./aws/ec2.js";
 
 export type { Provider } from "./core/provider.js";
@@ -70,8 +77,8 @@ export type { EipLookupOptions } from "./aws/eip.js";
 
 export { findOrphans, ORPHAN_GRACE_MS } from "./core/orphans.js";
 export type { Orphan } from "./core/orphans.js";
-export { evaluateBounds, ENFORCEMENT } from "./core/bounds.js";
-export type { Bound, Enforcement, BoundsVerdict } from "./core/bounds.js";
+export { evaluateBounds, ENFORCEMENT, stopBlocker, isOneTimeSpot, hibernationRequested } from "./core/bounds.js";
+export type { Bound, Enforcement, BoundsVerdict, StopBlock } from "./core/bounds.js";
 export {
   buildLaunchTags,
   buildSweepTags,

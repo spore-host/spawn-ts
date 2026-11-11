@@ -406,11 +406,12 @@ describe("EC2Provider.launch after RunInstances fails (#1298)", () => {
 });
 
 describe("archForInstanceType", () => {
-  it("maps Graviton + accelerator families to arm64, else x86_64", () => {
-    for (const t of ["t4g.nano", "m7g.large", "c7gn.xlarge", "r8g.2xlarge", "hpc7g.4xlarge", "trn1.2xlarge", "inf2.xlarge"]) {
+  // The Go parity vectors for it are in launch-parity.test.ts (#129).
+  it("maps Graviton families to arm64, and Trainium/Inferentia and the rest to x86_64", () => {
+    for (const t of ["t4g.nano", "m7g.large", "c7gn.xlarge", "r8g.2xlarge", "hpc7g.4xlarge", "g5g.xlarge"]) {
       expect(archForInstanceType(t), t).toBe("arm64");
     }
-    for (const t of ["c6a.xlarge", "m7i.large", "p5.48xlarge", "t3.micro", "r7i.large"]) {
+    for (const t of ["c6a.xlarge", "m7i.large", "p5.48xlarge", "t3.micro", "r7i.large", "trn1.2xlarge", "inf2.xlarge"]) {
       expect(archForInstanceType(t), t).toBe("x86_64");
     }
   });

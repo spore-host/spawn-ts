@@ -1,0 +1,641 @@
+{
+  "defaultRootDeviceName": "/dev/xvda",
+  "hibernationRequested": [
+    {
+      "hibernateOnIdle": false,
+      "onComplete": "",
+      "requested": false
+    },
+    {
+      "hibernateOnIdle": false,
+      "onComplete": "terminate",
+      "requested": false
+    },
+    {
+      "hibernateOnIdle": false,
+      "onComplete": "stop",
+      "requested": false
+    },
+    {
+      "hibernateOnIdle": false,
+      "onComplete": "hibernate",
+      "requested": true
+    },
+    {
+      "hibernateOnIdle": false,
+      "onComplete": "exit",
+      "requested": false
+    },
+    {
+      "hibernateOnIdle": true,
+      "onComplete": "",
+      "requested": true
+    },
+    {
+      "hibernateOnIdle": true,
+      "onComplete": "terminate",
+      "requested": true
+    },
+    {
+      "hibernateOnIdle": true,
+      "onComplete": "stop",
+      "requested": true
+    },
+    {
+      "hibernateOnIdle": true,
+      "onComplete": "hibernate",
+      "requested": true
+    },
+    {
+      "hibernateOnIdle": true,
+      "onComplete": "exit",
+      "requested": true
+    }
+  ],
+  "hibernationRootGiB": [
+    {
+      "memoryMiB": 0,
+      "rootGiB": 0,
+      "ok": false
+    },
+    {
+      "memoryMiB": -1,
+      "rootGiB": 0,
+      "ok": false
+    },
+    {
+      "memoryMiB": 512,
+      "rootGiB": 11,
+      "ok": true
+    },
+    {
+      "memoryMiB": 1024,
+      "rootGiB": 11,
+      "ok": true
+    },
+    {
+      "memoryMiB": 1025,
+      "rootGiB": 12,
+      "ok": true
+    },
+    {
+      "memoryMiB": 8192,
+      "rootGiB": 18,
+      "ok": true
+    },
+    {
+      "memoryMiB": 16384,
+      "rootGiB": 26,
+      "ok": true
+    },
+    {
+      "memoryMiB": 65536,
+      "rootGiB": 74,
+      "ok": true
+    },
+    {
+      "memoryMiB": 786432,
+      "rootGiB": 778,
+      "ok": true
+    }
+  ],
+  "isOneTime": [
+    {
+      "tags": {},
+      "oneTime": true
+    },
+    {
+      "tags": {
+        "spawn:spot-request-type": "one-time"
+      },
+      "oneTime": true
+    },
+    {
+      "tags": {
+        "spawn:spot-request-type": "persistent"
+      },
+      "oneTime": false
+    },
+    {
+      "tags": {
+        "spawn:spot-request-type": "other"
+      },
+      "oneTime": true
+    }
+  ],
+  "needsStoppable": [
+    {
+      "idleTimeout": "",
+      "onComplete": "",
+      "hibernate": false,
+      "needsStoppable": false
+    },
+    {
+      "idleTimeout": "",
+      "onComplete": "",
+      "hibernate": true,
+      "needsStoppable": true
+    },
+    {
+      "idleTimeout": "",
+      "onComplete": "terminate",
+      "hibernate": false,
+      "needsStoppable": false
+    },
+    {
+      "idleTimeout": "",
+      "onComplete": "terminate",
+      "hibernate": true,
+      "needsStoppable": true
+    },
+    {
+      "idleTimeout": "",
+      "onComplete": "stop",
+      "hibernate": false,
+      "needsStoppable": true
+    },
+    {
+      "idleTimeout": "",
+      "onComplete": "stop",
+      "hibernate": true,
+      "needsStoppable": true
+    },
+    {
+      "idleTimeout": "",
+      "onComplete": "hibernate",
+      "hibernate": false,
+      "needsStoppable": true
+    },
+    {
+      "idleTimeout": "",
+      "onComplete": "hibernate",
+      "hibernate": true,
+      "needsStoppable": true
+    },
+    {
+      "idleTimeout": "0",
+      "onComplete": "",
+      "hibernate": false,
+      "needsStoppable": false
+    },
+    {
+      "idleTimeout": "0",
+      "onComplete": "",
+      "hibernate": true,
+      "needsStoppable": true
+    },
+    {
+      "idleTimeout": "0",
+      "onComplete": "terminate",
+      "hibernate": false,
+      "needsStoppable": false
+    },
+    {
+      "idleTimeout": "0",
+      "onComplete": "terminate",
+      "hibernate": true,
+      "needsStoppable": true
+    },
+    {
+      "idleTimeout": "0",
+      "onComplete": "stop",
+      "hibernate": false,
+      "needsStoppable": true
+    },
+    {
+      "idleTimeout": "0",
+      "onComplete": "stop",
+      "hibernate": true,
+      "needsStoppable": true
+    },
+    {
+      "idleTimeout": "0",
+      "onComplete": "hibernate",
+      "hibernate": false,
+      "needsStoppable": true
+    },
+    {
+      "idleTimeout": "0",
+      "onComplete": "hibernate",
+      "hibernate": true,
+      "needsStoppable": true
+    },
+    {
+      "idleTimeout": "30m",
+      "onComplete": "",
+      "hibernate": false,
+      "needsStoppable": true
+    },
+    {
+      "idleTimeout": "30m",
+      "onComplete": "",
+      "hibernate": true,
+      "needsStoppable": true
+    },
+    {
+      "idleTimeout": "30m",
+      "onComplete": "terminate",
+      "hibernate": false,
+      "needsStoppable": true
+    },
+    {
+      "idleTimeout": "30m",
+      "onComplete": "terminate",
+      "hibernate": true,
+      "needsStoppable": true
+    },
+    {
+      "idleTimeout": "30m",
+      "onComplete": "stop",
+      "hibernate": false,
+      "needsStoppable": true
+    },
+    {
+      "idleTimeout": "30m",
+      "onComplete": "stop",
+      "hibernate": true,
+      "needsStoppable": true
+    },
+    {
+      "idleTimeout": "30m",
+      "onComplete": "hibernate",
+      "hibernate": false,
+      "needsStoppable": true
+    },
+    {
+      "idleTimeout": "30m",
+      "onComplete": "hibernate",
+      "hibernate": true,
+      "needsStoppable": true
+    }
+  ],
+  "spotRequestTypeTag": "spawn:spot-request-type",
+  "types": [
+    {
+      "instanceType": "t4g.nano",
+      "staticArch": "arm64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+    },
+    {
+      "instanceType": "m6g.large",
+      "staticArch": "arm64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+    },
+    {
+      "instanceType": "m6gd.large",
+      "staticArch": "arm64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+    },
+    {
+      "instanceType": "m7g.large",
+      "staticArch": "arm64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+    },
+    {
+      "instanceType": "m7gd.large",
+      "staticArch": "arm64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+    },
+    {
+      "instanceType": "m8g.large",
+      "staticArch": "arm64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+    },
+    {
+      "instanceType": "m8gd.large",
+      "staticArch": "arm64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+    },
+    {
+      "instanceType": "m9g.large",
+      "staticArch": "arm64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+    },
+    {
+      "instanceType": "c6g.large",
+      "staticArch": "arm64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+    },
+    {
+      "instanceType": "c6gd.large",
+      "staticArch": "arm64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+    },
+    {
+      "instanceType": "c6gn.large",
+      "staticArch": "arm64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+    },
+    {
+      "instanceType": "c7g.large",
+      "staticArch": "arm64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+    },
+    {
+      "instanceType": "c7gd.large",
+      "staticArch": "arm64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+    },
+    {
+      "instanceType": "c7gn.large",
+      "staticArch": "arm64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+    },
+    {
+      "instanceType": "c8g.large",
+      "staticArch": "arm64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+    },
+    {
+      "instanceType": "c8gd.large",
+      "staticArch": "arm64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+    },
+    {
+      "instanceType": "c8gn.large",
+      "staticArch": "arm64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+    },
+    {
+      "instanceType": "c9g.large",
+      "staticArch": "arm64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+    },
+    {
+      "instanceType": "r6g.large",
+      "staticArch": "arm64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+    },
+    {
+      "instanceType": "r6gd.large",
+      "staticArch": "arm64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+    },
+    {
+      "instanceType": "r7g.large",
+      "staticArch": "arm64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+    },
+    {
+      "instanceType": "r7gd.large",
+      "staticArch": "arm64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+    },
+    {
+      "instanceType": "r8g.large",
+      "staticArch": "arm64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+    },
+    {
+      "instanceType": "r8gd.large",
+      "staticArch": "arm64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+    },
+    {
+      "instanceType": "r9g.large",
+      "staticArch": "arm64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+    },
+    {
+      "instanceType": "x2gd.large",
+      "staticArch": "arm64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+    },
+    {
+      "instanceType": "i8g.large",
+      "staticArch": "arm64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+    },
+    {
+      "instanceType": "im8g.large",
+      "staticArch": "arm64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+    },
+    {
+      "instanceType": "is8g.large",
+      "staticArch": "arm64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+    },
+    {
+      "instanceType": "hpc7g.4xlarge",
+      "staticArch": "arm64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+    },
+    {
+      "instanceType": "p6-b200.48xlarge",
+      "staticArch": "x86_64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
+    },
+    {
+      "instanceType": "p5e.48xlarge",
+      "staticArch": "x86_64",
+      "gpu": true,
+      "amiParameter": "/aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-amazon-linux-2023/latest/ami-id"
+    },
+    {
+      "instanceType": "p5.48xlarge",
+      "staticArch": "x86_64",
+      "gpu": true,
+      "amiParameter": "/aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-amazon-linux-2023/latest/ami-id"
+    },
+    {
+      "instanceType": "p4de.24xlarge",
+      "staticArch": "x86_64",
+      "gpu": true,
+      "amiParameter": "/aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-amazon-linux-2023/latest/ami-id"
+    },
+    {
+      "instanceType": "p4d.24xlarge",
+      "staticArch": "x86_64",
+      "gpu": true,
+      "amiParameter": "/aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-amazon-linux-2023/latest/ami-id"
+    },
+    {
+      "instanceType": "p3.2xlarge",
+      "staticArch": "x86_64",
+      "gpu": true,
+      "amiParameter": "/aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-amazon-linux-2023/latest/ami-id"
+    },
+    {
+      "instanceType": "p2.xlarge",
+      "staticArch": "x86_64",
+      "gpu": true,
+      "amiParameter": "/aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-amazon-linux-2023/latest/ami-id"
+    },
+    {
+      "instanceType": "g7e.xlarge",
+      "staticArch": "x86_64",
+      "gpu": true,
+      "amiParameter": "/aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-amazon-linux-2023/latest/ami-id"
+    },
+    {
+      "instanceType": "g7.xlarge",
+      "staticArch": "x86_64",
+      "gpu": true,
+      "amiParameter": "/aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-amazon-linux-2023/latest/ami-id"
+    },
+    {
+      "instanceType": "g6e.xlarge",
+      "staticArch": "x86_64",
+      "gpu": true,
+      "amiParameter": "/aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-amazon-linux-2023/latest/ami-id"
+    },
+    {
+      "instanceType": "g6.xlarge",
+      "staticArch": "x86_64",
+      "gpu": true,
+      "amiParameter": "/aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-amazon-linux-2023/latest/ami-id"
+    },
+    {
+      "instanceType": "g5.xlarge",
+      "staticArch": "x86_64",
+      "gpu": true,
+      "amiParameter": "/aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-amazon-linux-2023/latest/ami-id"
+    },
+    {
+      "instanceType": "g5g.xlarge",
+      "staticArch": "arm64",
+      "gpu": true,
+      "amiParameter": "/aws/service/deeplearning/ami/arm64/base-oss-nvidia-driver-gpu-amazon-linux-2023/latest/ami-id"
+    },
+    {
+      "instanceType": "g4dn.xlarge",
+      "staticArch": "x86_64",
+      "gpu": true,
+      "amiParameter": "/aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-amazon-linux-2023/latest/ami-id"
+    },
+    {
+      "instanceType": "g3.4xlarge",
+      "staticArch": "x86_64",
+      "gpu": true,
+      "amiParameter": "/aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-amazon-linux-2023/latest/ami-id"
+    },
+    {
+      "instanceType": "trn1.2xlarge",
+      "staticArch": "x86_64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
+    },
+    {
+      "instanceType": "trn1n.32xlarge",
+      "staticArch": "x86_64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
+    },
+    {
+      "instanceType": "trn2.48xlarge",
+      "staticArch": "x86_64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
+    },
+    {
+      "instanceType": "inf1.xlarge",
+      "staticArch": "x86_64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
+    },
+    {
+      "instanceType": "inf2.xlarge",
+      "staticArch": "x86_64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
+    },
+    {
+      "instanceType": "g4ad.xlarge",
+      "staticArch": "x86_64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
+    },
+    {
+      "instanceType": "gr6.4xlarge",
+      "staticArch": "x86_64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
+    },
+    {
+      "instanceType": "dl1.24xlarge",
+      "staticArch": "x86_64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
+    },
+    {
+      "instanceType": "c6a.xlarge",
+      "staticArch": "x86_64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
+    },
+    {
+      "instanceType": "m7i.large",
+      "staticArch": "x86_64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
+    },
+    {
+      "instanceType": "m7i-flex.large",
+      "staticArch": "x86_64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
+    },
+    {
+      "instanceType": "r7i.large",
+      "staticArch": "x86_64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
+    },
+    {
+      "instanceType": "t3.micro",
+      "staticArch": "x86_64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
+    },
+    {
+      "instanceType": "c5n.18xlarge",
+      "staticArch": "x86_64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
+    },
+    {
+      "instanceType": "hpc6a.48xlarge",
+      "staticArch": "x86_64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
+    },
+    {
+      "instanceType": "p5en.48xlarge",
+      "staticArch": "x86_64",
+      "gpu": false,
+      "amiParameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
+    }
+  ]
+}

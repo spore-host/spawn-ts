@@ -10,6 +10,7 @@
 import type { Provider } from "./provider.js";
 import type { LaunchSpec, LifecycleAction, ManagedInstance } from "./types.js";
 import { resolveByName } from "./resolve.js";
+import { hibernationRequested } from "./bounds.js";
 import { buildLaunchTags, decodeConfigTags, decodeSweepTags, decodeJobArrayTags, decodeMpiTags, decodeHookTags, isManaged, tag } from "./tags.js";
 
 let idCounter = 0;
@@ -32,6 +33,8 @@ export class MockProvider implements Provider {
   readonly isReal = false;
 
   private instances = new Map<string, ManagedInstance>();
+  /** ClientToken → the instance its first launch made, as EC2's idempotency does. */
+  private byToken = new Map<string, string>();
 
   private buildFromTags(
     instanceId: string,
@@ -61,9 +64,12 @@ export class MockProvider implements Provider {
   }
 
   async launch(spec: LaunchSpec, launchTimeMs: number): Promise<ManagedInstance> {
+    const prior = spec.clientToken ? this.byToken.get(spec.clientToken) : undefined;
+    if (prior) return structuredClone(this.instances.get(prior)!);
     const instanceId = newInstanceId();
+    if (spec.clientToken) this.byToken.set(spec.clientToken, instanceId);
     const tags = buildLaunchTags(spec, launchTimeMs);
-    const inst = this.buildFromTags(instanceId, tags, spec, launchTimeMs);
+    const inst = { ...this.buildFromTags(instanceId, tags, spec, launchTimeMs), hibernationConfigured: hibernationRequested(spec) };
     // Mock boots instantly to running.
     this.instances.set(instanceId, inst);
     return structuredClone(inst);

@@ -124,6 +124,8 @@ describe("Dashboard instance-card actions", () => {
     const { dash } = setup();
     setField(dash, "name", "runner");
     setField(dash, "onComplete", ""); // no signal-complete button
+    // Launched hibernatable, so hibernate is offered (#129).
+    (form(dash).elements.namedItem("hibernateOnIdle") as HTMLInputElement).checked = true;
     await submit(dash);
     const labels = buttons(dash).map((b) => b.textContent);
     expect(labels).toEqual(expect.arrayContaining(["stop", "hibernate", "extend 1h", "terminate"]));
@@ -219,7 +221,8 @@ describe("Dashboard card actions target the card's instance id (#128)", () => {
     const client = new SpawnClient({ provider, startMs: T0, clock: 1 });
     const dead = await client.launch({ name: "test", ttl: "4h" });
     await client.terminate(dead.instanceId);
-    const live = await client.launch({ name: "test", ttl: "4h" });
+    // Hibernatable, so the card offers hibernate too (#129).
+    const live = await client.launch({ name: "test", ttl: "4h", hibernateOnIdle: true });
     calls.length = 0;
 
     const dash = new Dashboard(client, async () => true);
@@ -449,6 +452,96 @@ describe("Dashboard shows failures instead of swallowing them (#125)", () => {
     await client.refresh().catch(() => undefined);
     expect(dash.el.querySelector<HTMLElement>(".list-error")!.hidden).toBe(false);
     expect(dash.el.querySelector(".instances")!.textContent).not.toMatch(/no instances|checking/);
+  });
+});
+
+describe("Dashboard offers only actions EC2 would accept, and launches once per intent (#129)", () => {
+  beforeEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  const labels = (dash: Dashboard) =>
+    [...dash.el.querySelectorAll<HTMLButtonElement>(".inst .actions button")].map((b) => b.textContent);
+
+  it("a one-time Spot card offers neither stop nor hibernate", async () => {
+    const { dash } = setup();
+    setField(dash, "name", "spot-card");
+    (form(dash).elements.namedItem("spot") as HTMLInputElement).checked = true;
+    await submit(dash);
+    expect(labels(dash)).not.toContain("stop");
+    expect(labels(dash)).not.toContain("hibernate");
+    expect(labels(dash)).toContain("terminate");
+  });
+
+  it("a card for an instance not launched hibernatable offers stop but not hibernate", async () => {
+    const { dash } = setup();
+    setField(dash, "name", "plain-card");
+    await submit(dash);
+    expect(labels(dash)).toContain("stop");
+    expect(labels(dash)).not.toContain("hibernate");
+  });
+
+  it("a double-click on Launch makes one instance", async () => {
+    const { client, dash } = setup();
+    setField(dash, "name", "double");
+    const f = form(dash);
+    f.dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
+    f.dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(client.list()).toHaveLength(1);
+  });
+
+  it("keeps the intent's token for a retry, and starts a new intent after a success or an edit", async () => {
+    const provider = new MockProvider();
+    const tokens: (string | undefined)[] = [];
+    const orig = provider.launch.bind(provider);
+    let fail: Error | null = null;
+    provider.launch = (spec, now) => {
+      tokens.push(spec.clientToken);
+      if (fail) return Promise.reject(fail);
+      return orig(spec, now);
+    };
+    const client = new SpawnClient({ provider, startMs: T0, clock: 1 });
+    const dash = new Dashboard(client, async () => true);
+    document.body.appendChild(dash.el);
+
+    setField(dash, "name", "a");
+    // A lost response: the instance may exist, so the retry must reuse the token.
+    fail = new TypeError("Failed to fetch");
+    await submit(dash);
+    fail = null;
+    await submit(dash);
+    expect(tokens[1]).toBe(tokens[0]);
+    expect(dash.el.querySelector(".launch-msg")!.textContent).toContain("launched a");
+
+    // After a success, the next launch is a new intent.
+    setField(dash, "name", "b");
+    await submit(dash);
+    expect(tokens[2]).not.toBe(tokens[1]);
+
+    // A definite refusal (4xx) left nothing behind: the retry is a new token.
+    fail = Object.assign(new Error("no capacity"), {
+      name: "InsufficientInstanceCapacity",
+      $fault: "client",
+      $metadata: { httpStatusCode: 400 },
+    });
+    setField(dash, "name", "c");
+    await submit(dash);
+    fail = null;
+    await submit(dash);
+    expect(tokens[4]).not.toBe(tokens[3]);
+
+    // An edit to the form is a new intent too.
+    fail = new TypeError("Failed to fetch");
+    setField(dash, "name", "d");
+    await submit(dash);
+    const nameInput = form(dash).elements.namedItem("name") as HTMLInputElement;
+    nameInput.value = "d2";
+    nameInput.dispatchEvent(new Event("input", { bubbles: true }));
+    fail = null;
+    await submit(dash);
+    expect(tokens[6]).not.toBe(tokens[5]);
   });
 });
 
