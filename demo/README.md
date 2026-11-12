@@ -1,21 +1,22 @@
-# spawn-ts BYOA demos
+# spawn-ts BYOA demo
 
-Two demos of the operating models that underpin the spore.host bring-your-own-account
-(BYOA) idea — the small-scale rehearsal of the future Arpeggio portal.
+A demo of the operating model that underpins the spore.host bring-your-own-account
+(BYOA) idea: **you hold the credential, you control the instance, and it runs in your
+account.** The instance's `spored` daemon registers DNS with spore.host infra (the
+"trust with infra") and **self-terminates on its TTL**.
 
-| | Who holds the credential | Who controls the instance | Where it runs |
-|---|---|---|---|
-| **Demo 1 — direct** | You (pasted into the browser) | You | Your account |
-| **Demo 2 — portal** | The portal (its own identity) | The portal | Your account (BYOA) |
-
-The through-line: **Demo 1 = infra hosts, you drive. Demo 2 = infra drives, into your
-account.** In both, the instance's `spored` daemon registers DNS with spore.host infra
-(the "trust with infra") and **self-terminates on its TTL** — the guarantee is identical;
-only *who holds the credential and controls the box* changes.
+There is deliberately no server-side component. The browser holds a short-lived
+credential for your own account and calls AWS directly; nothing in between can act
+on your account for anyone else. (An earlier "Demo 2", a hosted portal service that
+held an account credential and launched, terminated and opened shells on callers'
+behalf, has been removed. A broker like that needs authenticated callers and a
+per-instance ownership check on every action, which a demo does not provide. The
+spore.host portal, `spore-host/web/portal`, is built the same way as this demo:
+BYOA in the browser, no broker.)
 
 ---
 
-## Demo 1 — direct (your account, you drive)
+## Direct (your account, you drive)
 
 `demo/direct/` — a guided view over the same library the main app uses
 (`SpawnClient` + `EC2Provider`). You paste your own AWS credentials, and it:
@@ -32,7 +33,7 @@ You own the instance. Infra's only role here is hosting the UI + running the DNS
 
 DNS registration is instance-side — `spored` reads the instance's IMDS identity and
 SigV4-signs a request to the infra DNS Lambda; the browser can't observe that directly.
-Demo 1 proves it happened anyway: once the instance has a public IP, it resolves the
+The demo proves it happened anyway: once the instance has a public IP, it resolves the
 computed `{name}.{base36(account)}.spore.host` over public **DNS-over-HTTPS** and checks
 that it points at the instance's public IP. When it matches, the "DNS trust" row turns
 green — that's live confirmation that `spored` registered with infra. (You can also
@@ -81,19 +82,59 @@ demo/direct/?globus_client_id=<globus-client-uuid>&role_arn=<role-arn>&region=us
    (free — no subscription). Type: **public client** (native/SPA, no secret). Add the demo's
    URL as a **redirect URI**. Note the **client-ID (UUID)**.
 2. **In the target AWS account**, create an IAM OIDC identity provider + a role that trusts it
-   (reuse the templates in [`scttfrdmn/aws-oidc-globus-auth`](https://github.com/scttfrdmn/aws-oidc-globus-auth)):
+   (the templates in [`scttfrdmn/aws-oidc-globus-auth`](https://github.com/scttfrdmn/aws-oidc-globus-auth)
+   are a starting point; spore-host's `infra/tofu/portal-oidc` module is the reference for
+   the trust below):
    - OIDC provider URL: **`https://auth.globus.org`**; client-id-list: your Globus client-ID.
-   - Role trust policy: `sts:AssumeRoleWithWebIdentity` with
-     `StringEquals {"auth.globus.org:aud": "<client-id>"}` and
-     `StringLike {"auth.globus.org:sub": "*"}` (optionally tighten with `email_verified` /
-     `email` domain / `groups`, and map claims → `PrincipalTag` for per-user attribution).
+   - Role trust policy: `sts:AssumeRoleWithWebIdentity`, with **both** `aud` pinned to your
+     client-ID **and** `sub` pinned to the Globus identity UUIDs of the people allowed to
+     launch:
+
+     ```json
+     {
+       "Version": "2012-10-17",
+       "Statement": [{
+         "Effect": "Allow",
+         "Principal": { "Federated": "arn:aws:iam::<account-id>:oidc-provider/auth.globus.org" },
+         "Action": "sts:AssumeRoleWithWebIdentity",
+         "Condition": {
+           "StringEquals": {
+             "auth.globus.org:aud": "<client-id>",
+             "auth.globus.org:sub": ["<globus-identity-uuid>", "<another-globus-identity-uuid>"]
+           }
+         }
+       }]
+     }
+     ```
+
+     `StringEquals` with a list matches any one entry in it; it is not a pattern. Look up
+     a person's identity UUID with `globus get-identities <username>` (for example
+     `globus get-identities someone@example.edu`). To add a user, append their UUID.
    - The role needs the EC2 launch + `iam:PassRole` (for `spored-instance-profile`) perms,
-     same as any spawn launch.
+     same as any spawn launch. Scope them the way `portal-oidc` does: instance actions
+     conditioned on `aws:ResourceTag/spawn:managed`, and `iam:PassRole` limited to the
+     spored instance role with `iam:PassedToService = ec2.amazonaws.com`.
+
+   > **Never trust a wildcard `sub`** (`StringLike {"auth.globus.org:sub": "*"}`, or no
+   > `sub` condition at all). Anyone can get a Globus identity for free (Globus ID,
+   > Google, ORCID, GitHub and others), and the `aud` check proves nothing about *who*
+   > signed in: your client-ID is public, because it is in the page URL and the bundle,
+   > and any Globus user who completes your public-client sign-in gets a token with that
+   > `aud`. A wildcard `sub` therefore lets anyone on the internet assume a role that can
+   > launch EC2 instances and pass a role to them, at your expense.
+   >
+   > **Don't try to narrow the trust by `email`, `email_verified` or `groups`.** IAM does
+   > not expose those claims of a generic OIDC provider such as Globus as condition keys;
+   > `aud` and `sub` are what a trust policy can check. A condition on an email domain
+   > or a group therefore cannot express "only these people". Pin `sub`.
 
 This "point-to your account" step is the BYOA configuration — one-time per account.
+If you also registered the client-ID on an OIDC provider that a looser role trusts, retire
+that role or remove the client-ID from the provider's client-id-list.
 
 > **Verify at first wire-up:** decode the returned id_token (the demo logs its `aud`/`sub`)
-> and confirm `aud` equals your client-ID — that's what the AWS trust checks. AWS accepts
+> and confirm `aud` equals your client-ID and `sub` is one of the UUIDs you pinned —
+> those are what the AWS trust checks. AWS accepts
 > Globus's RS512-signed tokens.
 
 **Alternative — point directly at a university IdP:** instead of Globus-as-broker, you can
@@ -127,9 +168,3 @@ Closing/reset calls `ssm:TerminateSession`.
 builds into `dist/demo/direct/` and deploys to the live GitHub Pages site alongside
 the main app — reachable via the **BYOA demo →** link in the app's topbar, or directly
 at `/demo/direct/`.
-
-## Demo 2 — portal (BYOA, the portal drives)
-
-`demo/portal/` — see [portal/README.md](portal/README.md). A small Node portal service
-holds an infra identity, assumes a role in your account, and launches compute there that
-**only the portal controls** — you reach it through the portal, not directly.

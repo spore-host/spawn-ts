@@ -143,6 +143,27 @@ version strings agree.
   gets that from spawn-ts. spored and the reaper enforce them, as they always
   did.
 
+### Security
+
+- **The hosted demo portal is removed** (`demo/portal`: the Lambda Function URL
+  stack, its deploy script, the local Node server and their static UI). It
+  launched, terminated and opened SSM sessions in a connected account on behalf
+  of callers it did not authenticate, and its static-file handler did not keep
+  request paths inside its public directory. A broker that holds an account
+  credential needs authenticated callers and a per-instance ownership check, and
+  the BYOA demo (`demo/direct`) already covers the same ground in the browser
+  with no broker. The `dev:portal` and `build:portal-ui` scripts are gone. The
+  `./portal` helpers stay exported, and their docs now state that the caller
+  must authenticate the requester and check instance ownership.
+- **The BYOA demo's Globus trust guidance is corrected** (`demo/README.md`). The
+  role trust now pins `auth.globus.org:sub` with `StringEquals` to a list of
+  Globus identity UUIDs, alongside `aud`, as spore-host's `portal-oidc` module
+  does. The wildcard `sub` and the suggestion to narrow by `email`,
+  `email_verified` or `groups` are removed: anyone can obtain a Globus identity,
+  the client-ID is public, and IAM does not expose those claims as condition
+  keys for a generic OIDC provider. If you set up a role from the earlier text,
+  replace its trust policy.
+
 ## [0.8.1] — 2026-10-29
 
 Compatibility with truffle-ts 0.6.0. No public API changes.
