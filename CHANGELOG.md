@@ -22,6 +22,20 @@ version strings agree.
 
 - `SECURITY.md`: report vulnerabilities privately through GitHub's private vulnerability reporting (the repository's Security tab), not public issues.
 
+### Changed
+
+- **`spawn:ready-token` is replaced by `spawn:ready-auth` in the post-launch tag
+  list** (`POST_LAUNCH_INSTANCE_TAGS` and its Go fixture), following
+  [spawn#1603](https://github.com/spore-host/spawn/pull/1603). That change moves DCV
+  and web-app session tokens off EC2 tags: spored publishes `spawn:ready-status`, a
+  token-free `spawn:ready-url` and `spawn:ready-auth`. Clients mint a token and
+  register its SHA-256 on the instance with `spored access-token add` over SSM.
+  The tag reserve doesn't change, because spawn-ts launches neither kind of session.
+  `docs/integration.md` sets out the client side of the contract for browser
+  clients. spawn-ts reads no token from tags. The fixture entry is a hand edit
+  ahead of the release. Regenerate it with `scripts/gen-go-fixtures.sh` from the
+  first spawn release that includes #1603.
+
 ### Fixed
 
 - **Instance actions act on an instance id, never a Name** (#128).

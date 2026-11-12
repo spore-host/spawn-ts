@@ -505,7 +505,7 @@ describe("tag reserve (Go #1355, pkg/aws/post_launch_tags.go)", () => {
     readFileSync(new URL("./testdata/post-launch-tags.go.json", import.meta.url), "utf8"),
   );
 
-  it("is Go's postLaunchInstanceTags at v0.150.0: same keys, order, writer and command flag", () => {
+  it("is Go's postLaunchInstanceTags at v0.150.0, plus spawn#1603's ready-auth: same keys, order, writer and command flag", () => {
     expect(POST_LAUNCH_INSTANCE_TAGS.map((t) => [t.key, t.by, t.onCommand])).toEqual(
       goTags.map((t) => [t.key, t.by, t.onCommand]),
     );

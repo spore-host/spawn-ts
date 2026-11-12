@@ -533,6 +533,13 @@ export interface PostLaunchTag {
  * from the published spawn, so the two cannot drift. "spore:plugin:" is a
  * family, one tag per plugin. spawn:cost-footprint is one tag since #1428
  * (spored 0.150.0); older spored wrote three.
+ *
+ * One entry is ahead of v0.150.0: spawn:ready-auth replaces spawn:ready-token,
+ * following spawn#1603, which moves DCV and web-app session tokens off EC2 tags
+ * (spored writes a token-free spawn:ready-url and spawn:ready-auth, and deletes
+ * spawn:ready-token). The fixture carries the same hand edit; regenerate it with
+ * scripts/gen-go-fixtures.sh from the first spawn release that contains #1603.
+ * docs/integration.md has the client side of that contract.
  */
 export const POST_LAUNCH_INSTANCE_TAGS: readonly PostLaunchTag[] = [
   // spored, on every instance.
@@ -547,7 +554,7 @@ export const POST_LAUNCH_INSTANCE_TAGS: readonly PostLaunchTag[] = [
   { key: "spawn:dns-error", by: "spored", onCommand: false, applies: "dns" },
   { key: "spawn:ready-status", by: "spored", onCommand: false, applies: "never" },
   { key: "spawn:ready-url", by: "spored", onCommand: false, applies: "never" },
-  { key: "spawn:ready-token", by: "spored", onCommand: false, applies: "never" },
+  { key: "spawn:ready-auth", by: "spored", onCommand: false, applies: "never" },
   { key: "spawn:fsx-id", by: "spored", onCommand: false, applies: "never" },
   { key: "spawn:fsx-mount-point", by: "spored", onCommand: false, applies: "never" },
   { key: "spawn:fsx-dra-status", by: "spored", onCommand: false, applies: "never" },

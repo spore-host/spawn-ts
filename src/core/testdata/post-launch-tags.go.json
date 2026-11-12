@@ -60,7 +60,7 @@
     "applies": "other"
   },
   {
-    "key": "spawn:ready-token",
+    "key": "spawn:ready-auth",
     "by": "spored",
     "onCommand": false,
     "applies": "other"
