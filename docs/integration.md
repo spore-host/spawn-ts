@@ -114,6 +114,65 @@ the surviving subset is deterministic. Dropping parameters is itself lossy —
 they're how a sweep member records which point in the space it *is* — but a
 truncated tag set beats a launch that fails.
 
+### Opening a DCV or web-app session: the access-token contract
+
+spawn-ts has no path that opens a DCV or web-app session (both are **Not
+portable** above), and it reads no session token from tags. A browser client
+that does open one, such as the spore.host portal's connect slice
+([spore-host#687](https://github.com/spore-host/spore-host/issues/687)), follows
+the contract from [spawn#1603](https://github.com/spore-host/spawn/pull/1603),
+which takes session tokens off EC2 tags. The reference implementation is Go's
+`pkg/accesstoken` plus `cmd/accesstoken.go`.
+
+**What spored publishes.** None of these tags carries a token:
+
+| tag | value |
+|---|---|
+| `spawn:ready-status` | readiness of the session or app |
+| `spawn:ready-url` | the URL without a token: `https://<host>:8443/#<dcv-session-id>` for DCV, `https://<host>/` for a web app |
+| `spawn:ready-auth` | `token`: register a token before opening. `none`: the web proxy is ungated, so open `spawn:ready-url` as it is |
+
+A current spored deletes `spawn:ready-token` on its first tick. If
+`spawn:ready-auth` is absent, the instance's spored predates #1603 and
+published its token in `spawn:ready-token` (and inside the ready-url), where
+anyone with `ec2:DescribeTags` in the account can read it. Go spawn still
+uses that token and prints a warning naming `spawn upgrade-spored`. A new
+client doesn't need that fallback: it can ask the user to upgrade spored or
+relaunch.
+
+**What the client does** when `spawn:ready-auth` is `token`, on every connect:
+
+1. **Mint** 32 random bytes (`crypto.getRandomValues`) and hex-encode them: a
+   64-character lower-case token. Keep it in memory only.
+2. **Hash** it: the lower-case hex SHA-256 of the token's hex *string*, not of
+   the raw bytes (Go `accesstoken.Hash`). In a browser that is
+   `crypto.subtle.digest("SHA-256", new TextEncoder().encode(token))`.
+3. **Register** the hash over SSM: `ssm:SendCommand` with
+   `DocumentName: "AWS-RunShellScript"` and
+   `commands: ["/usr/local/bin/spored access-token add --kind <dcv|web> --sha256 <hash> --ttl <n>s"]`.
+   `<n>` is a whole number of seconds in `(0, 604800]` (at most 7 days). Go
+   uses 43200 (12 h). The command runs as root, so it needs no `sudo`. Only the
+   hash reaches SSM's command history.
+4. **Confirm** with `ssm:GetCommandInvocation`. Success means `Status ==
+   "Success"` and `ResponseCode == 0`. Output containing `unknown command`
+   means the instance's spored predates registration. Go retries a refused
+   `SendCommand` up to 6 times, 10 s apart, because on a freshly started
+   instance the SSM agent can come online after the readiness tag.
+5. **Build the URL locally**, with the host and DCV session id taken from
+   `spawn:ready-url`: `https://<host>:8443/?authToken=<token>#<dcv-session-id>`
+   for DCV, `https://<host>/?spore_token=<token>` for a web app.
+
+spored checks the token's expiry on every DCV authentication and on every
+proxied web request (the proxy's cookie expires with the token). A stop/start
+or a reboot clears every registered token, and `spored access-token revoke-all`
+clears them on demand. A new connect mints a new token, so nothing needs to be
+stored or shared between tabs or machines. The IAM a client needs is
+`ssm:SendCommand` (on the instance and the `AWS-RunShellScript` document) and
+`ssm:GetCommandInvocation`. Anyone who can run `SendCommand` on the instance
+already has root on it, so registration adds no new authority.
+`EC2Provider.reloadAgent` already shows how to call `SendCommand` from a
+browser.
+
 ## Why the catalog is offline (and where live data goes)
 
 truffle-ts ships a bundled instance/price snapshot so `find` works with **zero

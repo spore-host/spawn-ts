@@ -527,12 +527,17 @@ export interface PostLaunchTag {
 }
 
 /**
- * Go's postLaunchInstanceTags at v0.150.0, in its order (the refusal lists the
+ * Go's postLaunchInstanceTags at v0.164.0, in its order (the refusal lists the
  * reserve in this order). A test compares it with
  * testdata/post-launch-tags.go.json, which scripts/gen-go-fixtures.sh renders
  * from the published spawn, so the two cannot drift. "spore:plugin:" is a
  * family, one tag per plugin. spawn:cost-footprint is one tag since #1428
  * (spored 0.150.0); older spored wrote three.
+ *
+ * spawn#1603 (v0.164.0) moved DCV and web-app session tokens off EC2 tags:
+ * spored writes a token-free spawn:ready-url and spawn:ready-auth, and deletes
+ * spawn:ready-token. The fixture is generated from v0.164.0.
+ * docs/integration.md has the client side of that contract.
  */
 export const POST_LAUNCH_INSTANCE_TAGS: readonly PostLaunchTag[] = [
   // spored, on every instance.
@@ -547,11 +552,14 @@ export const POST_LAUNCH_INSTANCE_TAGS: readonly PostLaunchTag[] = [
   { key: "spawn:dns-error", by: "spored", onCommand: false, applies: "dns" },
   { key: "spawn:ready-status", by: "spored", onCommand: false, applies: "never" },
   { key: "spawn:ready-url", by: "spored", onCommand: false, applies: "never" },
-  { key: "spawn:ready-token", by: "spored", onCommand: false, applies: "never" },
+  { key: "spawn:ready-auth", by: "spored", onCommand: false, applies: "never" },
   { key: "spawn:fsx-id", by: "spored", onCommand: false, applies: "never" },
   { key: "spawn:fsx-mount-point", by: "spored", onCommand: false, applies: "never" },
   { key: "spawn:fsx-dra-status", by: "spored", onCommand: false, applies: "never" },
   { key: "spawn:fsx-dra-error", by: "spored", onCommand: false, applies: "never" },
+  { key: "spawn:egress-proxy-last-activity", by: "spored", onCommand: false, applies: "never" },
+  { key: "spawn:egress-proxy-idle", by: "spored", onCommand: false, applies: "never" },
+  { key: "spawn:spot-accrual", by: "spored", onCommand: false, applies: "spot" },
   // Go spawn's launch code, right after RunInstances.
   { key: "spawn:spot-price-per-hour", by: "spawn", onCommand: false, applies: "spot" },
   { key: "spawn:fsx-pending", by: "spawn", onCommand: false, applies: "never" },
