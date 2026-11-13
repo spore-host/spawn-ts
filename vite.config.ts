@@ -6,8 +6,7 @@ import { resolve } from "node:path";
 // credentials the user pastes in at runtime (kept in memory only).
 //
 // Multi-page build: the main app plus the "direct" BYOA demo (demo/direct),
-// which ships to /demo/direct/ alongside it. (The portal demo, demo/portal, is a
-// Node service — not a static page — so it is not part of this build.)
+// which ships to /demo/direct/ alongside it.
 export default defineConfig({
   base: "./",
   build: {

@@ -1,11 +1,16 @@
-// Portal core — the testable logic of the BYOA portal, separated from the HTTP
-// server (server.ts) so it can be unit-tested without a socket.
-//
-// The portal assumes a role in the USER's account and launches compute there
-// under the PORTAL's assumed role. These helpers cover the two pieces worth
-// testing in isolation: the assume-role → spawn-ts-client factory, and the
+// Portal core — helpers for a server-side portal that assumes a role in the
+// USER's account and acts there under the PORTAL's assumed role: the
+// assume-role → spawn-ts-client factory, SSM session brokering, and the
 // portal-mediated projection of an instance (which deliberately omits any
 // direct-access affordance).
+//
+// These helpers do NO caller authorization. Whatever exposes them (an HTTP
+// endpoint, a queue consumer) must authenticate the requester and check that
+// the requester owns the instance before launching, terminating or brokering a
+// session for it. The ExternalId guards the AssumeRole hop against a confused
+// deputy; it says nothing about who asked the portal to act, because the portal
+// supplies it itself. spawn-ts no longer ships a hosted portal; its BYOA demo
+// (demo/direct) runs entirely in the browser on the user's own credentials.
 
 import type { STSClient } from "@aws-sdk/client-sts";
 import { AssumeRoleCommand } from "@aws-sdk/client-sts";
@@ -88,6 +93,10 @@ export interface BrokeredSession {
  * ssm:StartSession, and return ONLY the session-scoped {sessionId, streamUrl,
  * tokenValue}. The browser opens the data channel with this tuple — it never
  * receives AWS credentials, so the portal remains the sole authorizer of access.
+ *
+ * That makes the caller responsible for the authorization: the tuple is a shell
+ * on `instanceId`, so authenticate the requester and confirm they own the
+ * instance before calling this. It checks neither.
  */
 export async function startBrokeredSession(sts: STSClient, cfg: PortalConfig, instanceId: string): Promise<BrokeredSession> {
   const c = await assumeUserAccount(sts, cfg);

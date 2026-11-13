@@ -41,8 +41,6 @@
   "scripts": {
     "dev": "vite",
     "dev:demo": "vite demo/direct",
-    "dev:portal": "tsx demo/portal/server.ts",
-    "build:portal-ui": "node demo/portal/build-ui.mjs",
     "build:lib": "tsc -p tsconfig.build.json && node scripts/copy-css.mjs",
     "prepare": "npm run build:lib",
     "build": "tsc && vite build && npm run docs",
