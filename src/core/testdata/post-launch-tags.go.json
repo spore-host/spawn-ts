@@ -90,6 +90,24 @@
     "applies": "other"
   },
   {
+    "key": "spawn:egress-proxy-last-activity",
+    "by": "spored",
+    "onCommand": false,
+    "applies": "other"
+  },
+  {
+    "key": "spawn:egress-proxy-idle",
+    "by": "spored",
+    "onCommand": false,
+    "applies": "other"
+  },
+  {
+    "key": "spawn:spot-accrual",
+    "by": "spored",
+    "onCommand": false,
+    "applies": "spot"
+  },
+  {
     "key": "spawn:spot-price-per-hour",
     "by": "spawn",
     "onCommand": false,

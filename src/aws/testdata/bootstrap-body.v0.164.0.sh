@@ -1,0 +1,558 @@
+spore_curl_retry() {
+    local retries="$1" delay="$2" n=0 rc=0
+    shift 2
+    while [ "$n" -lt "$retries" ]; do
+        rc=0
+        curl "$@" 2>/dev/null || rc=$?
+        [ "$rc" -eq 0 ] && return 0
+        [ "$rc" -eq 2 ] && break
+        n=$((n + 1))
+        sleep "$delay"
+    done
+    curl "$@"
+}
+spore_selinux_relabel() {
+    command -v restorecon >/dev/null 2>&1 || return 0
+    if command -v selinuxenabled >/dev/null 2>&1 && ! selinuxenabled; then
+        return 0
+    fi
+    restorecon -Fv "$@" || echo "WARNING: restorecon failed for $* — under SELinux enforcing, systemd may be unable to start spored (#1052)" >&2
+    return 0
+}
+spore_install_verified_spored() {
+    local binary="$1"; shift
+    if [ -z "$binary" ] || [ $# -eq 0 ]; then
+        echo "spore_install_verified_spored: need a binary name and at least one base URL" >&2
+        return 1
+    fi
+    local tmp base bin_url sig_url chosen=""
+    tmp="$(mktemp /tmp/spored.XXXXXX)" || return 1
+    for base in "$@"; do
+        bin_url="${base}/${binary}"
+        sig_url="${base}/${binary}.sig"
+        if [ "${SPORED_SIG_VERIFY:-0}" = "1" ]; then
+            if ! spore_curl_retry 3 1 -fsI "$sig_url" >/dev/null 2>&1; then
+                echo "No signature at ${base} — trying next source"
+                continue
+            fi
+        fi
+        if spore_curl_retry 5 2 -f -o "$tmp" "$bin_url"; then
+            chosen="$base"
+            echo "Downloaded spored from ${base}"
+            break
+        fi
+    done
+    if [ -z "$chosen" ]; then
+        echo "Failed to download ${binary} from any source" >&2
+        if [ "${SPORED_SIG_VERIFY:-0}" = "1" ]; then
+            echo "  (signature verification is on — a source without a .sig is skipped)" >&2
+        fi
+        rm -f "$tmp"
+        return 1
+    fi
+    echo "Verifying checksum..."
+    if ! spore_curl_retry 5 2 -f -o "${tmp}.sha256" "${chosen}/${binary}.sha256"; then
+        echo "No checksum published at ${chosen}/${binary}.sha256 — refusing to install an unverified spored" >&2
+        rm -f "$tmp" "${tmp}.sha256"
+        return 1
+    fi
+    local expected actual
+    expected="$(awk '{print $1}' "${tmp}.sha256")"
+    actual="$(sha256sum "$tmp" | awk '{print $1}')"
+    if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
+        echo "Checksum verification FAILED (expected ${expected:-<empty>}, got ${actual})" >&2
+        rm -f "$tmp" "${tmp}.sha256"
+        return 1
+    fi
+    rm -f "${tmp}.sha256"
+    echo "Checksum verified: $actual"
+    if [ "${SPORED_SIG_VERIFY:-0}" = "1" ]; then
+        echo "Verifying signature..."
+        if ! spore_curl_retry 5 2 -f -o "${tmp}.sig" "${chosen}/${binary}.sig"; then
+            echo "Signature not found at ${chosen}/${binary}.sig — refusing to run an unsigned binary" >&2
+            rm -f "$tmp" "${tmp}.sig"
+            return 1
+        fi
+        if ! base64 -d < "${tmp}.sig" > "${tmp}.sig.der" 2>/dev/null; then
+            cp "${tmp}.sig" "${tmp}.sig.der"
+        fi
+        if ! openssl dgst -sha256 -verify /etc/spawn/spored-signing-key.pem -signature "${tmp}.sig.der" "$tmp" >/dev/null 2>&1; then
+            echo "Signature verification FAILED — refusing to run spored" >&2
+            rm -f "$tmp" "${tmp}.sig" "${tmp}.sig.der"
+            return 1
+        fi
+        rm -f "${tmp}.sig" "${tmp}.sig.der"
+        echo "Signature verified (spore.host)"
+    else
+        echo "Signature verification not enabled in this spawn build; checksum only (corruption, not authenticity)"
+    fi
+    chmod +x "$tmp" || { rm -f "$tmp"; return 1; }
+    systemctl stop spored 2>/dev/null || true
+    if ! mv -f "$tmp" /usr/local/bin/spored; then
+        echo "Failed to install spored to /usr/local/bin/spored" >&2
+        rm -f "$tmp"
+        return 1
+    fi
+    spore_selinux_relabel /usr/local/bin/spored
+    return 0
+}
+spore_install_spored_from_buckets() {
+    local v="${SPAWN_SPORED_VERSION:-}"
+    if [ -n "$v" ]; then
+        echo "Installing spored $v, the version of the spawn that rendered this script"
+        spore_install_verified_spored "$1" "$2/spawn/versions/$v" "$3/spawn/versions/$v"
+    elif ! spore_install_verified_spored "$1" "$2/spawn/current" "$3/spawn/current"; then
+        if [ "${SPAWN_SPORED_READS_LAUNCH_CONFIG:-}" = 1 ]; then
+            echo "no spawn/current/ spored; 0.149.0 ignores launch configs (#1419)" >&2
+            return 1
+        fi
+        spore_install_verified_spored "$1" "$2/spawn" "$3/spawn"
+    fi
+}
+spawn_is_spot_replacement() {
+    local cache=/run/spawn/spot-replacement rc
+    if [ -s "$cache" ]; then
+        rc=$(cat "$cache")
+    else
+        if [ ! -x /usr/local/bin/spored ]; then
+            echo "spawn: spored missing; cannot check for a Spot replacement, running the workload" >&2
+            return 1
+        fi
+        rc=0
+        if command -v timeout >/dev/null 2>&1; then
+            timeout 120 /usr/local/bin/spored is-spot-replacement >&2 || rc=$?
+        else
+            /usr/local/bin/spored is-spot-replacement >&2 || rc=$?
+        fi
+        case "$rc" in
+            0|1) mkdir -p /run/spawn && echo "$rc" > "$cache" ;;
+        esac
+    fi
+    case "$rc" in
+        0) return 0 ;;
+        1) return 1 ;;
+        *) echo "spawn: could not tell whether this is a Spot replacement (exit $rc); running the workload, as an original would" >&2
+           return 1 ;;
+    esac
+}
+spawn_need_aws() {
+    command -v aws >/dev/null 2>&1 && return 0
+    local h=14cb35809ad7547dd3c69fa9899a3975fbd850b6a6791f3fe264856490cd9a63 r=1
+    [ "$(uname -m)" != aarch64 ] || h=f6eb845fbacb11bee87de3f5fbe8043773cbe89d0414607b44b71e216eb9226b
+    echo "spawn: no aws CLI; installing AWS CLI 2.39.3 (#1490)"
+    rm -rf /tmp/spawn-awscli
+    mkdir -p /tmp/spawn-awscli
+    if curl -fsS --connect-timeout 10 --max-time 600 --retry 3 -o /tmp/spawn-awscli/c.zip "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m)-2.39.3.zip"; then
+        if [ "$(sha256sum /tmp/spawn-awscli/c.zip | cut -d ' ' -f 1)" = "$h" ]; then
+            r=0
+        else
+            echo "spawn: AWS CLI zip from https://awscli.amazonaws.com: sha256 mismatch" >&2
+        fi
+    fi
+    [ "$r" = 0 ] &&
+        python3 -c 'import os,sys,zipfile;z=zipfile.ZipFile(sys.argv[1]);[os.chmod(z.extract(i,sys.argv[2]),i.external_attr>>16&511 or 493) for i in z.infolist()]' /tmp/spawn-awscli/c.zip /tmp/spawn-awscli &&
+        /tmp/spawn-awscli/aws/install >/dev/null &&
+        command -v aws >/dev/null 2>&1 || r=1
+    rm -rf /tmp/spawn-awscli
+    [ "$r" = 0 ] || echo "spawn: could not install AWS CLI 2.39.3 (#1490)" >&2
+    return "$r"
+}
+ARCH=$(uname -m)
+echo "Installing spored for architecture: $ARCH"
+TOKEN=$(curl -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" 2>/dev/null || true)
+if [ -n "$TOKEN" ]; then
+    REGION=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/region 2>/dev/null)
+else
+    REGION=$(curl -s http://169.254.169.254/latest/meta-data/placement/region 2>/dev/null || echo "us-east-1")
+fi
+echo "Region: $REGION"
+case "$ARCH" in
+    x86_64)
+        BINARY="spored-linux-amd64"
+        ;;
+    aarch64)
+        BINARY="spored-linux-arm64"
+        ;;
+    *)
+        spawn_fatal_retire "unsupported architecture $ARCH: there is no spored for it"
+        ;;
+esac
+S3_BASE_URL="https://spawn-binaries-${REGION}.s3.${REGION}.amazonaws.com"
+FALLBACK_URL="https://spawn-binaries-us-east-1.s3.us-east-1.amazonaws.com"
+echo "Downloading spored binary..."
+if ! spore_install_spored_from_buckets "$BINARY" "$S3_BASE_URL" "$FALLBACK_URL"; then
+    spawn_fatal_retire "spored install failed; not running an unverified agent"
+fi
+cat > /etc/systemd/system/spored.service <<'EOFSERVICE'
+[Unit]
+Description=Spawn Agent - Instance self-monitoring
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=SPORE_DNS_SIGV4=1
+ExecStart=/usr/local/bin/spored
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+EOFSERVICE
+spore_selinux_relabel /etc/systemd/system/spored.service
+/usr/local/bin/spored discard-inherited-state || true
+systemctl daemon-reload
+systemctl enable spored
+systemctl start spored
+spawn_boot_failed() {
+    mkdir -p "$(dirname -- "$SPAWN_CMD_COMPLETION_FILE")" || true
+    echo "{\"status\": \"failed\", \"exit_code\": $1, \"source\": \"bootstrap\"}" > "$SPAWN_CMD_COMPLETION_FILE" || true
+    echo "spawn: bootstrap failed (status $1, at $SPAWN_LAST_FAILED) after spored started; recording it (#1484)" | tee -a /var/log/spawn-command.log >&2 || true
+}
+SPAWN_HANDED_OFF=
+SPAWN_SPORED_UP=1
+echo "spored installation complete"
+echo "Setting up user: $LOCAL_USERNAME"
+if ! id "$LOCAL_USERNAME" &>/dev/null; then
+    useradd -m -s /bin/bash "$LOCAL_USERNAME"
+    echo "Created user: $LOCAL_USERNAME"
+fi
+usermod -aG wheel "$LOCAL_USERNAME" 2>/dev/null || usermod -aG sudo "$LOCAL_USERNAME" 2>/dev/null
+echo "$LOCAL_USERNAME ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/$LOCAL_USERNAME
+chmod 0440 /etc/sudoers.d/$LOCAL_USERNAME
+mkdir -p /home/$LOCAL_USERNAME/.ssh
+chmod 700 /home/$LOCAL_USERNAME/.ssh
+if [ -n "$LOCAL_SSH_KEY_BASE64" ]; then
+    echo "$LOCAL_SSH_KEY_BASE64" | base64 -d > /home/$LOCAL_USERNAME/.ssh/authorized_keys
+else
+    touch /home/$LOCAL_USERNAME/.ssh/authorized_keys
+fi
+chmod 600 /home/$LOCAL_USERNAME/.ssh/authorized_keys
+chown -R $LOCAL_USERNAME:$LOCAL_USERNAME /home/$LOCAL_USERNAME/.ssh
+echo "✅ User $LOCAL_USERNAME configured with SSH access and sudo privileges"
+echo "Configuring session timeouts..."
+INSTANCE_ID=$(curl -sf --connect-timeout 5 --retry 3 -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id || true)
+case "$INSTANCE_ID" in
+    i-*) ;;
+    *) echo "spawn: no instance ID from IMDS; stopping (#1490)" >&2; exit 1 ;;
+esac
+spawn_need_aws || { echo "spawn: no aws CLI to read this instance's tags with; stopping (#1490)" >&2; exit 1; }
+spawn_tag() {
+    local n=0
+    until aws ec2 describe-tags --region "$REGION" --filters "Name=resource-id,Values=$INSTANCE_ID" "Name=key,Values=$1" --query "${2:-Tags[0].Value}" --output text; do
+        n=$((n + 1))
+        if [ "$n" -ge 6 ]; then
+            echo "spawn: could not read tag $1; stopping rather than use a default (#1490)" >&2
+            return 1
+        fi
+        sleep 5
+    done
+}
+SESSION_TIMEOUT=$(spawn_tag spawn:session-timeout)
+parse_duration() {
+    local duration="$1"
+    local total=0
+    if [ "$duration" = "0" ] || [ "$duration" = "disabled" ]; then
+        echo "0"
+        return
+    fi
+    while [[ $duration =~ ([0-9]+)([smhd]) ]]; do
+        local value="${BASH_REMATCH[1]}"
+        local unit="${BASH_REMATCH[2]}"
+        case "$unit" in
+            s) total=$((total + value)) ;;
+            m) total=$((total + value * 60)) ;;
+            h) total=$((total + value * 3600)) ;;
+            d) total=$((total + value * 86400)) ;;
+        esac
+        duration="${duration#*${BASH_REMATCH[0]}}"
+    done
+    echo "$total"
+}
+TIMEOUT_SECONDS=$(parse_duration "$SESSION_TIMEOUT")
+if [ "$TIMEOUT_SECONDS" -gt 0 ]; then
+    SSH_INTERVAL=$((TIMEOUT_SECONDS / 6))
+    if [ $SSH_INTERVAL -lt 60 ]; then
+        SSH_INTERVAL=60
+    fi
+    if ! grep -q "^ClientAliveInterval" /etc/ssh/sshd_config; then
+        echo "ClientAliveInterval $SSH_INTERVAL" >> /etc/ssh/sshd_config
+        echo "ClientAliveCountMax 3" >> /etc/ssh/sshd_config
+        systemctl reload sshd 2>/dev/null || true
+    fi
+    cat > /etc/profile.d/session-timeout.sh <<EOFTIMEOUT
+# Automatic logout for idle shells ($SESSION_TIMEOUT)
+export TMOUT=$TIMEOUT_SECONDS
+readonly TMOUT
+EOFTIMEOUT
+    chmod 644 /etc/profile.d/session-timeout.sh
+    echo "✅ Session timeouts configured (Timeout: $SESSION_TIMEOUT)"
+else
+    echo "✅ Session timeouts disabled (set spawn:session-timeout tag to enable)"
+fi
+JOB_ARRAY_ID=$(spawn_tag spawn:job-array-id)
+if [ "$JOB_ARRAY_ID" != "None" ]; then
+    echo "Setting up job array environment..."
+    JOB_ARRAY_NAME=$(spawn_tag spawn:job-array-name)
+    JOB_ARRAY_SIZE=$(spawn_tag spawn:job-array-size)
+    JOB_ARRAY_INDEX=$(spawn_tag spawn:job-array-index)
+    cat > /etc/profile.d/job-array.sh <<EOFJOBARRAY
+# Job Array Environment Variables
+export JOB_ARRAY_ID="$JOB_ARRAY_ID"
+export JOB_ARRAY_NAME="$JOB_ARRAY_NAME"
+export JOB_ARRAY_SIZE="$JOB_ARRAY_SIZE"
+export JOB_ARRAY_INDEX="$JOB_ARRAY_INDEX"
+EOFJOBARRAY
+    chmod 644 /etc/profile.d/job-array.sh
+    echo "✅ Job array environment configured (Index: $JOB_ARRAY_INDEX/$JOB_ARRAY_SIZE)"
+fi
+SPAWN_NAME_TAG=$(spawn_tag Name)
+SPAWN_HOSTNAME=""
+if [ -n "$SPAWN_NAME_TAG" ] && [ "$SPAWN_NAME_TAG" != "None" ]; then
+    SPAWN_HOSTNAME=$(printf '%s' "$SPAWN_NAME_TAG" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-' '-' \
+        | sed -e 's/--*/-/g' -e 's/^-//' | cut -c1-63 | sed -e 's/-*$//' || true)
+fi
+if [ -n "$SPAWN_HOSTNAME" ] && [ "$JOB_ARRAY_ID" != "None" ] && [ -n "$JOB_ARRAY_INDEX" ]; then
+    if ! printf '%s' "$SPAWN_HOSTNAME" | grep -qE "(^|[^0-9])${JOB_ARRAY_INDEX}([^0-9]|\$)"; then
+        SPAWN_HOSTNAME="$(printf '%s' "$SPAWN_HOSTNAME" | cut -c1-$((62 - ${#JOB_ARRAY_INDEX})))-${JOB_ARRAY_INDEX}"
+    fi
+fi
+if [ -n "$SPAWN_HOSTNAME" ]; then
+    hostnamectl set-hostname "$SPAWN_HOSTNAME" 2>/dev/null || hostname "$SPAWN_HOSTNAME" 2>/dev/null || true
+    echo "$SPAWN_HOSTNAME" > /etc/hostname 2>/dev/null || true
+    mkdir -p /etc/cloud/cloud.cfg.d 2>/dev/null || true
+    echo "preserve_hostname: true" > /etc/cloud/cloud.cfg.d/99-spawn-hostname.cfg 2>/dev/null || true
+    SPAWN_PRIVATE_IP=$(curl -sf -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/local-ipv4 2>/dev/null || true)
+    [[ "$SPAWN_PRIVATE_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || SPAWN_PRIVATE_IP=""
+    if ! grep -qE "[[:space:]]${SPAWN_HOSTNAME}([[:space:]]|\$)" /etc/hosts 2>/dev/null; then
+        echo "${SPAWN_PRIVATE_IP:-127.0.1.1} ${SPAWN_HOSTNAME}" >> /etc/hosts 2>/dev/null || true
+    fi
+    echo "✅ Hostname set to $SPAWN_HOSTNAME (from the Name tag)"
+fi
+SWEEP_ID=$(spawn_tag spawn:sweep-id)
+if [ "$SWEEP_ID" != "None" ]; then
+    echo "Setting up parameter sweep environment..."
+    SWEEP_NAME=$(spawn_tag spawn:sweep-name)
+    SWEEP_SIZE=$(spawn_tag spawn:sweep-size)
+    SWEEP_INDEX=$(spawn_tag spawn:sweep-index)
+    PARAM_TAGS=$(spawn_tag 'spawn:param:*' 'Tags[*].[Key,Value]')
+    cat > /etc/profile.d/spawn-params.sh <<EOFPARAMS
+# Parameter Sweep Environment Variables
+export SWEEP_ID="$SWEEP_ID"
+export SWEEP_NAME="$SWEEP_NAME"
+export SWEEP_SIZE="$SWEEP_SIZE"
+export SWEEP_INDEX="$SWEEP_INDEX"
+EOFPARAMS
+    echo "$PARAM_TAGS" | while IFS=$'\t' read -r key value; do
+        if [[ $key == spawn:param:* ]]; then
+            param_name=${key#spawn:param:}
+            escaped_value=${value//\'/\'\"\'\"\'}
+            echo "export PARAM_${param_name}='${escaped_value}'" >> /etc/profile.d/spawn-params.sh
+        fi
+    done
+    chmod 644 /etc/profile.d/spawn-params.sh
+    echo "✅ Parameter sweep environment configured (Index: $SWEEP_INDEX/$SWEEP_SIZE)"
+fi
+if [ -s /etc/spawn/command ]; then
+    WORKFLOW_COMMAND="(embedded)"
+    STEP_NAME=""
+else
+    WORKFLOW_COMMAND=$(spawn_tag spawn:command)
+    STEP_NAME=$(spawn_tag spawn:step)
+fi
+if [ "$WORKFLOW_COMMAND" != "None" ] && [ -n "$WORKFLOW_COMMAND" ]; then
+    if [ -n "$STEP_NAME" ]; then
+        echo "▶️  Executing workflow step: $STEP_NAME"
+    else
+        echo "▶️  Executing --command"
+    fi
+    cat > /tmp/spawn-command.sh <<'EOFCMD'
+#!/bin/bash
+set -e
+[ -f /etc/profile.d/spawn-params.sh ] && source /etc/profile.d/spawn-params.sh
+EOFCMD
+    if [ -s /etc/spawn/command ]; then
+        cat /etc/spawn/command >> /tmp/spawn-command.sh
+    else
+        echo "$WORKFLOW_COMMAND" >> /tmp/spawn-command.sh
+    fi
+    chmod +x /tmp/spawn-command.sh
+    (
+        if spawn_is_spot_replacement; then
+            echo "⏭️  --command NOT started: this instance is a Spot replacement; spored retires it (#1007)" | tee -a /var/log/spawn-command.log
+            exit 0
+        fi
+        if [ -e "/var/lib/spawn/command-ran-$INSTANCE_ID" ]; then
+            echo "⏭️  --command NOT started: it already ran on this instance ($INSTANCE_ID); the bootstrap ran again (cloud-init clean + reboot?). Delete /var/lib/spawn/command-ran-$INSTANCE_ID to re-run it (#1057)" | tee -a /var/log/spawn-command.log
+            exit 0
+        fi
+        mkdir -p /var/lib/spawn
+        date -u +%Y-%m-%dT%H:%M:%SZ > "/var/lib/spawn/command-ran-$INSTANCE_ID"
+        if [ -s /run/spawn/required-gates ]; then
+            GATE_RC=0
+            while read -r GATE; do
+                [ -n "$GATE" ] || continue
+                WAITED=0
+                while [ ! -s "$GATE" ]; do
+                    if [ "$WAITED" -ge 600 ]; then
+                        echo "❌ timed out after ${WAITED}s waiting for $GATE" | tee -a /var/log/spawn-command.log
+                        GATE_RC=1
+                        break
+                    fi
+                    sleep 2
+                    WAITED=$((WAITED + 2))
+                done
+                [ "$GATE_RC" -eq 0 ] || break
+                GATE_STATUS=$(cat "$GATE")
+                if [ "$GATE_STATUS" != "ok" ]; then
+                    echo "❌ prerequisite failed: $GATE reports $GATE_STATUS" | tee -a /var/log/spawn-command.log
+                    GATE_RC=1
+                    break
+                fi
+                echo "✅ prerequisite ready: $GATE" >> /var/log/spawn-command.log
+            done < /run/spawn/required-gates
+            if [ "$GATE_RC" -ne 0 ]; then
+                echo "❌ --command NOT started: prerequisites unmet (see above)" | tee -a /var/log/spawn-command.log
+                echo 1 > /tmp/SPAWN_EXITCODE
+                mkdir -p "$(dirname -- "$SPAWN_CMD_COMPLETION_FILE")" || true
+                cat > "$SPAWN_CMD_COMPLETION_FILE" <<JSONEOF
+{"status": "failed", "exit_code": 1, "source": "command"}
+JSONEOF
+                exit 1
+            fi
+        fi
+        F=/tmp/spawn-command.fifo
+        rm -f $F
+        mkfifo -m 600 $F || F=/dev/null
+        tee -a /var/log/spawn-command.log <$F &
+        T=$! CMD_RC=0 N=0
+        su - "$LOCAL_USERNAME" -c '/tmp/spawn-command.sh' >$F 2>&1 || CMD_RC=$?
+        while kill -0 $T 2>/dev/null; do
+            if [ $N -ge 100 ]; then
+                S=
+                for P in /proc/[0-9]*/fd/*; do
+                    [ $P -ef $F ] || continue
+                    P=${P#/proc/} P=${P%%/*}
+                    [ $P = $T ] || S=$S,$P
+                done
+                echo "⚠️  spawn: not waiting for processes still holding --command's output after 10s; they run on:$(ps -o pid= -o args= -p "${S#,}" 2>/dev/null | tr -s ' \n' ' ')" | tee -a /var/log/spawn-command.log
+                break
+            fi
+            sleep 0.1
+            N=$((N + 1))
+        done
+        rm -f /tmp/spawn-command.fifo
+        echo "$CMD_RC" > /tmp/SPAWN_EXITCODE
+        if [ "$CMD_RC" -eq 0 ]; then
+            CMD_STATE=completed
+            echo "✅ --command finished (exit 0)"
+        else
+            CMD_STATE=failed
+            printf '%s\n' \
+                "spawn: --command exited $CMD_RC. errexit is ON for --command (set -e) and set -uo pipefail does NOT clear it, so the first failing command ends the run." \
+                "spawn: common causes: a SIGPIPE'd pipeline under pipefail ('... | head' returns 141), or 'wait \$pid' on a failed background job. Use set +e to opt out." \
+                >> /var/log/spawn-command.log
+            echo "❌ --command FAILED (exit $CMD_RC) — see /var/log/spawn-command.log"
+        fi
+        mkdir -p "$(dirname -- "$SPAWN_CMD_COMPLETION_FILE")" || true
+        cat > "$SPAWN_CMD_COMPLETION_FILE" <<JSONEOF
+{"status": "$CMD_STATE", "exit_code": $CMD_RC, "source": "command"}
+JSONEOF
+    ) &
+    SPAWN_HANDED_OFF=1
+    echo "▶️  --command started in the background (logs: /var/log/spawn-command.log)"
+    echo "   Its exit code lands in /tmp/SPAWN_EXITCODE and drives --on-complete."
+    echo "   Note: --command runs with errexit ON (set -e); set -uo pipefail does NOT clear it; use set +e to opt out."
+fi
+echo "Creating login banner..."
+TTL_TAG=$(spawn_tag spawn:ttl)
+IDLE_TIMEOUT_TAG=$(spawn_tag spawn:idle-timeout)
+ON_COMPLETE_TAG=$(spawn_tag spawn:on-complete)
+if [ "$JOB_ARRAY_ID" != "None" ]; then
+cat > /etc/motd <<EOFMOTD
+╔═══════════════════════════════════════════════════════════════╗
+║                  🌱 Welcome to Spore                         ║
+╚═══════════════════════════════════════════════════════════════╝
+
+Instance: $INSTANCE_ID
+Region:   $REGION
+
+Job Array:
+  • Array Name:       $JOB_ARRAY_NAME
+  • Array ID:         $JOB_ARRAY_ID
+  • Instance Index:   $JOB_ARRAY_INDEX / $JOB_ARRAY_SIZE
+
+Spore Agent Configuration:
+  • TTL:              $TTL_TAG
+  • Idle Timeout:     $IDLE_TIMEOUT_TAG
+  • On Complete:      $ON_COMPLETE_TAG
+  • Session Timeout:  $SESSION_TIMEOUT
+
+⚠️  IMPORTANT: This shell will auto-logout after $SESSION_TIMEOUT of inactivity
+⚠️  SSH connections will disconnect if idle for extended periods
+
+To view current status:
+  sudo spored status
+
+To extend TTL:
+  spawn extend <instance-id> <new-ttl>
+
+Documentation: https://github.com/spore-host/spore-host
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EOFMOTD
+else
+cat > /etc/motd <<EOFMOTD
+╔═══════════════════════════════════════════════════════════════╗
+║                  🌱 Welcome to Spore                         ║
+╚═══════════════════════════════════════════════════════════════╝
+
+Instance: $INSTANCE_ID
+Region:   $REGION
+
+Spore Agent Configuration:
+  • TTL:              $TTL_TAG
+  • Idle Timeout:     $IDLE_TIMEOUT_TAG
+  • On Complete:      $ON_COMPLETE_TAG
+  • Session Timeout:  $SESSION_TIMEOUT
+
+⚠️  IMPORTANT: This shell will auto-logout after $SESSION_TIMEOUT of inactivity
+⚠️  SSH connections will disconnect if idle for extended periods
+
+To view current status:
+  sudo spored status
+
+To extend TTL:
+  spawn extend <instance-id> <new-ttl>
+
+Documentation: https://github.com/spore-host/spore-host
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EOFMOTD
+fi
+chmod 644 /etc/motd
+echo "✅ Login banner created"
+SPAWN_MEM_KB=$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null || true)
+if ! command -v acpid >/dev/null 2>&1; then
+    if [ "${SPAWN_MEM_KB:-786432}" -lt 786432 ] 2>/dev/null; then
+        echo "acpid skipped: MemTotal ${SPAWN_MEM_KB} kB < 768 MiB"
+    elif command -v dnf >/dev/null 2>&1; then
+        dnf install -y acpid 2>/dev/null || true
+    elif command -v yum >/dev/null 2>&1; then
+        yum install -y acpid 2>/dev/null || true
+    fi
+fi
+if command -v acpid >/dev/null 2>&1; then
+    systemctl enable --now acpid 2>/dev/null || echo "acpid installed but not started; stop/terminate will not shut down gracefully"
+else
+    echo "acpid not installed; stop/terminate will not shut down gracefully"
+fi
+SPAWN_HANDED_OFF=1
+if spawn_is_spot_replacement; then
+    echo "⏭️  Spot replacement: skipping storage, the container, MPI, the task runner and custom user data; spored retires this instance (#1007)"
+    exit 0
+fi
